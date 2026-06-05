@@ -15,11 +15,11 @@
   const unsubParams = paramDefinitions.subscribe(val => { params = val; });
   const unsubDirty = dirtyParams.subscribe(val => { dirty = val; });
 
-  $: groups = ['Alle', ...new Set(params.map(p => p.Group).filter(Boolean))];
+  $: groups = ['Alle', ...new Set(params.map(p => p.group).filter(Boolean))];
 
   $: filteredParams = params.filter(p => {
     if (selectedGroup === 'Alle') return true;
-    return p.Group === selectedGroup;
+    return p.group === selectedGroup;
   });
 
   async function loadParams() {
@@ -208,11 +208,11 @@
   {#if statusMsg}
     <div
       class="mb-4 px-4 py-2.5 rounded-xl border flex items-center gap-2 text-xs font-mono transition-all duration-300"
-      class:bg-rose-950\/30={statusError}
+      class:bg-rose-950={statusError}
+      class:bg-slate-900={!statusError}
       class:border-rose-900={statusError}
-      class:text-rose-400={statusError}
-      class:bg-slate-900\/50={!statusError}
       class:border-slate-800={!statusError}
+      class:text-rose-400={statusError}
       class:text-slate-300={!statusError}
     >
       <Sliders class="w-4 h-4 text-blue-400" />
@@ -246,7 +246,7 @@
           {@const currentVal = isDirty ? dirty[p.index] : p.value}
           <div
             class="grid grid-cols-12 py-2 px-6 border-b border-slate-900/50 hover:bg-slate-900/20 text-xs font-mono items-center transition-colors"
-            class:bg-amber-950\/10={isDirty}
+            class:bg-amber-950={isDirty}
           >
             <!-- Index -->
             <div class="col-span-1 text-slate-600 font-semibold">{p.index}</div>

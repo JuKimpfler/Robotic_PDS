@@ -95,6 +95,22 @@ func (w *Watcher) Stop() {
 	close(w.stopCh)
 }
 
+// ForceReload triggers an immediate reload of the channel map file.
+func (w *Watcher) ForceReload() error {
+	cm, err := LoadCSV(w.path)
+	if err != nil {
+		return err
+	}
+	w.mu.Lock()
+	w.current = cm
+	w.mu.Unlock()
+	log.Info().Int("channels", len(cm)).Msg("channel map force-reloaded")
+	if w.onChange != nil {
+		go w.onChange(cm)
+	}
+	return nil
+}
+
 func (w *Watcher) reload() {
 	cm, err := LoadCSV(w.path)
 	if err != nil {

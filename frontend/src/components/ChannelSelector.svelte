@@ -10,7 +10,7 @@
   let collapsedGroups = {};
 
   $: grouped = channels.reduce((acc, ch) => {
-    const groupName = ch.Group || 'Unclassified';
+    const groupName = ch.group || 'Unclassified';
     if (!acc[groupName]) {
       acc[groupName] = [];
     }
@@ -20,7 +20,7 @@
 
   $: filteredGroups = Object.keys(grouped).reduce((acc, gName) => {
     const list = grouped[gName].filter(ch =>
-      ch.Name.toLowerCase().includes(filterText.toLowerCase())
+      ch.name.toLowerCase().includes(filterText.toLowerCase())
     );
     if (list.length > 0) {
       acc[gName] = list;
@@ -49,7 +49,7 @@
   function selectAll() {
     const visibleIdxs = [];
     Object.values(filteredGroups).forEach(list => {
-      list.forEach(ch => visibleIdxs.push(ch.Index));
+      list.forEach(ch => visibleIdxs.push(ch.index));
     });
     selected = visibleIdxs.slice(0, 8);
     dispatch('change', selected);
@@ -110,18 +110,18 @@
           <div class="pl-2 mt-1 space-y-0.5 border-l border-slate-900 ml-2.5">
             {#each filteredGroups[gName] as ch}
               <button
-                on:click={() => toggleChannel(ch.Index)}
+                on:click={() => toggleChannel(ch.index)}
                 class="w-full flex items-center gap-2 py-1 px-2 hover:bg-slate-900/30 rounded-lg text-left text-[11px] text-slate-400 transition-colors cursor-pointer"
-                class:text-slate-100={selected.includes(ch.Index)}
+                class:text-slate-100={selected.includes(ch.index)}
               >
-                {#if selected.includes(ch.Index)}
+                {#if selected.includes(ch.index)}
                   <CheckSquare class="w-3.5 h-3.5 text-blue-500" />
                 {:else}
                   <Square class="w-3.5 h-3.5 text-slate-700" />
                 {/if}
-                <span class="truncate flex-1">{ch.Name}</span>
-                {#if ch.Color}
-                  <span class="w-1.5 h-1.5 rounded-full shadow-lg" style="background-color: {ch.Color}; box-shadow: 0 0 4px {ch.Color}"></span>
+                <span class="truncate flex-1">{ch.name}</span>
+                {#if ch.color}
+                  <span class="w-1.5 h-1.5 rounded-full shadow-lg" style="background-color: {ch.color}; box-shadow: 0 0 4px {ch.color}"></span>
                 {/if}
               </button>
             {/each}

@@ -8,6 +8,7 @@ import (
 
 	"github.com/vmihailenco/msgpack/v5"
 	"telemetry/internal/channels"
+	"telemetry/internal/ratecontrol"
 	"telemetry/internal/ring"
 )
 
@@ -72,6 +73,15 @@ func SerializeChannelMap(cm channels.ChannelMap) ([]byte, error) {
 		Channels channels.ChannelMap `json:"channels"`
 	}
 	return json.Marshal(msg{Type: "channel_map", Channels: cm})
+}
+
+// SerializeParamMap encodes parameter definitions as a JSON "param_map" message.
+func SerializeParamMap(params []ratecontrol.ParamDef) ([]byte, error) {
+	type msg struct {
+		Type   string                 `json:"type"`
+		Params []ratecontrol.ParamDef `json:"params"`
+	}
+	return json.Marshal(msg{Type: "param_map", Params: params})
 }
 
 // ── Status push (1 Hz) ───────────────────────────────────────────────────────

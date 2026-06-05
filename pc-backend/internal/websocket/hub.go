@@ -10,6 +10,8 @@ import (
 	"github.com/rs/zerolog/log"
 	"telemetry/internal/channels"
 	"telemetry/internal/metrics"
+	"telemetry/internal/ratecontrol"
+	"telemetry/internal/ring"
 )
 
 // Client represents a single connected WebSocket client.
@@ -27,6 +29,7 @@ type Hub struct {
 	maxClients    int
 	dropped       atomic.Uint64
 	GetChannelMap func() channels.ChannelMap
+	GetParamMap   func() []ratecontrol.ParamDef
 }
 
 var upgrader = websocket.Upgrader{
@@ -68,17 +71,6 @@ func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request) {
 	isJSON := r.URL.Query().Get("format") == "json"
 	c := &Client{conn: conn, send: make(chan []byte, 32), hub: h, isJSON: isJSON}
 
-	// Send initial channel map push if available
-	if h.GetChannelMap != nil {
-		cm := h.GetChannelMap()
-		data, err := SerializeChannelMap(cm)
-		if err == nil {
-			c.send <- data
-		} else {
-			log.Error().Err(err).Msg("failed to serialize initial channel map")
-		}
-	}
-
 	h.mu.Lock()
 	h.clients[c] = struct{}{}
 	metrics.WSClients.Set(float64(len(h.clients)))
@@ -86,16 +78,40 @@ func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request) {
 
 	log.Info().Str("remote", conn.RemoteAddr().String()).Bool("json", isJSON).Msg("WS client connected")
 
-	// Send initial channel map push
-	// The caller or main loop will push the map, but we can also push it immediately on connect.
-	// Wait, we will push the initial map in main.go or here if we have access to it.
-	// We will handle that or push it in main.go upon connection.
+	// Push initial channel map and parameter map (JSON text frames per §5.3 / GUI.8)
+	if h.GetChannelMap != nil {
+		if data, err := SerializeChannelMap(h.GetChannelMap()); err == nil {
+			c.sendJSON(data)
+		} else {
+			log.Error().Err(err).Msg("failed to serialize initial channel map")
+		}
+	}
+	if h.GetParamMap != nil {
+		if data, err := SerializeParamMap(h.GetParamMap()); err == nil {
+			c.sendJSON(data)
+		}
+	}
 
 	go c.writePump()
 	c.readPump() // blocks until disconnect
 }
 
-// Broadcast sends raw bytes to all connected clients (e.g. status or channel map).
+// BroadcastJSON sends a JSON control message to all clients (TextMessage).
+func (h *Hub) BroadcastJSON(data []byte) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	prefixed := append([]byte{0}, data...)
+	for c := range h.clients {
+		select {
+		case c.send <- prefixed:
+		default:
+			metrics.WSFramesDropped.Add(1)
+			h.dropped.Add(1)
+		}
+	}
+}
+
+// Broadcast sends raw binary bytes to all connected clients (MessagePack frames).
 func (h *Hub) Broadcast(data []byte) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
@@ -180,11 +196,29 @@ func (c *Client) readPump() {
 	}
 }
 
+// sendJSON queues a JSON control message (TextMessage).
+func (c *Client) sendJSON(data []byte) {
+	select {
+	case c.send <- append([]byte{0}, data...):
+	default:
+		metrics.WSFramesDropped.Add(1)
+		c.hub.dropped.Add(1)
+	}
+}
+
 // writePump forwards messages from the send channel to the WebSocket.
+// Messages prefixed with 0x00 byte are sent as TextMessage (JSON control).
+// All other messages are sent as BinaryMessage (MessagePack frames).
 func (c *Client) writePump() {
 	defer c.conn.Close()
 	for msg := range c.send {
-		if err := c.conn.WriteMessage(websocket.BinaryMessage, msg); err != nil {
+		var err error
+		if len(msg) > 0 && msg[0] == 0 {
+			err = c.conn.WriteMessage(websocket.TextMessage, msg[1:])
+		} else {
+			err = c.conn.WriteMessage(websocket.BinaryMessage, msg)
+		}
+		if err != nil {
 			return
 		}
 	}

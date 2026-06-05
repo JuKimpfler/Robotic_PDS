@@ -3,7 +3,7 @@
   import { channelMap } from '../stores/channelData.js';
   import { selectedChannels, plotterState, timeWindow } from '../stores/plotter.js';
   import ChannelSelector from '../components/ChannelSelector.svelte';
-  import uPlotWrapper from '../components/uPlotWrapper.svelte';
+  import UPlotWrapper from '../components/uPlotWrapper.svelte';
   import { exportToCSV } from '../lib/csvExport.js';
   import { DUMMY_VALUE } from '../lib/constants.js';
   import { Play, Pause, Square, Download, ZoomIn, Info } from 'lucide-svelte';
@@ -28,8 +28,8 @@
       const ch = channels[idx];
       if (ch) {
         series.push({
-          label: ch.Name,
-          stroke: ch.Color || '#3b82f6',
+          label: ch.name,
+          stroke: ch.color || '#3b82f6',
           width: 2,
           points: { show: false },
           spanGaps: false // draws gaps for sentinel nulls
@@ -132,7 +132,7 @@
   function triggerExport() {
     const headers = ['Zeit (s)'];
     $selectedChannels.forEach(idx => {
-      headers.push(channels[idx].Name);
+      headers.push(channels[idx].name);
     });
     const d = new Date();
     const dateStr = d.getFullYear() + '-' +
@@ -174,7 +174,7 @@
           <p class="text-[11px] text-slate-600">Bitte wählen Sie in der linken Seitenleiste Kanäle zum Plotten aus.</p>
         </div>
       {:else}
-        <uPlotWrapper data={uplotData} options={uplotOptions} />
+        <UPlotWrapper data={uplotData} options={uplotOptions}></UPlotWrapper>
       {/if}
     </div>
 

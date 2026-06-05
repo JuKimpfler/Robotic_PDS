@@ -24,7 +24,7 @@
   let sortBy = 'index'; // 'index' | 'name' | 'value' | 'min' | 'max'
   let sortAsc = true;
 
-  $: groups = ['Alle', ...new Set(channels.map(ch => ch.Group).filter(Boolean))];
+  $: groups = ['Alle', ...new Set(channels.map(ch => ch.group).filter(Boolean))];
 
   let interval;
 
@@ -46,21 +46,21 @@
         continue;
       }
 
-      if (selectedGroup !== 'Alle' && ch.Group !== selectedGroup) {
+      if (selectedGroup !== 'Alle' && ch.group !== selectedGroup) {
         continue;
       }
 
-      if (filterText && !ch.Name.toLowerCase().includes(filterText.toLowerCase())) {
+      if (filterText && !ch.name.toLowerCase().includes(filterText.toLowerCase())) {
         continue;
       }
 
       items.push({
-        index: ch.Index,
-        name: ch.Name,
-        group: ch.Group,
-        unit: ch.Unit,
-        precision: ch.Precision,
-        color: ch.Color,
+        index: ch.index,
+        name: ch.name,
+        group: ch.group,
+        unit: ch.unit,
+        precision: ch.precision,
+        color: ch.color,
         val: val,
         min: min,
         max: max

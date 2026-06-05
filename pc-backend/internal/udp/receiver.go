@@ -5,7 +5,9 @@ package udp
 
 import (
 	"encoding/binary"
+	"math"
 	"net"
+	"syscall"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -244,9 +246,7 @@ func crc16(data []byte) uint16 {
 }
 
 func float32FromBits(bits uint32) float32 {
-	return *(*float32)((*[4]byte)((*[4]byte)(&[4]byte{
-		byte(bits), byte(bits >> 8), byte(bits >> 16), byte(bits >> 24),
-	})))
+	return math.Float32frombits(bits)
 }
 
 // ── Windows socket tuning ─────────────────────────────────────────────────────
@@ -263,11 +263,13 @@ func setSocketBuf(conn *net.UDPConn, size int) error {
 }
 
 func setThreadPriority() {
-	// Set UDP receive goroutine to TIME_CRITICAL priority per §3.3
-	_ = windows.SetThreadPriority(
-		windows.CurrentThread(),
-		windows.THREAD_PRIORITY_TIME_CRITICAL,
-	)
+	// THREAD_PRIORITY_TIME_CRITICAL = 15 per §3.3
+	kernel32 := syscall.NewLazyDLL("kernel32.dll")
+	getCurrentThread := kernel32.NewProc("GetCurrentThread")
+	setThreadPriority := kernel32.NewProc("SetThreadPriority")
+	const threadPriorityTimeCritical = 15
+	handle, _, _ := getCurrentThread.Call()
+	_, _, _ = setThreadPriority.Call(handle, threadPriorityTimeCritical)
 }
 
 // ── Frame rate meter ──────────────────────────────────────────────────────────

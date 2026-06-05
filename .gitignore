@@ -26,3 +26,6 @@ Thumbs.db
 # Logs
 *.log
 telemetry_log*.csv
+
+# Parameter presets (runtime)
+pc-backend/presets/

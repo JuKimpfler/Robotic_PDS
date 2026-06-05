@@ -8,8 +8,9 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"path/filepath"
 	"runtime/debug"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -140,7 +141,7 @@ func main() {
 			log.Error().Err(err).Msg("failed to serialize channel map")
 			return
 		}
-		hub.Broadcast(data)
+		hub.BroadcastJSON(data)
 	})
 	if err != nil {
 		log.Fatal().Err(err).Str("path", cfg.ChannelMap.Path).Msg("failed to load initial channel map")
@@ -163,13 +164,14 @@ func main() {
 	}
 
 	// ── Rate Control (Teensy UART) ───────────────────────────────────────────
+	var rcCtrl *ratecontrol.Controller
 	var rcPort string
 	if *simulate {
 		rcPort = "MOCK"
 	} else if cfg.RateControl.Enabled {
 		rcPort = cfg.RateControl.SerialPort
 	}
-	rcCtrl := ratecontrol.New(rcPort, cfg.RateControl.Baud)
+	rcCtrl = ratecontrol.New(rcPort, cfg.RateControl.Baud)
 	if err := rcCtrl.Open(); err != nil {
 		log.Error().Err(err).Str("port", rcPort).Msg("failed to open serial rate control connection")
 	} else {
@@ -185,6 +187,13 @@ func main() {
 		if *simulate {
 			_ = rcCtrl.SetRate(cfg.RateControl.DefaultRateHz)
 		}
+	}
+
+	hub.GetParamMap = func() []ratecontrol.ParamDef {
+		if rcCtrl != nil {
+			return rcCtrl.GetParamsList()
+		}
+		return nil
 	}
 
 	// ── Ring Buffer ──────────────────────────────────────────────────────────
@@ -232,13 +241,16 @@ func main() {
 	defer close(stopSource)
 
 	stats := &http.Stats{}
+	var rpiIPFn func() string
 
 	if *simulate {
 		log.Info().Msg("running in simulator mode (synthetic frame generation)")
-		go runSimulator(stopSource, rb, rcCtrl, len(watcher.Get()))
+		rpiIPFn = func() string { return "127.0.0.1 (simulate)" }
+		go runSimulator(stopSource, rb, rcCtrl, len(watcher.Get()), stats)
 	} else {
 		log.Info().Int("port", cfg.UDP.ListenPort).Msg("running in hardware receiver mode")
 		rx := udp.New(cfg.UDP.ListenPort, rb, stats)
+		rpiIPFn = rx.SourceIP
 		go rx.Run(stopSource)
 	}
 
@@ -258,8 +270,15 @@ func main() {
 		}
 	}()
 
+	// 4b. WebSocket server on dedicated port (§3.3: port 9001)
+	go func() {
+		if err := ws.StartServer(ctx, cfg.WebSocket.Port, hub); err != nil {
+			log.Fatal().Err(err).Msg("WebSocket server failed")
+		}
+	}()
+
 	// 5. Status publisher (broadcasts stats to WS clients at 1 Hz)
-	go runStatusPublisher(ctx.Done(), hub, hsCtrl, stats)
+	go runStatusPublisher(ctx.Done(), hub, hsCtrl, stats, rpiIPFn)
 
 	// ── Graceful Shutdown ────────────────────────────────────────────────────
 	sigChan := make(chan os.Signal, 1)
@@ -330,7 +349,7 @@ func parseBytes(s string) (int64, error) {
 }
 
 // runSimulator generates frame data for --simulate mode
-func runSimulator(stop <-chan struct{}, rb *ring.Buffer, rc *ratecontrol.Controller, channelCount int) {
+func runSimulator(stop <-chan struct{}, rb *ring.Buffer, rc *ratecontrol.Controller, channelCount int, stats *http.Stats) {
 	ticker := time.NewTicker(10 * time.Millisecond) // 100 Hz baseline
 	defer ticker.Stop()
 
@@ -374,8 +393,15 @@ func runSimulator(stop <-chan struct{}, rb *ring.Buffer, rc *ratecontrol.Control
 			metrics.FrameRateHz.Set(float64(hz))
 			if rb.Push(frame) {
 				metrics.FramesReceived.Add(1)
+				if stats != nil {
+					stats.FramesRx.Add(1)
+					stats.RateHz.Store(float64(hz))
+				}
 			} else {
 				metrics.FramesDropped.Add(1)
+				if stats != nil {
+					stats.FramesDropped.Add(1)
+				}
 			}
 		}
 	}
@@ -405,7 +431,7 @@ func runPipelineWorker(stop <-chan struct{}, rb *ring.Buffer, pipe *pipeline.Pip
 }
 
 // runStatusPublisher broadcasts connection status & stats at 1 Hz
-func runStatusPublisher(stop <-chan struct{}, hub *ws.Hub, hsCtrl *hotspot.Controller, stats *http.Stats) {
+func runStatusPublisher(stop <-chan struct{}, hub *ws.Hub, hsCtrl *hotspot.Controller, stats *http.Stats, rpiIPFn func() string) {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 
@@ -420,9 +446,16 @@ func runStatusPublisher(stop <-chan struct{}, hub *ws.Hub, hsCtrl *hotspot.Contr
 			hsState := string(hsCtrl.Status())
 			rateHz, _ := stats.RateHz.Load().(float64)
 
+			rpiIP := "—"
+			if rpiIPFn != nil {
+				if ip := rpiIPFn(); ip != "" {
+					rpiIP = ip
+				}
+			}
+
 			msg := ws.StatusMsg{
 				Hotspot:       hsState,
-				RpiIP:         "192.168.137.42", // Mock/Assumed RPi address
+				RpiIP:         rpiIP,
 				FramesRx:      stats.FramesRx.Load(),
 				FramesDropped: stats.FramesDropped.Load(),
 				CRCErrors:     stats.CRCErrors.Load(),
@@ -430,7 +463,7 @@ func runStatusPublisher(stop <-chan struct{}, hub *ws.Hub, hsCtrl *hotspot.Contr
 			}
 			data, err := ws.SerializeStatus(msg)
 			if err == nil {
-				hub.Broadcast(data)
+				hub.BroadcastJSON(data)
 			}
 		}
 	}

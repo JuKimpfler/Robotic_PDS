@@ -4,10 +4,8 @@ package http
 
 import (
 	"context"
-	"embed"
 	"encoding/json"
 	"fmt"
-	"io/fs"
 	"net/http"
 	"strconv"
 	"strings"
@@ -16,6 +14,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rs/zerolog/log"
+	"telemetry/frontend"
 	"telemetry/internal/channels"
 	ws "telemetry/internal/websocket"
 	"telemetry/internal/hotspot"
@@ -23,8 +22,7 @@ import (
 	"telemetry/internal/ratecontrol"
 )
 
-//go:embed ../../frontend/dist
-var frontendFS embed.FS
+// Frontend assets: see telemetry/frontend/embed.go (dist/ embedded without .. paths).
 
 // Stats holds live counters exposed via /api/stats.
 type Stats struct {
@@ -65,21 +63,13 @@ func New(port int, hub *ws.Hub, watcher *channels.Watcher,
 func (srv *Server) Start(ctx context.Context) error {
 	mux := http.NewServeMux()
 
-	// ── Static frontend ────────────────────────────────────────────────────
-	distFS, err := fs.Sub(frontendFS, "frontend/dist")
-	if err != nil {
-		log.Warn().Msg("frontend/dist not found — serving API only")
-	} else {
-		mux.Handle("/", http.FileServer(http.FS(distFS)))
-	}
+	// ── Static frontend (embedded from pc-backend/frontend/dist) ───────────
+	mux.Handle("/", http.FileServer(http.FS(frontend.Dist)))
 
 	// ── Prometheus metrics ─────────────────────────────────────────────────
 	mux.Handle("/metrics", promhttp.Handler())
 
-	// ── WebSocket ──────────────────────────────────────────────────────────
-	mux.HandleFunc("/stream", srv.hub.ServeWS)
-
-	// ── Channel API ────────────────────────────────────────────────────────
+	// WebSocket stream is served on cfg websocket port (9001) — see websocket.StartServer
 	mux.HandleFunc("GET /api/channels", srv.handleGetChannels)
 	mux.HandleFunc("POST /api/channels/reload", srv.handleReloadChannels)
 
@@ -99,6 +89,9 @@ func (srv *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("POST /api/params/{index}", srv.handleSetParam)
 	mux.HandleFunc("POST /api/params/batch", srv.handleParamBatch)
 	mux.HandleFunc("POST /api/params/save", srv.handleParamSave)
+	mux.HandleFunc("GET /api/params/presets", srv.handleGetPresets)
+	mux.HandleFunc("POST /api/params/presets/{name}", srv.handleSavePreset)
+	mux.HandleFunc("PUT /api/params/presets/{name}/apply", srv.handleApplyPreset)
 
 	addr := fmt.Sprintf(":%d", srv.port)
 	httpSrv := &http.Server{Addr: addr, Handler: mux}
@@ -125,8 +118,11 @@ func (srv *Server) handleGetChannels(w http.ResponseWriter, r *http.Request) {
 }
 
 func (srv *Server) handleReloadChannels(w http.ResponseWriter, r *http.Request) {
-	// Delegate to watcher's internal reload
-	writeJSON(w, map[string]string{"status": "reload triggered"})
+	if err := srv.watcher.ForceReload(); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, map[string]string{"status": "reloaded"})
 }
 
 func (srv *Server) handleSetRate(w http.ResponseWriter, r *http.Request) {
@@ -248,6 +244,60 @@ func (srv *Server) handleParamSave(w http.ResponseWriter, r *http.Request) {
 		srv.rateCtrl.SaveParams()
 	}
 	writeJSON(w, map[string]string{"status": "ok"})
+}
+
+func (srv *Server) handleGetPresets(w http.ResponseWriter, r *http.Request) {
+	names, err := ratecontrol.ListPresets()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, map[string]any{"presets": names})
+}
+
+func (srv *Server) handleSavePreset(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if name == "" {
+		http.Error(w, "preset name required", http.StatusBadRequest)
+		return
+	}
+	var entries []ratecontrol.PresetEntry
+	if err := json.NewDecoder(r.Body).Decode(&entries); err != nil {
+		http.Error(w, "invalid body", http.StatusBadRequest)
+		return
+	}
+	if err := ratecontrol.SavePreset(name, entries); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, map[string]string{"status": "saved", "name": name})
+}
+
+func (srv *Server) handleApplyPreset(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if name == "" {
+		http.Error(w, "preset name required", http.StatusBadRequest)
+		return
+	}
+	entries, err := ratecontrol.LoadPreset(name)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	params := make([]ratecontrol.ParamEntry, len(entries))
+	for i, e := range entries {
+		params[i] = ratecontrol.ParamEntry{Index: e.Index, Value: e.Value}
+	}
+	if srv.rateCtrl != nil {
+		if err := srv.rateCtrl.SetParamBatch(params); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		for _, e := range params {
+			srv.rateCtrl.UpdateParamLocal(e.Index, e.Value)
+		}
+	}
+	writeJSON(w, map[string]string{"status": "applied", "name": name})
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

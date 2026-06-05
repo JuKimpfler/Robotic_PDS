@@ -7,6 +7,10 @@ export default defineConfig({
     tailwindcss(),
     svelte()
   ],
+  build: {
+    outDir: '../pc-backend/frontend/dist',
+    emptyOutDir: true,
+  },
   server: {
     port: 5173,
     proxy: {
@@ -15,7 +19,7 @@ export default defineConfig({
         changeOrigin: true,
       },
       '/stream': {
-        target: 'ws://localhost:8080',
+        target: 'ws://localhost:9001',
         ws: true,
       }
     }
