@@ -1,0 +1,28 @@
+# Teensy / PlatformIO
+teensy/.pio/
+teensy/.vscode/
+
+# Go
+pc-backend/bin/
+pc-backend/frontend/dist/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.svelte-kit/
+
+# RPi bridge build artifacts
+rpi-bridge/build/
+
+# Editor
+.vscode/
+*.swp
+*.swo
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Logs
+*.log
+telemetry_log*.csv
