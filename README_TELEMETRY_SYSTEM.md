@@ -942,3 +942,524 @@ logging:
 ---
 
 *GUI specification to be provided in a follow-up document. All other sections are stable for implementation.*
+
+---
+
+---
+
+# SECTION ADDENDUM v0.3 — Frontend GUI Specification
+
+**Added:** 2026-06-05  
+**Status:** Foundation Spec — Ready for Implementation (Tabs 1 & 2) / Skeleton Only (Tabs 3 & 4)
+
+---
+
+## GUI.1 Overall Layout Philosophy
+
+- **Framework:** Svelte 5 + Vite
+- **Plotting:** uPlot (high-performance canvas renderer — handles 1M+ points/s)
+- **Styling:** Tailwind CSS v4 (utility-first, no component library dependency)
+- **Icons:** Lucide (tree-shakable SVG icons)
+- **State:** Svelte stores (no external state manager needed at this scale)
+- **Entry point:** `http://localhost:8080` — served by Go backend via `embed.FS`
+
+### Global Layout Structure
+
+```
+┌──────────────────────────────────────────────────────────────────────────┐
+│  HEADER BAR (fixed, full width)                                          │
+│  [● LOGO / Title]   [Connection: ● Connected | 192.168.137.42]          │
+│                     [Hotspot: [OFF ●━━━━] ON]  [FPS: 100.2]            │
+│                     [Latency: 0.8ms]  [Dropped: 0]                      │
+├──────────────────────────────────────────────────────────────────────────┤
+│  TAB BAR                                                                 │
+│  [📊 Daten]  [📈 Plotter]  [🤖 Visualisierung *]  [⚙️ Parameter *]     │
+│               (* = placeholder tab, not yet implemented)                 │
+├──────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│                         TAB CONTENT AREA                                 │
+│                         (fills remaining viewport)                       │
+│                                                                          │
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+**Header bar** is always visible regardless of active tab and shows:
+- WebSocket connection status (live dot indicator: green/yellow/red)
+- RPi source IP address
+- Hotspot toggle (calls `POST /api/hotspot/start|stop`)
+- Live frame rate (measured server-side, received via WebSocket metadata)
+- Round-trip latency indicator
+- Dropped frame counter (resets on reconnect)
+
+---
+
+## GUI.2 Tab Architecture
+
+| # | ID | Label | Status | Description |
+|---|---|---|---|---|
+| 1 | `data` | 📊 Daten | **Implement now** | Live data table, min/max tracking, dummy filter |
+| 2 | `plotter` | 📈 Plotter | **Implement now** | Live plot with variable selection, pause, analysis |
+| 3 | `robot` | 🤖 Visualisierung | **Skeleton only** | Graphical overlay visualization (future) |
+| 4 | `params` | ⚙️ Parameter | **Skeleton only** | Parameter editor + UDP transfer to robot (future) |
+
+Tab switching is instant (Svelte component mount/unmount). WebSocket subscription and data processing continue in background regardless of active tab — no data is lost when switching.
+
+---
+
+## GUI.3 Tab 1 — Datentabelle (Live Data Table)
+
+### Purpose
+Display all currently active channels as a live-updating table. A channel is considered **active** (visible) when its most recent value is **not equal to the dummy sentinel `9898.0`**.
+
+### Dummy Value Filter Rule
+```javascript
+// Float comparison — 9898.0f is exactly representable in IEEE 754
+const DUMMY_VALUE = 9898.0;
+const isActive = (value) => Math.abs(value - DUMMY_VALUE) > 0.01;
+```
+
+Channels that are currently `9898` are hidden from the table entirely. If a channel recovers from `9898` mid-session, it reappears automatically.
+
+### Layout
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│  TOOLBAR                                                             │
+│  [🔍 Filter: _______________] [Gruppe: Alle ▼]  [⟳ Min/Max Reset]  │
+│  Active: 423/500 channels                                            │
+├──────────┬───────────┬──────────────┬──────┬──────────┬────────────┤
+│ Name     │ Gruppe    │ Wert         │ Einh │ Min      │ Max        │
+├──────────┼───────────┼──────────────┼──────┼──────────┼────────────┤
+│ motor_fl │ Motors    │    1234.5    │ rpm  │  -500.0  │  2100.0    │
+│ motor_fr │ Motors    │    1230.1    │ rpm  │  -480.0  │  2095.0    │
+│ accel_x  │ IMU       │      0.12   │ m/s² │   -12.3  │    14.5    │
+│ accel_y  │ IMU       │      0.08   │ m/s² │   -11.8  │    13.2    │
+│  ...     │  ...      │  ...        │ ...  │  ...     │  ...       │
+└──────────┴───────────┴──────────────┴──────┴──────────┴────────────┘
+│ Status: 100.2 Hz | 423 active channels | 0 dropped frames           │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+### Behavior Specification
+
+| Feature | Specification |
+|---|---|
+| Update rate | Throttled to **30 Hz** visual refresh (decoupled from data rate) |
+| Min tracking | Persists across frames. Initialized on first non-dummy value. |
+| Max tracking | Persists across frames. Initialized on first non-dummy value. |
+| Min/Max reset | "⟳ Reset" button clears all min/max values for all channels |
+| Filter | Text input filters `name` field (case-insensitive, partial match) |
+| Group filter | Dropdown populated from `channel_map.channels[].group` values |
+| Column sort | Click header to sort ascending/descending (default: by index) |
+| Value display | Formatted to `precision` decimal places from channel map |
+| Unit column | From channel map `unit` field |
+| Value color | Neutral by default. Future: red if outside `[min_config, max_config]` |
+| Scroll | Virtual scrolling (only render visible rows) for 500+ channels |
+| No data | If WebSocket disconnected: values show `—`, min/max retained |
+
+### Svelte Store (data layer)
+```javascript
+// stores/channelData.js
+export const channelMap  = writable([]);          // from "channel_map" WS message
+export const liveValues  = writable(new Float32Array(500)); // current frame values
+export const minValues   = writable(new Float32Array(500).fill(Infinity));
+export const maxValues   = writable(new Float32Array(500).fill(-Infinity));
+export const frameRate   = writable(0);
+export const wsConnected = writable(false);
+
+// On each incoming frame: update liveValues, update min/max
+// Dummy filter applied in the table component, not in the store
+```
+
+---
+
+## GUI.4 Tab 2 — Live Plotter
+
+### Purpose
+Select one or more channels and plot them in real time. Support pause, freeze, and post-capture analysis (zoom, pan, cursor inspection).
+
+### Layout
+
+```
+┌──────────────────────┬─────────────────────────────────────────────────┐
+│  CHANNEL SELECTOR    │  PLOT AREA                                      │
+│  (fixed width ~220px)│  (fills remaining width)                        │
+│                      │  ┌───────────────────────────────────────────┐  │
+│  [🔍 filter...]     │  │                                           │  │
+│                      │  │              uPlot Canvas                 │  │
+│  ▸ Motors            │  │                                           │  │
+│    ☑ motor_fl_rpm   │  │                                           │  │
+│    ☑ motor_fr_rpm   │  └───────────────────────────────────────────┘  │
+│    □ motor_rl_rpm   │                                                  │
+│    □ motor_rr_rpm   │  CONTROLS (below plot)                          │
+│  ▸ IMU               │  [▶ Start] [⏸ Pause] [⏹ Stop] [💾 Export CSV] │
+│    □ accel_x        │                                                  │
+│    □ accel_y        │  Time Window:  [━━━●━━━━━]  10s               │
+│    □ accel_z        │  [1s][5s][10s][30s][60s][120s]                  │
+│    □ gyro_x         │                                                  │
+│  ▸ PID               │  ANALYSIS (visible only when paused)            │
+│    □ pid_out_fl     │  [↔ Zoom X] [↕ Zoom Y] [✥ Pan] [↺ Reset View]  │
+│    ...              │  Cursor: t=9.234s  motor_fl_rpm=1234.5          │
+│                      │                                                  │
+│  [Select All]        │                                                  │
+│  [Deselect All]      │                                                  │
+└──────────────────────┴─────────────────────────────────────────────────┘
+```
+
+### Plotter State Machine
+
+```
+         ┌─────────────────────────────────────────────┐
+         │                                             │
+   ┌─────▼──────┐   [▶ Start]   ┌────────────┐       │
+   │  STOPPED   │ ────────────▶ │  RUNNING   │       │
+   │ (initial)  │               │            │       │
+   └────────────┘               │ - Data buf │       │
+                                │   filling  │       │
+                                │ - Plot     │       │
+                                │   scrolling│       │
+                                └─────┬──────┘       │
+                                      │               │
+                          [⏸ Pause]  │  [⏹ Stop]    │
+                                      │               │
+                                ┌─────▼──────┐        │
+                                │   PAUSED   │        │
+                                │            │        │
+                                │ - Buffer   │        │
+                                │   frozen   │        │
+                                │ - uPlot    │        │
+                                │   interact │        │
+                                │   enabled  │        │
+                                └─────┬──────┘        │
+                                      │                │
+                          [▶ Resume] │  [⏹ Stop]     │
+                                      └────────────────┘
+```
+
+### Behavior Specification
+
+| Feature | Specification |
+|---|---|
+| Data buffer | Ring buffer per selected channel: `Float64Array` of last N seconds at current frame rate |
+| Time window | Configurable: 1s / 5s / 10s / 30s / 60s / 120s (resets buffer on change) |
+| Max channels | Up to **8 simultaneous** plot series (uPlot performance limit for smooth 60 Hz) |
+| Channel colors | Taken from `channels.csv` `color` field |
+| Dummy filter | Channels with value == 9898 are **not plotted** for that frame (gap in line) |
+| Y-axis | Auto-scale per series by default. Manual range: double-click Y axis |
+| X-axis | Sliding time window when RUNNING. Fixed range when PAUSED. |
+| PAUSED mode | Buffer freezes. uPlot cursor, zoom, pan enabled. Scroll wheel = X zoom. |
+| Cursor | Shows timestamp + all visible channel values at cursor position |
+| Export CSV | Exports current buffer as `plot_export_YYYY-MM-DD_HH-MM-SS.csv` |
+| Performance | uPlot renders at 60 Hz via `requestAnimationFrame`. Data updates decoupled. |
+| Multi-Y-axis | Future option. Initially: all channels share one Y-axis with auto-scale. |
+
+### uPlot Configuration Notes
+```javascript
+// Key uPlot options for this use case:
+const opts = {
+  width:  plotElement.clientWidth,
+  height: plotElement.clientHeight,
+  cursor: { sync: { key: "telemetry" } },
+  scales: { x: { time: true } },
+  series: [
+    { label: "Time" },
+    // One entry per selected channel, color from channelMap
+    { label: channel.name, stroke: channel.color, width: 1.5 }
+  ],
+  plugins: [
+    tooltipPlugin(),    // custom hover tooltip
+    exportPlugin(),     // CSV export
+  ]
+};
+```
+
+---
+
+## GUI.5 Tab 3 — Visualisierung (Skeleton / Foundation)
+
+> **Current status:** Placeholder tab. Renders a "coming soon" panel.  
+> **Purpose of this spec:** Define the architecture NOW so Tab 3 can be implemented without refactoring.
+
+### Concept
+
+One or more **background images** (SVG or PNG) overlaid with data-driven elements:
+- **Color overlays:** regions that change hue/brightness/opacity based on a channel value
+- **Text labels:** positioned text fields rendering live channel values
+
+The configuration is driven by a `robot_viz.json` file (hot-reloaded like `channels.csv`).
+
+### Config File Schema (`robot_viz.json`)
+
+```json
+{
+  "views": [
+    {
+      "id": "top_view",
+      "label": "Draufsicht",
+      "background": "assets/robot_top.svg",
+      "background_size": [400, 400],
+      "overlays": [
+        {
+          "id": "motor_fl_heat",
+          "type": "color_region",
+          "channel": "motor_fl_rpm",
+          "element_id": "motor_fl_rect",
+          "colormap": "blue_red",
+          "value_range": [0, 3000],
+          "opacity_range": [0.1, 0.8]
+        },
+        {
+          "id": "speed_label",
+          "type": "text",
+          "channel": "robot_speed_mps",
+          "position": [200, 350],
+          "format": "{:.2f} m/s",
+          "font_size": 14,
+          "color": "#FFFFFF"
+        }
+      ]
+    }
+  ]
+}
+```
+
+### Svelte Component Skeleton
+```svelte
+<!-- RobotViz.svelte — SKELETON -->
+<script>
+  import { liveValues, channelMap } from '../stores/channelData.js';
+  // TODO: load robot_viz.json from GET /api/robot_viz
+  // TODO: render background SVG/PNG
+  // TODO: apply overlay transforms from live values
+</script>
+
+<div class="robot-viz-placeholder">
+  <p>🤖 Visualisierung — In Entwicklung</p>
+  <p>Konfiguration: <code>robot_viz.json</code></p>
+</div>
+```
+
+### Future Implementation Notes for AI Agents
+- Images are stored in `frontend/src/assets/` or loaded via `GET /api/assets/{filename}`
+- Multiple `views` entries → sub-tabs within Tab 3
+- `color_region` type: finds SVG element by `element_id`, modifies `fill` CSS property
+- `text` type: absolute-positioned `<span>` overlaid on image
+- Colormaps defined in `frontend/src/lib/colormaps.js` (blue→red, green→red, etc.)
+- All channel references resolved via `channelMap` store (index lookup by `channel` name)
+- Config hot-reload: `GET /api/robot_viz` polled every 2s or pushed via WebSocket `"robot_viz_update"` message type
+
+---
+
+## GUI.6 Tab 4 — Parameter (Skeleton / Foundation)
+
+> **Current status:** Placeholder tab. Renders a "coming soon" panel.  
+> **Purpose of this spec:** Define the data model and transport protocol NOW.
+
+### Concept
+
+A table of ~100–200 writable parameters. The user edits values in the GUI, then transfers them to the Teensy/Robot via the existing UDP + SPI bridge path.
+
+### Parameter Definition File (`parameters.csv`)
+
+```csv
+# Robot Parameter Definition
+# index : parameter index on Teensy (must match firmware enum)
+# name  : unique identifier
+# type  : float32 | int32 | bool
+# value : default/current value
+# min   : minimum allowed value
+# max   : maximum allowed value
+# unit  : display unit
+# group : parameter group / tab
+# description : human-readable explanation
+
+index,name,type,default,min,max,unit,group,description
+0,pid_fl_kp,float32,1.200,0.0,100.0,,PID Motors,Proportional gain front-left motor
+1,pid_fl_ki,float32,0.050,0.0,10.0,,PID Motors,Integral gain front-left motor
+2,pid_fl_kd,float32,0.010,0.0,1.0,,PID Motors,Derivative gain front-left motor
+3,pid_fr_kp,float32,1.200,0.0,100.0,,PID Motors,Proportional gain front-right motor
+...
+100,max_speed,float32,2.500,0.0,5.0,m/s,Drive,Maximum robot speed
+101,accel_limit,float32,5.0,0.0,20.0,m/s²,Drive,Acceleration limit
+...
+```
+
+### Parameter Transfer Protocol
+
+Parameters are sent from the PC backend to the Teensy via the **existing USB Serial connection** (same port as frame rate control, extended protocol):
+
+```
+# Single parameter write:
+PARAM_SET:0:1.250\n              → sets parameter index 0 to 1.250
+
+# Batch write (up to 50 params per command):
+PARAM_BATCH:0:1.250,1:0.060,2:0.012\n
+
+# Save to EEPROM:
+PARAM_SAVE\n
+
+# Load preset from Teensy EEPROM slot:
+PARAM_LOAD:1\n
+
+# Teensy acknowledges:
+PARAM_ACK:OK\n
+PARAM_ACK:ERR:index_out_of_range\n
+```
+
+### Go Backend API (new endpoints for Tab 4)
+
+| Method | Path | Body | Description |
+|---|---|---|---|
+| GET | `/api/params` | — | Return all parameters with current values |
+| POST | `/api/params/{index}` | `{"value": 1.25}` | Set single parameter + send to Teensy |
+| POST | `/api/params/batch` | `[{"index":0,"value":1.25},...]` | Set and send multiple |
+| POST | `/api/params/save` | — | Command Teensy to save to EEPROM |
+| GET | `/api/params/presets` | — | List saved parameter presets |
+| POST | `/api/params/presets/{name}` | `[{index, value}...]` | Save named preset to disk |
+| PUT | `/api/params/presets/{name}/apply` | — | Load preset → send all values to Teensy |
+
+### Svelte Component Skeleton
+```svelte
+<!-- Parameters.svelte — SKELETON -->
+<script>
+  // TODO: load parameters.csv definition via GET /api/params
+  // TODO: virtual scroll for 200 parameters
+  // TODO: inline edit cells with validation (min/max)
+  // TODO: dirty tracking (highlight changed-but-not-sent values)
+  // TODO: "Send All" / "Send Changed" / "Reset to Default" buttons
+  // TODO: preset save/load UI
+</script>
+
+<div class="params-placeholder">
+  <p>⚙️ Parameter — In Entwicklung</p>
+  <p>Parameterdefinition: <code>parameters.csv</code></p>
+  <p>~100–200 Parameter, übertragung via USB Serial → Teensy</p>
+</div>
+```
+
+### Layout Preview (Future)
+```
+┌──────────────────────────────────────────────────────────────────┐
+│  TOOLBAR                                                         │
+│  [💾 Preset: MyConfig_v3 ▼] [📂 Laden] [💾 Speichern]          │
+│  [✔ Geänderte senden (12)] [✔✔ Alle senden] [↺ Zurücksetzen]   │
+├──────────┬──────────────────────────────────────────────────────┤
+│ Gruppen  │  PARAMETERTABELLE (virtual scroll)                   │
+│ ● Alle   ├──────────────┬──────────────┬──────┬────────┬───────┤
+│ ○ PID    │ Name         │ Wert         │ Einh │ Min    │ Max   │
+│ ○ Drive  ├──────────────┼──────────────┼──────┼────────┼───────┤
+│ ○ Limits │ pid_fl_kp    │ [  1.200  ] │      │  0.0   │ 100.0 │
+│ ...      │ pid_fl_ki    │ [  0.050  ] │      │  0.0   │  10.0 │
+│          │ pid_fl_kd    │*[  0.015  ] │      │  0.0   │   1.0 │
+│          │ ...          │  ...        │ ...  │ ...    │ ...   │
+│          │              │  (* = dirty/unsent)                   │
+└──────────┴──────────────────────────────────────────────────────┘
+```
+
+---
+
+## GUI.7 Updated Directory Structure (Frontend)
+
+```
+frontend/
+├── package.json
+├── vite.config.js              # proxy /api → localhost:8080, /stream → ws
+├── tailwind.config.js
+├── index.html
+│
+└── src/
+    ├── App.svelte              # Root: header + tab bar + tab router
+    │
+    ├── stores/
+    │   ├── channelData.js      # liveValues, channelMap, minValues, maxValues
+    │   ├── connection.js       # wsConnected, frameRate, latency, dropped
+    │   ├── plotter.js          # selectedChannels, plotterState, buffer
+    │   └── params.js           # paramDefinitions, dirtyParams, presets
+    │
+    ├── ws/
+    │   └── client.js           # WebSocket connect/reconnect, message dispatch
+    │
+    ├── tabs/
+    │   ├── DataTable.svelte    # Tab 1 — Datentabelle  [IMPLEMENT]
+    │   ├── Plotter.svelte      # Tab 2 — Live Plotter  [IMPLEMENT]
+    │   ├── RobotViz.svelte     # Tab 3 — Visualisierung [SKELETON]
+    │   └── Parameters.svelte   # Tab 4 — Parameter     [SKELETON]
+    │
+    ├── components/
+    │   ├── Header.svelte       # Status bar (connection, hotspot, FPS)
+    │   ├── TabBar.svelte       # Tab navigation
+    │   ├── ChannelSelector.svelte  # Reusable channel picker (used by Plotter)
+    │   ├── uPlotWrapper.svelte     # uPlot lifecycle wrapper
+    │   ├── VirtualTable.svelte     # Virtual-scroll table component
+    │   └── StatusBadge.svelte      # Connection/hotspot indicator dot
+    │
+    ├── lib/
+    │   ├── colormaps.js        # Color mapping functions (for robot viz)
+    │   ├── formatters.js       # Value formatting (precision, units)
+    │   ├── csvExport.js        # CSV export utility
+    │   └── constants.js        # DUMMY_VALUE = 9898.0, etc.
+    │
+    └── assets/
+        └── robot/              # Robot visualization images (future)
+            └── .gitkeep
+```
+
+---
+
+## GUI.8 WebSocket Protocol Extension
+
+The following message types are added to the WebSocket protocol (in addition to previously defined types):
+
+```javascript
+// Server → Browser message types:
+
+// (existing) Data frame:
+{ "type": "frame", "seq": 12345, "ts_us": 9876543,
+  "rate_hz": 100.2, "values": Float32Array(500) }
+
+// (existing) Channel map (on connect + hot-reload):
+{ "type": "channel_map", "channels": [...] }
+
+// (new) System status (1 Hz):
+{ "type": "status",
+  "hotspot": "on" | "off" | "transitioning",
+  "rpi_ip": "192.168.137.42",
+  "frames_rx": 123456,
+  "frames_dropped": 12,
+  "crc_errors": 0,
+  "rate_hz": 100.2 }
+
+// (new) Robot viz config (on connect + config change):
+{ "type": "robot_viz", "config": { ...robot_viz.json content... } }
+
+// (new) Parameter definitions (on connect):
+{ "type": "param_map", "params": [...parameters.csv parsed...] }
+
+// Browser → Server (via REST, NOT WebSocket — cleaner for request/response):
+// POST /api/hotspot/start|stop
+// POST /api/rate/{hz}
+// POST /api/params/{index}
+// POST /api/params/batch
+```
+
+Binary encoding for `frame` messages: **MessagePack** (default). The `values` field is packed as a binary float32 array (msgpack bin format), not a JSON array — this avoids JSON serialization overhead for 500 floats.
+
+---
+
+## GUI.9 Implementation Priority
+
+| Priority | Component | Effort | Dependency |
+|---|---|---|---|
+| 1 | WebSocket client + store wiring | Low | None |
+| 2 | Header bar (connection status, hotspot toggle) | Low | WS client |
+| 3 | Tab 1: DataTable (live values + min/max + filter) | Medium | WS client + stores |
+| 4 | Tab 2: Plotter (uPlot + channel selector + pause) | High | WS client + stores |
+| 5 | Tab 3: RobotViz skeleton | Low | None |
+| 6 | Tab 4: Parameters skeleton | Low | None |
+| 7 | Go backend: `/api/params` + serial writer | Medium | Tab 4 spec finalized |
+| 8 | Tab 3: Full implementation | High | robot_viz.json spec + assets |
+| 9 | Tab 4: Full implementation | High | Teensy param protocol |
+
+---
+
+*End of GUI Specification — v0.3*
