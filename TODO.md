@@ -1,12 +1,12 @@
 # Telemetry Streaming System - Implementation TODO
 
 ## Phase 1: Project Skeleton & Basic Setup
-- [ ] Create directory structure (`teensy/`, `rpi-bridge/`, `pc-backend/`, `frontend/`, `shared/`, `scripts/`)
-- [ ] Create `shared/protocol.md` from the README specification
+- [x] Create directory structure (`teensy/`, `rpi-bridge/`, `pc-backend/`, `frontend/`, `shared/`, `scripts/`)
+- [x] Create `shared/protocol.md` from the README specification
 
 ## Phase 2: Shared Configs & Data Definitions
-- [ ] Create `pc-backend/config.yaml`
-- [ ] Create `pc-backend/channels.csv`
+- [x] Create `pc-backend/config.yaml`
+- [x] Create `pc-backend/channels.csv`
 - [ ] Create `frontend/src/lib/constants.js`
 
 ## Phase 3: RPi Bridge (C)

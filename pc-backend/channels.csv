@@ -1,0 +1,8 @@
+index,name,unit,scale,offset,min,max,group,color,precision,enabled
+0,motor_fl_rpm,rpm,1.0,0.0,-3000,3000,Motors,#E74C3C,0,true
+1,motor_fr_rpm,rpm,1.0,0.0,-3000,3000,Motors,#E74C3C,0,true
+2,motor_rl_rpm,rpm,1.0,0.0,-3000,3000,Motors,#C0392B,0,true
+3,motor_rr_rpm,rpm,1.0,0.0,-3000,3000,Motors,#C0392B,0,true
+4,imu_accel_x,m/s²,1.0,0.0,-50,50,IMU,#3498DB,2,true
+5,imu_accel_y,m/s²,1.0,0.0,-50,50,IMU,#2980B9,2,true
+6,imu_accel_z,m/s²,1.0,0.0,-50,50,IMU,#1ABC9C,2,true
