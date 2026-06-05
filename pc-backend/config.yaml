@@ -1,0 +1,71 @@
+# ── Network ──────────────────────────────────────────────
+udp:
+  listen_port: 9000
+  recv_buffer_bytes: 8388608        # 8 MB
+  reassembly_timeout_ms: 5
+  split_frames: true                # false = expect jumbo frames
+
+websocket:
+  port: 9001
+  max_clients: 8
+  frame_drop_policy: drop_newest    # drop_newest | drop_oldest
+
+http:
+  port: 8080
+
+# ── Hotspot ───────────────────────────────────────────────
+hotspot:
+  ssid: "TelemetryNet"
+  passphrase: "changeme123"
+  auto_start: false                 # true = start on backend launch
+
+# ── Channel Map ───────────────────────────────────────────
+channel_map:
+  path: "channels.csv"
+  xlsx_import_path: ""              # Optional: path to .xlsx, auto-converts to CSV
+  reload_debounce_ms: 500
+
+# ── Frame Rate Control ────────────────────────────────────
+rate_control:
+  enabled: true
+  serial_port: "COM3"               # Teensy USB serial port
+  baud: 115200
+  default_rate_hz: 100
+
+# ── Ring Buffer ───────────────────────────────────────────
+ring_buffer:
+  size: 1024                        # Must be power of 2
+
+# ── Pipeline ──────────────────────────────────────────────
+pipeline:
+  quantize_float16: false
+  plugins:
+    - name: calibration
+      enabled: true
+    - name: csv_logger
+      enabled: false
+      path: "C:/telemetry/log.csv"
+    - name: moving_average
+      enabled: false
+      window: 5
+
+# ── Performance ───────────────────────────────────────────
+performance:
+  gogc: 400
+  gomemlimit: "4GiB"
+  udp_thread_priority: time_critical  # Windows THREAD_PRIORITY_TIME_CRITICAL
+
+# ── Parameters ────────────────────────────────────────────
+params:
+  path: "parameters.csv"
+  presets_dir: "presets"
+
+# ── Robot Viz ─────────────────────────────────────────────
+robot_viz:
+  path: "robot_viz.json"
+  reload_interval_ms: 2000
+
+# ── Logging ───────────────────────────────────────────────
+logging:
+  level: info                       # debug | info | warn | error
+  format: json                      # json | text

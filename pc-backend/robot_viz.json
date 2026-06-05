@@ -1,0 +1,30 @@
+{
+  "views": [
+    {
+      "id": "top_view",
+      "label": "Draufsicht",
+      "background": "assets/robot/robot_top.svg",
+      "background_size": [400, 400],
+      "overlays": [
+        {
+          "id": "motor_fl_heat",
+          "type": "color_region",
+          "channel": "motor_fl_rpm",
+          "element_id": "motor_fl_rect",
+          "colormap": "blue_red",
+          "value_range": [0, 3000],
+          "opacity_range": [0.1, 0.8]
+        },
+        {
+          "id": "speed_label",
+          "type": "text",
+          "channel": "max_speed",
+          "position": [200, 350],
+          "format": "{:.2f} m/s",
+          "font_size": 14,
+          "color": "#FFFFFF"
+        }
+      ]
+    }
+  ]
+}
