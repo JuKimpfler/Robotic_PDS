@@ -114,7 +114,7 @@ def _udp_simulator_process(stop_event: mp.Event) -> None:
     """
     import time, struct, socket
     import numpy as np
-    from config import (PACKET_HEADER_MAGIC, MAX_FLOATS, HEADER_SIZE,
+    from rpi5_monitor.config import (PACKET_HEADER_MAGIC, MAX_FLOATS, HEADER_SIZE,
                         UDP_PORT_NODE1, UDP_PORT_NODE2)
 
     logging.basicConfig(level=logging.INFO,

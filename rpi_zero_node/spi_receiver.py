@@ -33,7 +33,7 @@ import subprocess
 import spidev
 import RPi.GPIO as GPIO
 
-from status_leds import StatusLEDs
+from rpi_zero_node.status_leds import StatusLEDs
 
 # ── Konfiguration ─────────────────────────────────────────────────────────────
 NODE_ID        = int(os.environ.get("NODE_ID", "1"))
