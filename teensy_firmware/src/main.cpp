@@ -17,11 +17,11 @@
  *  Dummy-Füllung: Nicht verwendete Kanäle werden mit 9898.0f
  *                 gefüllt und vom RPi 5 herausgefiltert.
  *
- *  Pinbelegung SPI0:
- *    SCK  → Pin 13   (Takt, vom RPi Zero getrieben)
- *    MOSI → Pin 11   (RPi → Teensy, für zukünftige Befehle)
- *    MISO → Pin 12   (Teensy → RPi, Nutzdaten)
- *    CS   → Pin 10   (Chip-Select, vom RPi Zero getrieben)
+ *  Pinbelegung SPI1 (zweiter SPI-Bus / LPSPI3):
+ *    SCK  → Pin 27   (Takt, vom RPi Zero getrieben)
+ *    MOSI → Pin 26   (RPi → Teensy, für zukünftige Befehle)
+ *    MISO → Pin 1    (Teensy → RPi, Nutzdaten)
+ *    CS   → Pin 30   (Chip-Select, vom RPi Zero getrieben)
  *    DATA_READY → Pin 9 (Ausgang, HIGH = neues Paket bereit)
  *
  *  Benötigte Bibliothek:
@@ -44,8 +44,9 @@ static constexpr int      PACKET_BYTES     = 8 + MAX_FLOATS * 4;   // 4008
 static constexpr uint32_t SAMPLE_PERIOD_US = 10000UL;              // 10 ms = 100 Hz
 static constexpr int      DATA_READY_PIN   = 9;
 
-// ── SPI-Slave Instanz (SPI0, 8-Bit-Wörter) ──────────────────────────────────
-SPISlave_T4<&SPI, SPI_8_BITS> spiSlave;
+// ── SPI-Slave Instanz (SPI1 / zweiter SPI-Bus / LPSPI3, 8-Bit-Wörter) ───────
+// SCK = Pin 27, MOSI = Pin 26, MISO = Pin 1, CS = Pin 30
+SPISlave_T4<&SPI1, SPI_8_BITS> spiSlave;
 
 // ── Ping-Pong-Puffer ─────────────────────────────────────────────────────────
 //    ptr_active : ISR liest hieraus (wird per SPI gesendet)
@@ -124,7 +125,7 @@ void setup() {
     spiSlave.begin();
     spiSlave.onReceive(onSPIData);
 
-    Serial.printf("[Teensy] Bereit | Paket: %d Bytes | Kanäle: %d | %.0f Hz\n",
+    Serial.printf("[Teensy] Bereit | SPI1 (LPSPI3) | SCK=27 MOSI=26 MISO=1 CS=30 | Paket: %d Bytes | Kanäle: %d | %.0f Hz\n",
                   PACKET_BYTES, ACTIVE_CHANNELS, 1e6f / SAMPLE_PERIOD_US);
 }
 
