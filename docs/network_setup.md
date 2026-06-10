@@ -132,18 +132,20 @@ ssh pi@192.168.42.11 "systemctl status spi-receiver flash-daemon"
 
 ---
 
-## 5. Pinbelegung SPI (Teensy ↔ RPi Zero W)
+## 5. Pinbelegung SPI1 (Teensy ↔ RPi Zero W)
 
-| Signal       | Teensy Pin | RPi Zero GPIO (BCM) | RPi Zero Pin |
-|--------------|------------|---------------------|--------------|
-| SCK          | 13         | 11 (SPI_CLK)        | 23           |
-| MOSI         | 11         | 10 (SPI_MOSI)       | 19           |
-| MISO         | 12         | 9  (SPI_MISO)       | 21           |
-| CS           | 10         | 8  (SPI_CE0)        | 24           |
-| DATA_READY   | 9          | 17 (GPIO17)         | 11           |
-| GND          | GND        | GND                 | 6            |
+| Signal       | Teensy Pin (SPI1) | RPi Zero GPIO (BCM) | RPi Zero Pin |
+|--------------|:-----------------:|:-------------------:|:------------:|
+| SCK          | 27                | 11 (SPI_CLK)        | 23           |
+| MOSI         | 26                | 10 (SPI_MOSI)       | 19           |
+| MISO         | 1                 | 9  (SPI_MISO)       | 21           |
+| CS           | 30                | 8  (SPI_CE0)        | 24           |
+| DATA_READY   | 9                 | 17 (GPIO17)         | 11           |
+| GND          | GND               | GND                 | 6            |
 
-> **Wichtig:** Teensy 4.0 arbeitet mit 3.3 V — Pegel kompatibel mit RPi Zero W. ✓
+> **Wichtig:** Teensy 4.0 arbeitet mit 3,3 V — Pegel kompatibel mit RPi Zero W. ✓  
+> **SPI1 / LPSPI3:** Der Teensy verwendet den zweiten SPI-Bus (SPI1). Pin 30 dient als
+> alternativer Chip-Select anstelle des Standard-CS (Pin 0).
 
 ---
 
