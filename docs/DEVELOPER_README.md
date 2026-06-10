@@ -1,7 +1,7 @@
 # Power Debug System — Entwickler-Dokumentation
 
 > **Zielgruppe:** Entwickler, die das System erweitern, debuggen oder in neue Hardware integrieren wollen.  
-> **Stand:** Version 1.0 — Phase 1 abgeschlossen
+> **Stand:** Version 1.1 — Phase 1 abgeschlossen
 
 ---
 
@@ -56,7 +56,7 @@
 │  flash_daemon.py         │   │  flash_daemon.py                     │
 │  status_leds.py          │   │  status_leds.py                      │
 └──────────────┬───────────┘   └───────────────┬──────────────────────┘
-               │ SPI (10 MHz) + DATA_READY       │ SPI (10 MHz) + DATA_READY
+               │ SPI1 (10 MHz) + DATA_READY      │ SPI1 (10 MHz) + DATA_READY
 ┌──────────────┴───────────┐   ┌───────────────┴──────────────────────┐
 │     Teensy 4.0 (1)       │   │     Teensy 4.0 (2)                   │
 │     main.cpp             │   │     main.cpp                         │
@@ -390,11 +390,15 @@ TEENSY_CLI = "avrdude"     # für Arduino-Boards
 ### Höhere SPI-Geschwindigkeit
 
 ```python
-# spi_receiver.py
+# spi_receiver.py — RPi Zero W (SPI-Master): Taktfrequenz erhöhen
 SPI_SPEED_HZ = 20_000_000   # 20 MHz (RPi Zero W unterstützt max. ~32 MHz)
+```
 
-# main.cpp (Teensy)
-spiSlave.begin(SPISettings(20000000, MSBFIRST, SPI_MODE0));
+```cpp
+// main.cpp (Teensy) — SPI1-Instanz bleibt unverändert; der Slave folgt dem Master-Takt
+SPISlave_T4<&SPI1, SPI_8_BITS> spiSlave;  // SPI1 / LPSPI3, SCK=27, MOSI=26, MISO=1, CS=30
+// Der Slave muss nicht neu konfiguriert werden — nur SPI_SPEED_HZ auf dem
+// RPi Zero W (Master) anpassen.
 ```
 
 > **Achtung:** Leitungslängen über ~10 cm können bei höheren Frequenzen zu Übertragungsfehlern führen. Ferritperlen und 22-Ω-Reihenwiderstände können helfen.
