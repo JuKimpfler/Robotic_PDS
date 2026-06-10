@@ -61,23 +61,24 @@
 
 ## 2. Verdrahtung
 
-### 2.1 Teensy 4.0 ↔ RPi Zero W (SPI)
+### 2.1 Teensy 4.0 ↔ RPi Zero W (SPI1)
 
-Die Verbindung erfolgt über den Hardware-SPI-Bus. Der RPi Zero W ist **SPI-Master**, der Teensy ist **SPI-Slave**.
+Die Verbindung erfolgt über den zweiten Hardware-SPI-Bus (SPI1 / LPSPI3). Der RPi Zero W ist **SPI-Master**, der Teensy ist **SPI-Slave**.
 
 ```
-Teensy 4.0                          RPi Zero W
+Teensy 4.0  (SPI1 / LPSPI3)        RPi Zero W
 ──────────────────────────────────────────────────────────
-Pin 13  (SCK)   ──────────────────  Pin 23  (GPIO11, SCLK)
-Pin 11  (MOSI)  ──────────────────  Pin 19  (GPIO10, MOSI)
-Pin 12  (MISO)  ──────────────────  Pin 21  (GPIO 9, MISO)
-Pin 10  (CS)    ──────────────────  Pin 24  (GPIO 8, CE0)
+Pin 27  (SCK1)  ──────────────────  Pin 23  (GPIO11, SCLK)
+Pin 26  (MOSI1) ──────────────────  Pin 19  (GPIO10, MOSI)
+Pin  1  (MISO1) ──────────────────  Pin 21  (GPIO 9, MISO)
+Pin 30  (CS)    ──────────────────  Pin 24  (GPIO 8, CE0)
 Pin  9  (DTRDY) ──────────────────  Pin 11  (GPIO17)       ← DATA_READY Signal
 GND             ──────────────────  Pin  6  (GND)
 3,3 V           ──────────────────  Pin  1  (3,3 V)        ← Optional (nur wenn nötig)
 ```
 
-> ⚠️ **Wichtig:** Teensy 4.0 arbeitet mit 3,3 V Logikpegel — kompatibel mit dem RPi Zero W. Kein Pegelwandler nötig.
+> ⚠️ **Wichtig:** Teensy 4.0 arbeitet mit 3,3 V Logikpegel — kompatibel mit dem RPi Zero W. Kein Pegelwandler nötig.  
+> **SPI1 (LPSPI3):** Pin 30 dient als alternativer Chip-Select anstelle des Standard-CS (Pin 0).
 
 ### 2.2 Status-LEDs am RPi Zero W
 
