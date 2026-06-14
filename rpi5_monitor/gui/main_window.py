@@ -25,7 +25,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import QTimer, Qt, pyqtSignal, QObject
 from PyQt6.QtGui import QFont
 
-from rpi5_monitor.config import GUI_TIMER_MS
+from config import GUI_TIMER_MS
 from network_worker import NetworkManager, flash_nodes
 from gui.tab_table   import TelemetryTableWidget
 from gui.tab_plotter import LivePlotterWidget

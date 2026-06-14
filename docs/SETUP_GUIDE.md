@@ -9,7 +9,7 @@
 
 1. [Hardware-Voraussetzungen & Stückliste](#1-hardware-voraussetzungen--stückliste)
 2. [Verdrahtung](#2-verdrahtung)
-   - 2.1 [Teensy 4.0 ↔ RPi Zero W (SPI)](#21-teensy-40--rpi-zero-w-spi)
+   - 2.1 [Teensy 4.0 ↔ RPi Zero W (UART)](#21-teensy-40--rpi-zero-w-uart)
    - 2.2 [Status-LEDs am RPi Zero W](#22-status-leds-am-rpi-zero-w)
 3. [Raspberry Pi 5 einrichten](#3-raspberry-pi-5-einrichten)
    - 3.1 [Betriebssystem installieren](#31-betriebssystem-installieren)
@@ -61,23 +61,22 @@
 
 ## 2. Verdrahtung
 
-### 2.1 Teensy 4.0 ↔ RPi Zero W (SPI)
+### 2.1 Teensy 4.0 ↔ RPi Zero W (UART)
 
-Die Verbindung erfolgt über den Hardware-SPI-Bus. Der RPi Zero W ist **SPI-Master**, der Teensy ist **SPI-Slave**.
+Die Verbindung erfolgt über den Hardware-UART (Serial1 auf dem Teensy, PL011 auf dem RPi Zero W). Der Teensy **sendet** kontinuierlich, der RPi Zero W **empfängt**.
 
 ```
-Teensy 4.0                          RPi Zero W
+Teensy 4.0  (Serial1 / UART)       RPi Zero W  (PL011 / ttyAMA0)
 ──────────────────────────────────────────────────────────
-Pin 13  (SCK)   ──────────────────  Pin 23  (GPIO11, SCLK)
-Pin 11  (MOSI)  ──────────────────  Pin 19  (GPIO10, MOSI)
-Pin 12  (MISO)  ──────────────────  Pin 21  (GPIO 9, MISO)
-Pin 10  (CS)    ──────────────────  Pin 24  (GPIO 8, CE0)
-Pin  9  (DTRDY) ──────────────────  Pin 11  (GPIO17)       ← DATA_READY Signal
+Pin  1  (TX1)   ──────────────────  Pin 10  (GPIO15, UART RX)
+Pin  0  (RX1)   ──────────────────  Pin  8  (GPIO14, UART TX)  ← optional
 GND             ──────────────────  Pin  6  (GND)
-3,3 V           ──────────────────  Pin  1  (3,3 V)        ← Optional (nur wenn nötig)
 ```
 
-> ⚠️ **Wichtig:** Teensy 4.0 arbeitet mit 3,3 V Logikpegel — kompatibel mit dem RPi Zero W. Kein Pegelwandler nötig.
+> ⚠️ **Wichtig:** Teensy 4.0 arbeitet mit 3,3 V Logikpegel — kompatibel mit dem RPi Zero W. Kein Pegelwandler nötig.  
+> **Nur 3 Kabel** statt bisher 5–6 (kein SCK, MOSI, MISO, CS, DATA_READY mehr).  
+> **Baudrate:** 4 000 000 Baud (4 Mbps) — funktioniert nur mit dem PL011-UART (`ttyAMA0`). Der mini-UART (`ttyS0`) ist bei dieser Geschwindigkeit nicht stabil.  
+> **RX (Pin 0)** ist optional — der Teensy empfängt aktuell keine Befehle zurück.
 
 ### 2.2 Status-LEDs am RPi Zero W
 
@@ -107,13 +106,13 @@ GPIO-Pin (3,3 V) ──[330 Ω]──[>|]── GND
        GPIO3  [ 5] [ 6]  GND   ← GND für LEDs
        GPIO4  [ 7] [ 8]  GPIO14
          GND  [ 9] [10]  GPIO15
-      GPIO17  [11] [12]  GPIO18   ← GPIO17 = DATA_READY (Teensy)
+      GPIO17  [11] [12]  GPIO18
       GPIO27  [13] [14]  GND      ← GPIO27 = Heartbeat LED 🟢
       GPIO22  [15] [16]  GPIO23   ← GPIO22 = Netzwerk LED 🔵
          3V3  [17] [18]  GPIO24   ← GPIO24 = Daten LED 🟡
 GPIO10/MOSI   [19] [20]  GND
  GPIO9/MISO   [21] [22]  GPIO25   ← GPIO25 = Flash/Fehler LED 🔴
-GPIO11/SCLK   [23] [24]  GPIO8/CE0
+GPIO11        [23] [24]  GPIO8
          GND  [25] [26]  GPIO7
 ```
 
@@ -228,11 +227,11 @@ ssh pi@192.168.42.11   # Node 1
 ssh pi@192.168.42.12   # Node 2
 
 # Dienststatus prüfen
-systemctl status spi-receiver
+systemctl status uart-receiver
 systemctl status flash-daemon
 
 # Live-Logs
-journalctl -u spi-receiver -f
+journalctl -u uart-receiver -f
 ```
 
 ### 4.3 LED-Statusanzeige verstehen
@@ -248,7 +247,7 @@ Die LEDs geben jederzeit Auskunft über den Node-Zustand — ohne SSH oder Monit
 | 🔵 **Blau** | Dauerhaft AN | WLAN-Verbindung zum RPi 5 aktiv |
 | 🔵 **Blau** | 4× schnell blinken | WLAN-Verbindungsaufbau läuft |
 | 🔵 **Blau** | Aus | Kein WLAN (RPi 5 nicht erreichbar) |
-| 🟡 **Gelb** | Blinkt ~2× pro Sek. | Teensy sendet Daten (SPI→UDP aktiv) |
+| 🟡 **Gelb** | Blinkt ~2× pro Sek. | Teensy sendet UART-Daten (→ UDP aktiv) |
 | 🟡 **Gelb** | Aus | Kein Signal vom Teensy (Kabel prüfen) |
 | 🔴 **Rot** | Dauerhaft AN | Flash-Datei wird empfangen / Teensy wird geflasht |
 | 🔴 **Rot** | 3× langsam blinken | Flash erfolgreich ✅ |
@@ -516,18 +515,20 @@ nmcli connection show PowerDebugAP | grep STATE
 ### Keine Daten in der GUI (Tabelle leer)
 
 ```bash
-# 1. Teensy läuft und sendet DATA_READY-Signal?
+# 1. Teensy läuft und sendet UART-Daten?
 #    → LED am Teensy sollte blinken
 
-# 2. SPI-Receiver läuft auf dem Node?
+# 2. UART-Receiver läuft auf dem Node?
 ssh pi@192.168.42.11
-journalctl -u spi-receiver -f
+journalctl -u uart-receiver -f
 # Erwartet: "Throughput: X Pkt/s | Y KB/s"
 
 # 3. UDP-Pakete kommen am RPi 5 an?
 sudo tcpdump -i wlan0 udp port 5001 -c 5 -q
 
-# 4. SPI-Verbindung korrekt? GPIO17 (DATA_READY) verbunden?
+# 4. UART-Verdrahtung korrekt?
+#    Teensy Pin 1 (TX) → RPi Pin 10 (GPIO15)
+#    GND              → RPi Pin  6 (GND)
 #    Gelbe LED am Node sollte blinken wenn Teensy läuft
 ```
 
@@ -573,8 +574,8 @@ grep dwc2 /boot/firmware/config.txt
 
 | Was | Befehl |
 |---|---|
-| SPI-Receiver (Node 1) | `ssh pi@192.168.42.11 "journalctl -u spi-receiver -f"` |
-| SPI-Receiver (Node 2) | `ssh pi@192.168.42.12 "journalctl -u spi-receiver -f"` |
+| UART-Receiver (Node 1) | `ssh pi@192.168.42.11 "journalctl -u uart-receiver -f"` |
+| UART-Receiver (Node 2) | `ssh pi@192.168.42.12 "journalctl -u uart-receiver -f"` |
 | Flash-Daemon (Node 1) | `ssh pi@192.168.42.11 "journalctl -u flash-daemon -f"` |
 | Flash-Daemon (Node 2) | `ssh pi@192.168.42.12 "journalctl -u flash-daemon -f"` |
 | GUI auf RPi 5 | `journalctl --user -u power-debug-monitor -f` |

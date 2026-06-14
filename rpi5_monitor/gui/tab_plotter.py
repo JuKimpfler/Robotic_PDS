@@ -18,7 +18,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt
 
-from rpi5_monitor.config import MAX_FLOATS, PLOT_BUFFER_SIZE, VARIABLE_NAMES
+from config import MAX_FLOATS, PLOT_BUFFER_SIZE, VARIABLE_NAMES
 
 # Globale PyQtGraph-Konfiguration für maximale Performance
 pg.setConfigOptions(antialias=False, useOpenGL=False, background="#1a1a1a")

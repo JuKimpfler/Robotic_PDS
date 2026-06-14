@@ -8,7 +8,7 @@ der RPi Zero W Nodes.
 LED-Belegung (BCM-Nummerierung):
   GPIO 27  (Pin 13) — Heartbeat  : Grün  — Blinkt 1 Hz = System läuft
   GPIO 22  (Pin 15) — Netzwerk   : Blau  — AN = WLAN verbunden
-  GPIO 24  (Pin 18) — Daten      : Gelb  — Blinkt = SPI/UDP-Paket aktiv
+  GPIO 24  (Pin 18) — Daten      : Gelb  — Blinkt = uart/UDP-Paket aktiv
   GPIO 25  (Pin 22) — Flash/Err  : Rot   — AN = Flashen, Schnell = Fehler
 
 Schaltung pro LED (Reihenschaltung):
@@ -48,7 +48,7 @@ log = logging.getLogger(__name__)
 # ── Pin-Definitionen (BCM) ────────────────────────────────────────────────────
 PIN_HEARTBEAT = 27   # Grün:  Systemzustand / Alive
 PIN_NETWORK   = 22   # Blau:  WLAN-Verbindungsstatus
-PIN_DATA      = 24   # Gelb:  SPI→UDP Datenaktivität
+PIN_DATA      = 24   # Gelb:  uart→UDP Datenaktivität
 PIN_FLASH     = 25   # Rot:   Flash-Vorgang / Fehler
 
 _ALL_PINS = (PIN_HEARTBEAT, PIN_NETWORK, PIN_DATA, PIN_FLASH)

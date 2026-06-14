@@ -1,19 +1,33 @@
 #!/usr/bin/env python3
 """
-spi_receiver.py — RPi Zero W Node  (v2 — mit Status-LEDs)
-===========================================================
-Liest Binärpakete vom Teensy 4.0 über SPI und leitet
+spi_receiver.py — RPi Zero W Node  (v3 — UART statt SPI)
+==========================================================
+Liest Binärpakete vom Teensy 4.0 über UART und leitet
 sie sofort als UDP-Datagramm an den RPi 5 weiter.
 
-Kein Parsing, keine Filterung — maximale Durchrate.
+Kein SPI, kein DATA_READY-Signal — der Teensy sendet kontinuierlich.
+Paketsynchronisation erfolgt über den Magic-Header (0xDEADBEEF).
 
 Umgebungsvariablen:
     NODE_ID  = 1 oder 2  (Standard: 1)
     RPI5_IP  = IP des RPi 5 (Standard: 192.168.42.1)
 
 Paket-Format (vom Teensy):
-    [Header: 4 Bytes][Timestamp: 4 Bytes][Data: 4000 Bytes]
-    Gesamt: 4008 Bytes
+    [Header: 4 Bytes = 0xDEADBEEF][Timestamp: 4 Bytes][Data: 400 × float32]
+    Gesamt: 1608 Bytes
+
+Verdrahtung:
+    RPi GPIO15 (Pin 10, UART RX) ←── Teensy Pin 1 (TX1)
+    RPi GPIO14 (Pin  8, UART TX) ──→ Teensy Pin 0 (RX1)  [optional]
+    GND (Pin 6)                  ───  GND
+
+UART-Einrichtung (RPi Zero W, einmalig):
+    /boot/firmware/config.txt:
+        dtoverlay=disable-bt    ← PL011 UART auf GPIO14/15 (BT deaktiviert)
+        enable_uart=1
+    /boot/firmware/cmdline.txt:
+        console=serial0,115200  ← DIESE ZEILE ENTFERNEN (kein Login-Prompt)
+    Danach: sudo reboot
 
 LED-Status (GPIO BCM):
     GPIO 27 — Heartbeat  (grün,  blinkt 1 Hz = läuft)
@@ -23,28 +37,32 @@ LED-Status (GPIO BCM):
 """
 
 import os
-import sys
 import time
 import socket
+import struct
 import logging
 import threading
 import subprocess
 
-import spidev
+import serial
 import RPi.GPIO as GPIO
 
-from rpi_zero_node.status_leds import StatusLEDs
+from status_leds import StatusLEDs
 
 # ── Konfiguration ─────────────────────────────────────────────────────────────
-NODE_ID        = int(os.environ.get("NODE_ID", "1"))
-RPI5_IP        = os.environ.get("RPI5_IP", "192.168.42.1")
-UDP_PORT       = 5000 + NODE_ID          # 5001 oder 5002
-PACKET_BYTES   = 4008                    # Header(8) + 1000 × float32(4000)
-SPI_BUS        = 0
-SPI_DEVICE     = 0                       # /dev/spidev0.0
-SPI_SPEED_HZ   = 10_000_000             # 10 MHz
-SPI_MODE       = 0b00                   # CPOL=0, CPHA=0
-DATA_READY_PIN = 17                     # BCM-Nummerierung (GPIO17 = Pin 11)
+NODE_ID      = int(os.environ.get("NODE_ID", "1"))
+RPI5_IP      = os.environ.get("RPI5_IP", "192.168.42.1")
+UDP_PORT     = 5000 + NODE_ID          # 5001 oder 5002
+
+UART_PORT    = "/dev/ttyAMA0"          # PL011 Full-UART (nach dtoverlay=disable-bt)
+UART_BAUD    = 4_000_000               # 4 Mbps — muss mit Teensy übereinstimmen
+
+MAX_FLOATS   = 400                     # Muss mit Teensy main.cpp übereinstimmen!
+HEADER_SIZE  = 8                       # uint32 magic + uint32 timestamp
+PACKET_BYTES = HEADER_SIZE + MAX_FLOATS * 4   # 1608 Bytes
+
+MAGIC        = 0xDEAD_BEEF
+MAGIC_BYTES  = struct.pack("<I", MAGIC)       # b'\xef\xbe\xad\xde' (little-endian)
 
 # Netzwerk-Prüfintervall in Sekunden
 NET_CHECK_INTERVAL = 15.0
@@ -52,50 +70,87 @@ NET_CHECK_INTERVAL = 15.0
 # ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
-    format=f"[spi_rx Node{NODE_ID}] %(asctime)s %(levelname)-8s %(message)s",
-    datefmt="%H:%M:%S"
+    format=f"[uart_rx Node{NODE_ID}] %(asctime)s %(levelname)-8s %(message)s",
+    datefmt="%H:%M:%S",
 )
 log = logging.getLogger()
 
-# ── Vorallokierter Sende-Buffer (vermeidet Allokierung im Hot-Path) ───────────
-_DUMMY_TX = [0x00] * PACKET_BYTES       # Wird an Teensy gesendet (clocked out)
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  Paket-Synchronisation
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _read_exactly(ser: serial.Serial, n: int) -> bytes | None:
+    """
+    Liest exakt n Bytes aus dem UART.
+    Gibt None zurück bei Timeout oder unvollständigem Empfang.
+    Intern: mehrere read()-Aufrufe bis alle n Bytes da sind.
+    """
+    buf = bytearray()
+    while len(buf) < n:
+        chunk = ser.read(n - len(buf))
+        if not chunk:
+            return None   # Timeout
+        buf.extend(chunk)
+    return bytes(buf)
+
+
+def _sync_to_magic(ser: serial.Serial) -> bool:
+    """
+    Schiebt ein 4-Byte-Fenster Byte für Byte durch den UART-Stream,
+    bis das Magic-Pattern 0xDEADBEEF gefunden wird.
+
+    Normal-Fall (kein Fehler): Magic steht direkt am Paket-Anfang —
+    dann kehrt diese Funktion nach 4 Bytes zurück.
+
+    Fehler-Fall (verlorene Synchronisation): Suche kann viele Bytes dauern.
+    Bei Timeout wird False zurückgegeben.
+
+    Returns:
+        True  — Magic gefunden, nächste Bytes sind Timestamp + Daten
+        False — Timeout ohne Magic-Fund
+    """
+    window = bytearray(4)
+    bytes_searched = 0
+
+    while True:
+        b = ser.read(1)
+        if not b:
+            return False   # Timeout
+
+        # Fenster verschieben und neues Byte anhängen
+        window[0:3] = window[1:4]
+        window[3]   = b[0]
+        bytes_searched += 1
+
+        if bytes(window) == MAGIC_BYTES:
+            if bytes_searched > 4:
+                log.warning(f"Re-Sync nach {bytes_searched} Bytes")
+            return True
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  Hilfsfunktionen
+#  Netzwerk-Monitor (Hintergrundthread)
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _check_wlan_connected(expected_ip: str = "") -> bool:
-    """
-    Prüft ob wlan0 die erwartete statische IP besitzt.
-    Nutzt 'ip addr show wlan0' — kein Netzwerkzugriff nötig.
-    """
+    """Prüft ob wlan0 die erwartete IP besitzt (ohne Netzwerkzugriff)."""
     try:
         result = subprocess.run(
             ["ip", "addr", "show", "wlan0"],
-            capture_output=True,
-            text=True,
-            timeout=3,
+            capture_output=True, text=True, timeout=3,
         )
         output = result.stdout
-        # Entweder auf spezifische IP prüfen oder nur ob überhaupt eine IP da ist
-        if expected_ip:
-            return expected_ip in output
-        return "inet " in output   # Irgendeine IP vorhanden
+        return (expected_ip in output) if expected_ip else ("inet " in output)
     except Exception:
         return False
 
 
 def _network_monitor_thread(
     leds: StatusLEDs,
-    rpi5_ip: str,
     stop_event: threading.Event,
 ) -> None:
-    """
-    Hintergrundthread: Prüft WLAN-Verbindung alle NET_CHECK_INTERVAL Sekunden
-    und aktualisiert die blaue Netzwerk-LED.
-    """
-    # Statische Node-IP ableiten (z.B. 192.168.42.11 für Node 1)
+    """Prüft WLAN-Verbindung alle NET_CHECK_INTERVAL Sekunden."""
     node_ip = f"192.168.42.1{NODE_ID}"
 
     while not stop_event.is_set():
@@ -104,10 +159,7 @@ def _network_monitor_thread(
 
         if not connected:
             log.warning(f"WLAN nicht verbunden (erwartet IP {node_ip})")
-        else:
-            log.debug(f"WLAN OK — IP {node_ip} bestätigt")
 
-        # Warten mit regelmäßiger Überprüfung des Stop-Events
         for _ in range(int(NET_CHECK_INTERVAL)):
             if stop_event.is_set():
                 break
@@ -121,97 +173,121 @@ def _network_monitor_thread(
 def main() -> None:
     log.info(
         f"Starte | NODE_ID={NODE_ID} | UDP→{RPI5_IP}:{UDP_PORT} | "
-        f"SPI@{SPI_SPEED_HZ // 1_000_000}MHz | DATA_READY=GPIO{DATA_READY_PIN}"
+        f"UART {UART_PORT} @ {UART_BAUD // 1_000_000} Mbps | "
+        f"{PACKET_BYTES} Bytes/Paket | {MAX_FLOATS} Floats"
     )
 
-    # ── LED-Controller initialisieren ────────────────────────────────────────
+    # ── LED-Controller ────────────────────────────────────────────────────────
     leds = StatusLEDs()
     leds.start()
 
-    # ── GPIO Initialisierung ─────────────────────────────────────────────────
-    # Hinweis: StatusLEDs.__init__() hat GPIO.setmode(BCM) bereits gesetzt
-    GPIO.setwarnings(False)
-    GPIO.setup(DATA_READY_PIN, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
+    # ── UART öffnen ───────────────────────────────────────────────────────────
+    try:
+        ser = serial.Serial(
+            port         = UART_PORT,
+            baudrate     = UART_BAUD,
+            bytesize     = serial.EIGHTBITS,
+            parity       = serial.PARITY_NONE,
+            stopbits     = serial.STOPBITS_ONE,
+            timeout      = 2.0,    # Gesamt-Read-Timeout [s]
+            xonxoff      = False,  # Kein Software-Handshake
+            rtscts       = False,  # Kein Hardware-Handshake
+            dsrdtr       = False,
+        )
+    except serial.SerialException as exc:
+        log.error(f"UART {UART_PORT} konnte nicht geöffnet werden: {exc}")
+        log.error("→ Prüfe: dtoverlay=disable-bt in /boot/firmware/config.txt?")
+        log.error("→ Prüfe: console=serial0,... in cmdline.txt entfernt?")
+        raise SystemExit(1)
 
-    # ── SPI Initialisierung ──────────────────────────────────────────────────
-    spi = spidev.SpiDev()
-    spi.open(SPI_BUS, SPI_DEVICE)
-    spi.max_speed_hz = SPI_SPEED_HZ
-    spi.mode         = SPI_MODE
-    spi.no_cs        = False
+    # Eingangspuffer leeren (Reste aus vorherigen Starts verwerfen)
+    ser.reset_input_buffer()
+    log.info(f"UART {UART_PORT} geöffnet — warte auf ersten Teensy-Frame...")
 
-    # ── UDP Socket ───────────────────────────────────────────────────────────
+    # ── UDP Socket ────────────────────────────────────────────────────────────
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 512 * 1024)
 
-    # ── Synchronisations-Event ───────────────────────────────────────────────
-    data_ready_evt = threading.Event()
-    stop_event     = threading.Event()
-
-    def _on_rising_edge(channel: int) -> None:
-        """GPIO-Interrupt-Callback (läuft im RPi.GPIO internen Thread)."""
-        data_ready_evt.set()
-
-    GPIO.add_event_detect(
-        DATA_READY_PIN,
-        GPIO.RISING,
-        callback=_on_rising_edge,
-        bouncetime=3         # 3 ms Entprellung
-    )
-
-    # ── Netzwerk-Monitor-Thread starten ──────────────────────────────────────
+    # ── Netzwerk-Monitor ──────────────────────────────────────────────────────
+    stop_event = threading.Event()
     net_thread = threading.Thread(
         target=_network_monitor_thread,
-        args=(leds, RPI5_IP, stop_event),
+        args=(leds, stop_event),
         daemon=True,
         name="NetworkMonitor",
     )
     net_thread.start()
 
-    # ── Startup-Sequenz (alle LEDs blinken = bereit) ──────────────────────────
+    # ── Startup-Sequenz ───────────────────────────────────────────────────────
     leds.startup_sequence()
 
-    # ── Statistik-Variablen ──────────────────────────────────────────────────
+    # ── Statistik-Variablen ───────────────────────────────────────────────────
     pkt_sent     = 0
     bytes_sent   = 0
     err_count    = 0
+    sync_losses  = 0
     t_stat_start = time.monotonic()
 
-    log.info("Warte auf DATA_READY-Signal vom Teensy...")
+    # ── Erste Synchronisation ─────────────────────────────────────────────────
+    log.info("Suche Magic-Header (0xDEADBEEF) …")
+    if not _sync_to_magic(ser):
+        log.error("Kein Signal vom Teensy (Timeout 2 s). Kabel prüfen!")
+    else:
+        log.info("Synchronisiert — Empfang läuft.")
 
+    # ══════════════════════════════════════════════════════════════════════════
+    #  Haupt-Empfangsschleife
+    # ══════════════════════════════════════════════════════════════════════════
     try:
         while True:
-            # Warte auf steigende Flanke (DATA_READY HIGH vom Teensy)
-            triggered = data_ready_evt.wait(timeout=2.0)
+            # ── Schritt 1: Magic-Header lesen (4 Bytes) ───────────────────────
+            # Im Normalzustand stehen die ersten 4 Bytes jedes Pakets = Magic.
+            # Nur nach Fehlern wird _sync_to_magic() zur Neu-Synchronisation
+            # gerufen.
+            header = _read_exactly(ser, 4)
 
-            if not triggered:
-                # Timeout: kein Signal — Teensy ggf. nicht bereit
-                log.debug("Warte weiter auf Teensy-Signal...")
-                continue
-
-            data_ready_evt.clear()
-
-            # ── SPI-Transfer ─────────────────────────────────────────────────
-            # RPi Zero (Master) clocked 4008 Dummy-Bytes hinaus;
-            # Teensy (Slave) schiebt zeitgleich die Nutzdaten in MISO.
-            try:
-                rx  = spi.xfer2(_DUMMY_TX, SPI_SPEED_HZ)
-                raw = bytes(rx)
-            except Exception as exc:
-                log.warning(f"SPI-Transfer-Fehler: {exc}")
+            if header is None:
+                log.warning("UART Timeout — kein Signal vom Teensy.")
                 err_count += 1
+                _sync_to_magic(ser)
+                sync_losses += 1
                 continue
 
-            # ── UDP-Weiterleitung ─────────────────────────────────────────────
-            # Keine Verarbeitung — rohe Bytes direkt an RPi 5 schicken
+            # Magic validieren
+            if header != MAGIC_BYTES:
+                # Synchronisation verloren (z.B. nach UART-Fehler oder Reset)
+                log.debug(f"Magic erwartet, bekam {header.hex()} — re-sync...")
+                # Header-Bytes dem Suchpuffer hinzufügen und weitersuchen
+                ser.reset_input_buffer()  # Puffer leeren um schnell neu zu syncen
+                if not _sync_to_magic(ser):
+                    err_count += 1
+                    continue
+                sync_losses += 1
+                # Hier: _sync_to_magic() hat die 4 Magic-Bytes konsumiert
+                # → Timestamp + Daten lesen (PACKET_BYTES - 4 Bytes)
+                payload = _read_exactly(ser, PACKET_BYTES - 4)
+                if payload is None:
+                    err_count += 1
+                    continue
+                raw = MAGIC_BYTES + payload
+            else:
+                # ── Schritt 2: Rest des Pakets lesen (1604 Bytes) ─────────────
+                payload = _read_exactly(ser, PACKET_BYTES - 4)
+                if payload is None:
+                    log.warning("Paket unvollständig (Timeout nach Magic).")
+                    err_count += 1
+                    _sync_to_magic(ser)
+                    sync_losses += 1
+                    continue
+                raw = header + payload
+
+            # ── Schritt 3: UDP-Weiterleitung ──────────────────────────────────
+            # Keine Verarbeitung — rohe Bytes direkt an RPi 5 schicken.
             try:
                 sent = sock.sendto(raw, (RPI5_IP, UDP_PORT))
                 pkt_sent   += 1
                 bytes_sent += sent
-
-                # Daten-LED blinken (throttled ~2 Hz, kein Flackern bei 100 Hz)
                 leds.blink_data()
-
             except OSError as exc:
                 log.warning(f"UDP-Sendefehler: {exc}")
                 err_count += 1
@@ -222,20 +298,19 @@ def main() -> None:
                 pps  = pkt_sent   / elapsed
                 kbps = bytes_sent / elapsed / 1024
                 log.info(
-                    f"Throughput: {pps:.1f} Pkt/s | "
-                    f"{kbps:.1f} KB/s | "
-                    f"Fehler: {err_count}"
+                    f"Throughput: {pps:.1f} Pkt/s | {kbps:.1f} KB/s | "
+                    f"Sync-Verluste: {sync_losses} | Fehler: {err_count}"
                 )
-                pkt_sent = bytes_sent = err_count = 0
+                pkt_sent = bytes_sent = err_count = sync_losses = 0
                 t_stat_start = time.monotonic()
 
     except KeyboardInterrupt:
         log.info("Gestoppt (KeyboardInterrupt).")
     finally:
         stop_event.set()
-        leds.stop()          # LEDs aus (NICHT cleanup() — GPIO wird unten freigegeben)
-        GPIO.cleanup()       # Gibt alle GPIO-Pins frei (inkl. LED-Pins)
-        spi.close()
+        leds.stop()
+        GPIO.cleanup()
+        ser.close()
         sock.close()
         log.info("Alle Ressourcen freigegeben.")
 

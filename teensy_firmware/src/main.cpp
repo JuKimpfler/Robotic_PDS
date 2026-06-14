@@ -1,172 +1,179 @@
 /*
  * ============================================================
- *  Power Debug System — Teensy 4.0 Firmware
+ *  Power Debug System — Teensy 4.0 Firmware  (UART Version)
  * ============================================================
  *
- *  Rolle   : SPI Slave (RPi Zero W ist Master)
+ *  Rolle   : UART Sender (RPi Zero W empfängt)
  *  Funktion: Erfasst Telemetriedaten, packt sie als Binärpaket
- *            und signalisiert dem RPi Zero W via DATA_READY,
- *            dass ein neues Paket abholbereit ist.
+ *            und sendet es mit 100 Hz per UART an den RPi Zero W.
+ *            Kein SPI, kein DATA_READY-Signal nötig.
  *
  *  Paket-Format (Little-Endian):
- *    [0..3]   Header   : uint32_t = 0xDEADBEEF (Magic)
- *    [4..7]   Timestamp: uint32_t = micros()
- *    [8..4007] Data    : float32_t[1000]
- *    Gesamt  : 4008 Bytes
+ *    [0..3]    Header   : uint32_t = 0xDEADBEEF  (Magic)
+ *    [4..7]    Timestamp: uint32_t = micros()
+ *    [8..1607] Data     : float32_t[400]
+ *    Gesamt   : 1608 Bytes
  *
- *  Dummy-Füllung: Nicht verwendete Kanäle werden mit 9898.0f
- *                 gefüllt und vom RPi 5 herausgefiltert.
+ *  Dummy-Füllung: Inaktive Kanäle = 9898.0f
+ *                 (wird vom RPi 5 herausgefiltert)
  *
- *  Pinbelegung SPI0:
- *    SCK  → Pin 13   (Takt, vom RPi Zero getrieben)
- *    MOSI → Pin 11   (RPi → Teensy, für zukünftige Befehle)
- *    MISO → Pin 12   (Teensy → RPi, Nutzdaten)
- *    CS   → Pin 10   (Chip-Select, vom RPi Zero getrieben)
- *    DATA_READY → Pin 9 (Ausgang, HIGH = neues Paket bereit)
+ *  Pinbelegung UART (Serial1):
+ *    TX → Pin 1   (Teensy sendet → RPi GPIO15 / Pin 10)
+ *    RX → Pin 0   (Teensy empfängt ← RPi GPIO14 / Pin 8, optional)
+ *    GND → GND
  *
- *  Benötigte Bibliothek:
- *    SPISlave_T4 by tonton81
- *    https://github.com/tonton81/SPISlave_T4
+ *  Verdrahtung:
+ *    Teensy Pin 1 (TX1) ──→ RPi Zero Pin 10 (GPIO15, UART RX)
+ *    Teensy Pin 0 (RX1) ←── RPi Zero Pin  8 (GPIO14, UART TX)  ← optional
+ *    GND               ───  RPi Zero Pin  6 (GND)
+ *
+ *  Baudraten-Wahl:
+ *    4 000 000 Baud  →  ~4 ms Übertragungszeit / Paket
+ *    Paket-Intervall:   10 ms  →  ~40 % UART-Auslastung
+ *
+ *  Debug-Array:
+ *    Werte per DBG(Kanal, Wert) eintragen — siehe debug_channels.h
+ *
+ *  Keine externen Bibliotheken nötig (kein SPISlave_T4 mehr).
  * ============================================================
  */
 
 #include <Arduino.h>
-#include "SPISlave_T4.h"
 
 // ── Compile-Time Konfiguration ───────────────────────────────────────────────
 #ifndef ACTIVE_CHANNELS
-  #define ACTIVE_CHANNELS 500
+  #define ACTIVE_CHANNELS 400
 #endif
 
+static constexpr uint32_t UART_BAUD        = 4'000'000UL; // 4 Mbps
 static constexpr uint32_t HEADER_MAGIC     = 0xDEADBEEFUL;
-static constexpr int      MAX_FLOATS       = 1000;
-static constexpr int      PACKET_BYTES     = 8 + MAX_FLOATS * 4;   // 4008
-static constexpr uint32_t SAMPLE_PERIOD_US = 10000UL;              // 10 ms = 100 Hz
-static constexpr int      DATA_READY_PIN   = 9;
+static constexpr int      MAX_FLOATS       = 400;
+static constexpr int      PACKET_BYTES     = 8 + MAX_FLOATS * 4;  // 1608
+static constexpr uint32_t SAMPLE_PERIOD_US = 10'000UL;            // 100 Hz
 
-// ── SPI-Slave Instanz (SPI0, 8-Bit-Wörter) ──────────────────────────────────
-SPISlave_T4<&SPI, SPI_8_BITS> spiSlave;
+// ── Serial1 TX-Buffer ─────────────────────────────────────────────────────────
+//    Default: 64 Bytes — zu klein für 1608 Bytes.
+//    addMemoryForWrite() erweitert den internen TX-Ringbuffer.
+//    Mit 4096 Bytes: ~2,5 Pakete Puffer → Serial1.write() blockiert nie.
+static uint8_t _serial1_tx_buf[4096];
 
-// ── Ping-Pong-Puffer ─────────────────────────────────────────────────────────
-//    ptr_active : ISR liest hieraus (wird per SPI gesendet)
-//    ptr_filling: Loop schreibt hierein (nie gleichzeitig mit ISR)
-DMAMEM static uint8_t buf_A[PACKET_BYTES];
-DMAMEM static uint8_t buf_B[PACKET_BYTES];
+// ── Paket-Buffer ─────────────────────────────────────────────────────────────
+//    buildPacket() schreibt hierhin.
+//    Serial1.write() kopiert sofort in den TX-Buffer (non-blocking).
+//    Kein Ping-Pong nötig: TX-Buffer ist eigenständig.
+static uint8_t _pkt_buf[PACKET_BYTES];
 
-static uint8_t* volatile ptr_active  = buf_A;
-static uint8_t* volatile ptr_filling = buf_B;
+// ── Debug-Datenarray & Makro ──────────────────────────────────────────────────
+//    Alle Kanäle mit Dummy-Wert vorbelegen.
+//    DBG(Kanal, Wert) — kostet nur eine float-Zuweisung (~1–2 ns).
+static float debugData[MAX_FLOATS];
+#define DBG(channel, value)  debugData[(channel)] = static_cast<float>(value)
 
-static volatile uint32_t send_index   = 0;
-static volatile bool     transfer_done = true;
+// ── Kanal-Definitionen ────────────────────────────────────────────────────────
+//    Empfehlung: in eigene Datei debug_channels.h auslagern (→ USER.md Abschn. 4)
+//    Beispiele:
+// #define CH_MOTOR_L_SPEED    0
+// #define CH_MOTOR_R_SPEED    1
+// #define CH_COMPASS_HEADING 10
+// #define CH_BALL_ANGLE      20
+// #define CH_STATE           80
+// #define CH_LOOP_TIME       81
 
-// ── Paket befüllen ───────────────────────────────────────────────────────────
-static float phase = 0.0f;
 
-void buildPacket(uint8_t* dst) {
-    // Header
+// ══════════════════════════════════════════════════════════════════════════════
+//  Paket zusammenbauen
+// ══════════════════════════════════════════════════════════════════════════════
+
+void buildPacket() {
+    // ── Header: Magic + Timestamp ─────────────────────────────────────────────
     const uint32_t magic = HEADER_MAGIC;
     const uint32_t ts    = micros();
-    memcpy(dst,     &magic, 4);
-    memcpy(dst + 4, &ts,    4);
+    memcpy(_pkt_buf,     &magic, 4);
+    memcpy(_pkt_buf + 4, &ts,    4);
 
-    // Nutzdaten
-    float* data = reinterpret_cast<float*>(dst + 8);
-
-    for (int i = 0; i < MAX_FLOATS; i++) {
-        if (i < ACTIVE_CHANNELS) {
-            // ── HIER echte Sensorwerte einsetzen ──────────────────────────────
-            // Beispiel: data[i] = sensors.read(i);
-            //
-            // Testmuster: Sinuswelle pro Kanal + leichtes Rauschen
-            data[i] = sinf(phase + i * 0.025f) * 3.3f
-                    + cosf(phase * 0.5f + i * 0.01f) * 0.1f;
-        } else {
-            data[i] = 9898.0f;   // Dummy-Füllung
-        }
-    }
-
-    phase += 0.05f;
-    if (phase > TWO_PI) phase -= TWO_PI;
+    // ── Nutzdaten: debugData[] direkt kopieren ────────────────────────────────
+    memcpy(_pkt_buf + 8, debugData, MAX_FLOATS * sizeof(float));
 }
 
-// ── SPI ISR: für jedes Byte, das der Master clocked ─────────────────────────
-// FASTRUN: Funktion wird in RAM geladen → minimale Latenz
-void FASTRUN onSPIData() {
-    while (spiSlave.available()) {
-        (void)spiSlave.popr();    // RX-Byte lesen (Dummy vom Master)
 
-        // TX-Byte aus dem aktiven Puffer senden
-        const uint8_t tx_byte = (send_index < (uint32_t)PACKET_BYTES)
-                                 ? ptr_active[send_index++]
-                                 : 0x00;
-        spiSlave.pushr(tx_byte);
-    }
+// ══════════════════════════════════════════════════════════════════════════════
+//  Setup
+// ══════════════════════════════════════════════════════════════════════════════
 
-    // Transfer abgeschlossen?
-    if (send_index >= (uint32_t)PACKET_BYTES) {
-        send_index    = 0;
-        transfer_done = true;
-        digitalWriteFast(DATA_READY_PIN, LOW);
-    }
-}
-
-// ── Setup ────────────────────────────────────────────────────────────────────
 void setup() {
+    // USB-Seriell (Debugging/Statistik auf PC)
     Serial.begin(115200);
-    delay(400);
+    delay(200);
 
-    pinMode(DATA_READY_PIN, OUTPUT);
-    digitalWriteFast(DATA_READY_PIN, LOW);
+    // Debug-Array initialisieren (alle Kanäle = inaktiv / Dummy)
+    for (int i = 0; i < MAX_FLOATS; i++) debugData[i] = 9898.0f;
 
-    // Ersten Puffer vorausfüllen
-    buildPacket(ptr_active);
+    // Serial1 TX-Buffer erweitern und UART starten
+    Serial1.addMemoryForWrite(_serial1_tx_buf, sizeof(_serial1_tx_buf));
+    Serial1.begin(UART_BAUD, SERIAL_8N1);
 
-    spiSlave.begin();
-    spiSlave.onReceive(onSPIData);
-
-    Serial.printf("[Teensy] Bereit | Paket: %d Bytes | Kanäle: %d | %.0f Hz\n",
-                  PACKET_BYTES, ACTIVE_CHANNELS, 1e6f / SAMPLE_PERIOD_US);
+    Serial.printf(
+        "[Teensy] UART bereit\n"
+        "  Baud   : %lu (%.1f Mbps)\n"
+        "  Paket  : %d Bytes  (%d Floats + 8 Header)\n"
+        "  Rate   : %.0f Hz\n"
+        "  TX-Pin : 1  →  RPi GPIO15 (Pin 10)\n"
+        "  RX-Pin : 0  ←  RPi GPIO14 (Pin 8)  [optional]\n",
+        UART_BAUD,
+        UART_BAUD / 1e6f,
+        PACKET_BYTES,
+        MAX_FLOATS,
+        1e6f / SAMPLE_PERIOD_US
+    );
 }
 
-// ── Hauptschleife ────────────────────────────────────────────────────────────
-static uint32_t pkt_count = 0;
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  Hauptschleife
+// ══════════════════════════════════════════════════════════════════════════════
 
 void loop() {
-    static uint32_t last_us      = 0;
-    static uint32_t last_stat_ms = 0;
+    static uint32_t last_sample_us = 0;
+    static uint32_t last_stat_ms   = 0;
+    static uint32_t pkt_count      = 0;
+    static uint32_t loop_start_us  = 0;
 
+    loop_start_us = micros();
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  HIER: eigenen Roboter-Code und DBG()-Aufrufe einsetzen
+    //
+    //  Beispiel:
+    //    compass.update();
+    //    DBG(CH_COMPASS_HEADING, compass.getHeading());
+    //    DBG(CH_BALL_ANGLE,      ball.getAngle());
+    //    DBG(CH_MOTOR_L_SPEED,   motors.getLeftSpeed());
+    //    DBG(CH_STATE,           (int)robotState);
+    //    DBG(CH_LOOP_TIME,       micros() - loop_start_us);
+    // ══════════════════════════════════════════════════════════════════════════
+
+    // ── Alle 10 ms: Paket senden (100 Hz) ────────────────────────────────────
     const uint32_t now = micros();
+    if (now - last_sample_us >= SAMPLE_PERIOD_US) {
+        last_sample_us = now;
 
-    // ── Alle 10 ms: neues Paket bauen und bereitstellen ─────────────────────
-    if (now - last_us >= SAMPLE_PERIOD_US) {
-        last_us = now;
+        buildPacket();
 
-        // Neues Paket in den Fill-Puffer schreiben (ISR greift hier NICHT zu)
-        buildPacket(ptr_filling);
-
-        // Atomischen Puffertausch nur wenn vorheriger Transfer abgeschlossen
-        if (transfer_done) {
-            noInterrupts();                 // Minimaler kritischer Abschnitt
-            uint8_t* tmp = ptr_active;      // Pointer-Swap (keine Datenkopie!)
-            ptr_active   = ptr_filling;
-            ptr_filling  = tmp;
-            send_index    = 0;
-            transfer_done = false;
-            interrupts();
-
-            // DATA_READY HIGH → RPi Zero initiiert SPI-Transfer
-            digitalWriteFast(DATA_READY_PIN, HIGH);
-            pkt_count++;
-        }
-        // Falls Transfer noch läuft: Paket überspringen (sollte bei 10ms/3.2ms nie passieren)
+        // Serial1.write() kopiert 1608 Bytes in den TX-Buffer und kehrt
+        // sofort zurück. Der UART-DMA überträgt asynchron (~4 ms bei 4 Mbps).
+        // Bei 10 ms Paket-Intervall ist der Buffer stets leer wenn wir schreiben.
+        Serial1.write(_pkt_buf, PACKET_BYTES);
+        pkt_count++;
     }
 
-    // ── Statistik alle 5 Sekunden auf Serial ausgeben ───────────────────────
+    // ── Statistik alle 5 Sekunden auf USB-Serial ausgeben ────────────────────
     const uint32_t now_ms = millis();
-    if (now_ms - last_stat_ms >= 5000) {
+    if (now_ms - last_stat_ms >= 5000UL) {
         last_stat_ms = now_ms;
-        Serial.printf("[Teensy] %lu Pakete/5s | %.1f Hz\n",
-                      pkt_count, pkt_count / 5.0f);
+        const float hz    = pkt_count / 5.0f;
+        const float kbps  = (float)pkt_count * PACKET_BYTES / 5.0f / 1024.0f;
+        Serial.printf("[Teensy] %.1f Hz | %.1f KB/s | TX-frei: %d B\n",
+                      hz, kbps, Serial1.availableForWrite());
         pkt_count = 0;
     }
 }

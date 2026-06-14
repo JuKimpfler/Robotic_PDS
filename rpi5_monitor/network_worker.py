@@ -16,7 +16,7 @@ import multiprocessing as mp
 
 import numpy as np
 
-from rpi5_monitor.config import (
+from config import (
     UDP_PORT_NODE1, UDP_PORT_NODE2,
     TCP_FLASH_PORT_NODE1, TCP_FLASH_PORT_NODE2,
     NODE1_IP, NODE2_IP,

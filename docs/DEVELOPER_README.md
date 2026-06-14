@@ -52,11 +52,11 @@
                │ 192.168.42.11                 │ 192.168.42.12
 ┌──────────────┴───────────┐   ┌───────────────┴──────────────────────┐
 │  RPi Zero W — Node 1     │   │  RPi Zero W — Node 2                 │
-│  spi_receiver.py         │   │  spi_receiver.py                     │
+│  uart_receiver.py        │   │  uart_receiver.py                    │
 │  flash_daemon.py         │   │  flash_daemon.py                     │
 │  status_leds.py          │   │  status_leds.py                      │
 └──────────────┬───────────┘   └───────────────┬──────────────────────┘
-               │ SPI (10 MHz) + DATA_READY       │ SPI (10 MHz) + DATA_READY
+               │ UART (4 Mbps / Serial1)         │ UART (4 Mbps / Serial1)
 ┌──────────────┴───────────┐   ┌───────────────┴──────────────────────┐
 │     Teensy 4.0 (1)       │   │     Teensy 4.0 (2)                   │
 │     main.cpp             │   │     main.cpp                         │
@@ -80,11 +80,11 @@ Das System verwendet bewusst **zwei Parallelisierungsstrategien**:
 ```
 Teensy (C++)                RPi Zero (Python)           RPi 5 (Python)
 ────────────────            ─────────────────           ─────────────────────────────
-buildPacket()               GPIO Interrupt              GUI-Timer (33 ms)
-  │                           │ DATA_READY HIGH           │
-  │ pack: magic+ts+floats[1000]  │                        │  poll_data()
+buildPacket()               UART DMA (async)           GUI-Timer (33 ms)
+  │                           │ _read_exactly(1608 B)     │
+  │ pack: magic+ts+floats[400]   │                        │  poll_data()
   ▼                           ▼                           │    queue.get_nowait() × N
-DATA_READY = HIGH          spi.xfer2(dummy, 10MHz)       │    → batch[] sammeln
+Serial1.write(1608 B)      bytes via /dev/ttyAMA0        │    → batch[] sammeln
                             → raw bytes (4008 B)          │
                            sock.sendto(raw, RPi5:5001)   │  latest = batch[-1]
                             → UDP Datagramm              │    tab_table.update_data(latest)
@@ -120,7 +120,7 @@ Offset  Größe  Typ       Beschreibung
 ──────────────────────────────────────────────────────────
 0       4 B    uint32_t  Magic: 0xDEADBEEF (Little-Endian)
 4       4 B    uint32_t  Timestamp: micros() des Teensy
-8       4000 B float32[] Datenwerte [1000 × 4 Bytes]
+8       1600 B float32[] Datenwerte [400 × 4 Bytes]
 ──────────────────────────────────────────────────────────
 Gesamt: 4008 Bytes
 ```
@@ -141,7 +141,7 @@ valid   = payload[payload != 9898.0]    # Vektorisierte Filterung
 struct Packet {
     uint32_t magic;          // 0xDEADBEEF
     uint32_t timestamp_us;   // micros()
-    float    data[1000];     // Telemetriedaten
+    float    data[400];      // Telemetriedaten (max. 400 Kanäle)
 };
 ```
 
@@ -186,7 +186,7 @@ Empfänger (RPi Zero) antwortet:
 
 ```
 ~/power_debug/
-├── spi_receiver.py   SPI-Master → UDP-Forwarder + LED-Integration
+├── uart_receiver.py  UART-Receiver → UDP-Forwarder + LED-Integration
 ├── flash_daemon.py   TCP-Flash-Server + LED-Integration
 └── status_leds.py    GPIO LED-Controller (SharedLib für beide Dienste)
 ```
@@ -195,7 +195,7 @@ Empfänger (RPi Zero) antwortet:
 
 ```
 teensy_firmware/src/
-└── main.cpp   SPI-Slave + Ping-Pong-Puffer + DATA_READY-Signaling
+└── main.cpp   UART-Sender (Serial1) + TX-Buffer + 100 Hz Paketrate
 ```
 
 ---
@@ -387,15 +387,24 @@ TEENSY_CLI = "avrdude"     # für Arduino-Boards
 ```
 3. `teensy_loader_cli`-Argumente in `flash_daemon.py → _handle_client()` anpassen.
 
-### Höhere SPI-Geschwindigkeit
+### Höhere Baudrate
+
+Der Teensy 4.0 und der RPi Zero W PL011-UART unterstützen bis zu 8 Mbps.
+Beide Seiten müssen exakt denselben Wert haben:
 
 ```python
-# spi_receiver.py
-SPI_SPEED_HZ = 20_000_000   # 20 MHz (RPi Zero W unterstützt max. ~32 MHz)
-
-# main.cpp (Teensy)
-spiSlave.begin(SPISettings(20000000, MSBFIRST, SPI_MODE0));
+# uart_receiver.py — RPi Zero W
+UART_BAUD = 8_000_000   # 8 Mbps (experimentell — Kabel < 20 cm empfohlen)
 ```
+
+```cpp
+// main.cpp (Teensy)
+static constexpr uint32_t UART_BAUD = 8'000'000UL;  // muss mit RPi übereinstimmen
+// Serial1.begin() in setup() verwendet UART_BAUD automatisch
+```
+
+> ⚠️ Bei > 4 Mbps: kurze, direkte Kabel verwenden. Sync-Verluste in den Logs
+> (`journalctl -u uart-receiver`) signalisieren zu hohe Baudrate.
 
 > **Achtung:** Leitungslängen über ~10 cm können bei höheren Frequenzen zu Übertragungsfehlern führen. Ferritperlen und 22-Ω-Reihenwiderstände können helfen.
 
@@ -425,7 +434,7 @@ def test_packet_filtering():
     q = mp.Queue()
     ev = mp.Event()
     magic = 0xDEADBEEF
-    data = np.zeros(1000, dtype=np.float32)
+    data = np.zeros(400, dtype=np.float32)
     data[500:] = 9898.0   # Hälfte Dummy
 
     raw = struct.pack("<II", magic, 1234) + data.tobytes()
@@ -444,7 +453,7 @@ def test_packet_filtering():
 sudo tcpdump -i wlan0 udp port 5001 -q 2>/dev/null | \
     awk '{count++} NR%100==0 {print count/100 " pkt/s"; count=0}'
 
-# Latenz messen (SPI → UDP → RPi5)
+# Latenz messen (UART → UDP → RPi5)
 # Timestamp im Paket nutzen: packet[4:8] = Teensy-micros()
 # Differenz zu RPi-5-Empfangszeit = Gesamtlatenz
 ```
@@ -508,10 +517,10 @@ power-debug-monitor &         # Neu starten
 
 ```bash
 # Neue Dateien auf den Node kopieren
-scp spi_receiver.py flash_daemon.py status_leds.py pi@192.168.42.11:~/power_debug/
+scp uart_receiver.py flash_daemon.py status_leds.py pi@192.168.42.11:~/power_debug/
 
 # Dienste neu starten
-ssh pi@192.168.42.11 "sudo systemctl restart spi-receiver flash-daemon"
+ssh pi@192.168.42.11 "sudo systemctl restart uart-receiver flash-daemon"
 ```
 
 ### Über-die-Luft (OTA) Update via RPi 5
@@ -551,8 +560,8 @@ grep -rn "TODO\|Phase 2\|Zukunft\|HIER\|FIXME" /opt/power_debug_monitor/
 ## 13. Roadmap
 
 ### Phase 1 — Abgeschlossen ✅
-- [x] Teensy SPI-Slave mit Ping-Pong-Puffer
-- [x] RPi Zero SPI→UDP Forwarder mit GPIO-Interrupt
+- [x] Teensy UART-Sender (Serial1, 4 Mbps, non-blocking TX)
+- [x] RPi Zero UART→UDP Forwarder mit Magic-Header-Synchronisation
 - [x] RPi 5 UDP-Empfänger (Multiprocessing, NumPy-Filterung)
 - [x] PyQt6 GUI mit Live-Tabelle und Plotter
 - [x] Freeze-Modus für Plotter

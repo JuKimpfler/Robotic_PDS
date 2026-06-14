@@ -16,7 +16,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtGui import QFont, QColor
 
-from rpi5_monitor.config import MAX_FLOATS, VARIABLE_NAMES
+from config import MAX_FLOATS, VARIABLE_NAMES
 
 
 # ══════════════════════════════════════════════════════════════════════════════

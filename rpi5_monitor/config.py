@@ -5,11 +5,23 @@ Alle IPs, Ports, Paket-Parameter und GUI-Konstanten
 an einem einzigen Ort.
 """
 
-# ── Netzwerk ──────────────────────────────────────────────────────────────────
-RPI5_IP  = "192.168.42.1"
-NODE1_IP = "192.168.42.11"
-NODE2_IP = "192.168.42.12"
+import platform
 
+# ── Automatische OS-Erkennung für Testbetrieb ──────────────────────────────────
+IS_WINDOWS = platform.system() == "Windows"
+
+if IS_WINDOWS:
+    # Lokaler Testmodus auf dem PC
+    RPI5_IP  = "127.0.0.1"
+    NODE1_IP = "127.0.0.1"
+    NODE2_IP = "127.0.0.1"
+else:
+    # Realer Betrieb auf dem Raspberry Pi 5
+    RPI5_IP  = "127.0.0.1" # oder "192.168.42.1"
+    NODE1_IP = "192.168.42.11"
+    NODE2_IP = "192.168.42.12"
+
+# Die Ports können gleich bleiben
 UDP_PORT_NODE1      = 5001
 UDP_PORT_NODE2      = 5002
 TCP_FLASH_PORT_NODE1 = 6001
