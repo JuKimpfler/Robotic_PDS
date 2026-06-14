@@ -109,8 +109,8 @@ void setup() {
     for (int i = 0; i < MAX_FLOATS; i++) debugData[i] = 9898.0f;
 
     // Serial1 TX-Buffer erweitern und UART starten
-    Serial1.addMemoryForWrite(_serial1_tx_buf, sizeof(_serial1_tx_buf));
-    Serial1.begin(UART_BAUD, SERIAL_8N1);
+    Serial3.addMemoryForWrite(_serial1_tx_buf, sizeof(_serial1_tx_buf));
+    Serial3.begin(UART_BAUD, SERIAL_8N1);
 
     Serial.printf(
         "[Teensy] UART bereit\n"
@@ -162,7 +162,7 @@ void loop() {
         // Serial1.write() kopiert 1608 Bytes in den TX-Buffer und kehrt
         // sofort zurück. Der UART-DMA überträgt asynchron (~4 ms bei 4 Mbps).
         // Bei 10 ms Paket-Intervall ist der Buffer stets leer wenn wir schreiben.
-        Serial1.write(_pkt_buf, PACKET_BYTES);
+        Serial3.write(_pkt_buf, PACKET_BYTES);
         pkt_count++;
     }
 
@@ -173,7 +173,7 @@ void loop() {
         const float hz    = pkt_count / 5.0f;
         const float kbps  = (float)pkt_count * PACKET_BYTES / 5.0f / 1024.0f;
         Serial.printf("[Teensy] %.1f Hz | %.1f KB/s | TX-frei: %d B\n",
-                      hz, kbps, Serial1.availableForWrite());
+                      hz, kbps, Serial3.availableForWrite());
         pkt_count = 0;
     }
 }
