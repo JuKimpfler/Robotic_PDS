@@ -55,7 +55,7 @@ RPI5_IP      = os.environ.get("RPI5_IP", "192.168.42.1")
 UDP_PORT     = 5000 + NODE_ID          # 5001 oder 5002
 
 UART_PORT    = "/dev/ttyAMA0"          # PL011 Full-UART (nach dtoverlay=disable-bt)
-UART_BAUD    = 4_000_000               # 4 Mbps — muss mit Teensy übereinstimmen
+UART_BAUD    = 2_000_000               # 2 Mbps — stabiler für Steckkabel als 4 Mbps
 
 MAX_FLOATS   = 400                     # Muss mit Teensy main.cpp übereinstimmen!
 HEADER_SIZE  = 8                       # uint32 magic + uint32 timestamp
@@ -151,14 +151,14 @@ def _network_monitor_thread(
     stop_event: threading.Event,
 ) -> None:
     """Prüft WLAN-Verbindung alle NET_CHECK_INTERVAL Sekunden."""
-    node_ip = f"192.168.42.1{NODE_ID}"
 
     while not stop_event.is_set():
-        connected = _check_wlan_connected(node_ip)
+        # Leerer String ("") bedeutet: Prüfe nur, ob überhaupt eine IP zugewiesen wurde (DHCP erfolgreich)
+        connected = _check_wlan_connected("")
         leds.set_network(connected)
 
         if not connected:
-            log.warning(f"WLAN nicht verbunden (erwartet IP {node_ip})")
+            log.warning("WLAN nicht verbunden (keine IP-Adresse auf wlan0 erhalten)")
 
         for _ in range(int(NET_CHECK_INTERVAL)):
             if stop_event.is_set():
@@ -207,6 +207,7 @@ def main() -> None:
     # ── UDP Socket ────────────────────────────────────────────────────────────
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 512 * 1024)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
 
     # ── Netzwerk-Monitor ──────────────────────────────────────────────────────
     stop_event = threading.Event()
@@ -238,53 +239,67 @@ def main() -> None:
     # ══════════════════════════════════════════════════════════════════════════
     #  Haupt-Empfangsschleife
     # ══════════════════════════════════════════════════════════════════════════
-    try:
-        while True:
-            # ── Schritt 1: Magic-Header lesen (4 Bytes) ───────────────────────
-            # Im Normalzustand stehen die ersten 4 Bytes jedes Pakets = Magic.
-            # Nur nach Fehlern wird _sync_to_magic() zur Neu-Synchronisation
-            # gerufen.
-            header = _read_exactly(ser, 4)
+    # ── Queue für Entkopplung ─────────────────────────────────────────────────
+    import queue
+    # Maxsize 2: Wir wollen immer die FRISCHESTEN Daten.
+    # Wenn UDP (WLAN) zu langsam ist, verwerfen wir alte Pakete, statt sie
+    # zu verzögern (verhindert Delay-Stau und UART-Pufferüberläufe!)
+    packet_queue = queue.Queue(maxsize=2)
 
+    def _uart_reader_thread():
+        nonlocal err_count, sync_losses
+        log.info("UART-Reader-Thread gestartet.")
+        while True:
+            # Schritt 1: Header lesen
+            header = _read_exactly(ser, 4)
             if header is None:
-                log.warning("UART Timeout — kein Signal vom Teensy.")
                 err_count += 1
                 _sync_to_magic(ser)
                 sync_losses += 1
                 continue
 
-            # Magic validieren
             if header != MAGIC_BYTES:
-                # Synchronisation verloren (z.B. nach UART-Fehler oder Reset)
-                log.debug(f"Magic erwartet, bekam {header.hex()} — re-sync...")
-                # Header-Bytes dem Suchpuffer hinzufügen und weitersuchen
-                ser.reset_input_buffer()  # Puffer leeren um schnell neu zu syncen
+                ser.reset_input_buffer()
                 if not _sync_to_magic(ser):
                     err_count += 1
                     continue
                 sync_losses += 1
-                # Hier: _sync_to_magic() hat die 4 Magic-Bytes konsumiert
-                # → Timestamp + Daten lesen (PACKET_BYTES - 4 Bytes)
                 payload = _read_exactly(ser, PACKET_BYTES - 4)
                 if payload is None:
-                    err_count += 1
                     continue
                 raw = MAGIC_BYTES + payload
             else:
-                # ── Schritt 2: Rest des Pakets lesen (1604 Bytes) ─────────────
                 payload = _read_exactly(ser, PACKET_BYTES - 4)
                 if payload is None:
-                    log.warning("Paket unvollständig (Timeout nach Magic).")
                     err_count += 1
                     _sync_to_magic(ser)
                     sync_losses += 1
                     continue
                 raw = header + payload
 
-            # ── Schritt 3: UDP-Weiterleitung ──────────────────────────────────
-            # Keine Verarbeitung — rohe Bytes direkt an RPi 5 schicken.
+            # Paket in die Queue schieben (ältestes verwerfen falls voll)
             try:
-                sent = sock.sendto(raw, (RPI5_IP, UDP_PORT))
+                packet_queue.put_nowait(raw)
+            except queue.Full:
+                try:
+                    packet_queue.get_nowait() # Altes Paket wegwerfen
+                    packet_queue.put_nowait(raw)
+                except (queue.Empty, queue.Full):
+                    pass
+
+    # Reader-Thread starten
+    threading.Thread(target=_uart_reader_thread, daemon=True, name="UART-Reader").start()
+
+    # ══════════════════════════════════════════════════════════════════════════
+    #  Haupt-Schleife (UDP Senden)
+    # ══════════════════════════════════════════════════════════════════════════
+    try:
+        while True:
+            # Warten bis ein frisches Paket da ist
+            raw = packet_queue.get()
+
+            try:
+                sent = sock.sendto(raw, ("255.255.255.255", UDP_PORT))
                 pkt_sent   += 1
                 bytes_sent += sent
                 leds.blink_data()

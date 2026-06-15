@@ -29,25 +29,20 @@
 #    • Projektordner liegt in ~/power_debug_system/ auf dem RPi Zero
 #
 # ==============================================================================
-
 set -euo pipefail   # Skript bricht bei Fehler ab, undefinierte Vars = Fehler
-
 # ── Farben für lesbare Terminal-Ausgabe ───────────────────────────────────────
 RED='\033[0;31m';  GREEN='\033[0;32m'; YELLOW='\033[1;33m'
 CYAN='\033[0;36m'; BOLD='\033[1m';     NC='\033[0m'
-
 info()    { echo -e "${CYAN}[INFO]${NC}  $*"; }
 ok()      { echo -e "${GREEN}[OK]${NC}    $*"; }
 warn()    { echo -e "${YELLOW}[WARN]${NC}  $*"; }
 error()   { echo -e "${RED}[ERROR]${NC} $*"; exit 1; }
 step()    { echo -e "\n${BOLD}══ $* ══${NC}"; }
-
 # ── Argument prüfen ───────────────────────────────────────────────────────────
 NODE_ID="${1:-}"
 if [[ "$NODE_ID" != "1" && "$NODE_ID" != "2" ]]; then
     error "Bitte Node-ID angeben: sudo bash setup_node.sh 1  ODER  sudo bash setup_node.sh 2"
 fi
-
 # ── Abgeleitete Werte ─────────────────────────────────────────────────────────
 NODE_IP="192.168.42.1${NODE_ID}"          # 192.168.42.11 oder .12
 RPI5_IP="192.168.42.1"                    # RPi 5 Hotspot-Gateway
@@ -57,10 +52,8 @@ INSTALL_DIR="/opt/power_debug_node"       # Installations-Ziel
 SERVICE_RECV="uart-receiver"              # Name des Empfangsdiensts
 SERVICE_FLASH="flash-daemon"              # Name des Flash-Diensts
 PROJECT_SRC="$(dirname "$(realpath "$0")")"  # Verzeichnis dieses Skripts
-
 # ── Root-Check ────────────────────────────────────────────────────────────────
 [[ $EUID -ne 0 ]] && error "Bitte mit sudo ausführen: sudo bash setup_node.sh $NODE_ID"
-
 echo -e "${BOLD}"
 echo "╔══════════════════════════════════════════════════════╗"
 echo "║   Power Debug System — Node ${NODE_ID} Setup (UART)          ║"
@@ -70,14 +63,11 @@ echo -e "${NC}"
 info "Projektverzeichnis: $PROJECT_SRC"
 info "Installationsziel:  $INSTALL_DIR"
 sleep 1
-
 # ══════════════════════════════════════════════════════════════════════════════
 step "1 | Systempakete aktualisieren & installieren"
 # ══════════════════════════════════════════════════════════════════════════════
-
 info "apt-get update..."
 apt-get update -qq
-
 info "Installiere Pakete..."
 apt-get install -y --no-install-recommends \
     python3 \
@@ -154,6 +144,12 @@ if ! grep -q "^enable_uart=1" "$CONFIG"; then
     ok "enable_uart=1 eingetragen"
 else
     ok "enable_uart=1 bereits vorhanden"
+fi
+
+# UART Base Clock auf 64 MHz erhöhen (Zwingend notwendig für 4 Mbps Baudrate!)
+if ! grep -q "^init_uart_clock=64000000" "$CONFIG"; then
+    echo "init_uart_clock=64000000" >> "$CONFIG"
+    ok "init_uart_clock=64000000 eingetragen (für 4 Mbps)"
 fi
 
 # GPIO14/15 als UART konfigurieren (alt0 = UART0/PL011)
@@ -240,10 +236,7 @@ nmcli connection add \
     -- \
     wifi-sec.key-mgmt wpa-psk \
     wifi-sec.psk "$AP_PASS" \
-    ipv4.method manual \
-    ipv4.addresses "${NODE_IP}/24" \
-    ipv4.gateway "$RPI5_IP" \
-    ipv4.dns "$RPI5_IP" \
+    ipv4.method auto \
     connection.autoconnect yes \
     connection.autoconnect-priority 100
 
@@ -265,13 +258,12 @@ step "5 | Projektdateien installieren nach $INSTALL_DIR"
 mkdir -p "$INSTALL_DIR"
 mkdir -p "$INSTALL_DIR/rpi_zero_node"
 
-# Python-Paket kopieren
-info "Kopiere Python-Paket..."
-if [[ -d "$PROJECT_SRC/rpi_zero_node" ]]; then
-    cp -r "$PROJECT_SRC/rpi_zero_node/"* "$INSTALL_DIR/rpi_zero_node/"
-else
-    warn "rpi_zero_node/ Verzeichnis nicht gefunden — bitte manuell kopieren"
-fi
+# Python-Paket (Module) kopieren
+info "Erstelle rpi_zero_node Modul..."
+cp "$PROJECT_SRC/status_leds.py" "$INSTALL_DIR/rpi_zero_node/" 2>/dev/null || true
+
+# __init__.py für Python-Paket
+touch "$INSTALL_DIR/rpi_zero_node/__init__.py"
 
 # UART-Receiver-Skript (ehemals spi_receiver.py — Name beibehalten für
 # Kompatibilität mit bestehenden Dienst-Referenzen im Projekt)
@@ -293,9 +285,6 @@ fi
 
 # Ausführbar machen
 chmod +x "$INSTALL_DIR/"*.py 2>/dev/null || true
-
-# __init__.py für Python-Paket
-touch "$INSTALL_DIR/rpi_zero_node/__init__.py"
 
 ok "Projektdateien installiert"
 

@@ -42,11 +42,11 @@
 
 // ── Compile-Time Konfiguration ───────────────────────────────────────────────
 #ifndef ACTIVE_CHANNELS
-  #define ACTIVE_CHANNELS 400
+  #define ACTIVE_CHANNELS 30
 #endif
 
-static constexpr uint32_t UART_BAUD        = 4'000'000UL; // 4 Mbps
-static constexpr uint32_t HEADER_MAGIC     = 0xDEADBEEFUL;
+static constexpr uint32_t UART_BAUD        = 2'000'000UL; // 4 Mbps
+static constexpr uint32_t HEADER_MAGIC     = 0xDEADBEEF;
 static constexpr int      MAX_FLOATS       = 400;
 static constexpr int      PACKET_BYTES     = 8 + MAX_FLOATS * 4;  // 1608
 static constexpr uint32_t SAMPLE_PERIOD_US = 10'000UL;            // 100 Hz
@@ -72,7 +72,7 @@ static float debugData[MAX_FLOATS];
 // ── Kanal-Definitionen ────────────────────────────────────────────────────────
 //    Empfehlung: in eigene Datei debug_channels.h auslagern (→ USER.md Abschn. 4)
 //    Beispiele:
-// #define CH_MOTOR_L_SPEED    0
+ #define CH_Start    0
 // #define CH_MOTOR_R_SPEED    1
 // #define CH_COMPASS_HEADING 10
 // #define CH_BALL_ANGLE      20
@@ -106,11 +106,13 @@ void setup() {
     delay(200);
 
     // Debug-Array initialisieren (alle Kanäle = inaktiv / Dummy)
-    for (int i = 0; i < MAX_FLOATS; i++) debugData[i] = 9898.0f;
+    for (int i = 0; i < MAX_FLOATS; i++) debugData[i] = 9897.0f;
 
     // Serial1 TX-Buffer erweitern und UART starten
     Serial3.addMemoryForWrite(_serial1_tx_buf, sizeof(_serial1_tx_buf));
     Serial3.begin(UART_BAUD, SERIAL_8N1);
+
+    pinMode(10,INPUT);
 
     Serial.printf(
         "[Teensy] UART bereit\n"
@@ -131,11 +133,10 @@ void setup() {
 // ══════════════════════════════════════════════════════════════════════════════
 //  Hauptschleife
 // ══════════════════════════════════════════════════════════════════════════════
-
+static uint32_t pkt_count      = 0;
 void loop() {
     static uint32_t last_sample_us = 0;
     static uint32_t last_stat_ms   = 0;
-    static uint32_t pkt_count      = 0;
     static uint32_t loop_start_us  = 0;
 
     loop_start_us = micros();
@@ -151,6 +152,13 @@ void loop() {
     //    DBG(CH_STATE,           (int)robotState);
     //    DBG(CH_LOOP_TIME,       micros() - loop_start_us);
     // ══════════════════════════════════════════════════════════════════════════
+
+    DBG(CH_Start, digitalRead(10));
+    DBG(2, 50);
+    DBG(3, 100);
+    DBG(4, 200);
+    DBG(5, 400);
+
 
     // ── Alle 10 ms: Paket senden (100 Hz) ────────────────────────────────────
     const uint32_t now = micros();
@@ -172,8 +180,8 @@ void loop() {
         last_stat_ms = now_ms;
         const float hz    = pkt_count / 5.0f;
         const float kbps  = (float)pkt_count * PACKET_BYTES / 5.0f / 1024.0f;
-        Serial.printf("[Teensy] %.1f Hz | %.1f KB/s | TX-frei: %d B\n",
-                      hz, kbps, Serial3.availableForWrite());
+        Serial.printf("[Teensy] %.1f Hz | %.1f KB/s | TX-frei: %d B | count: %d\n",
+                      hz, kbps, Serial3.availableForWrite(),pkt_count);
         pkt_count = 0;
     }
 }

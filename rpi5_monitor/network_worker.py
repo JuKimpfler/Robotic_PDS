@@ -76,7 +76,7 @@ def udp_receiver_process(
 
     while not stop_event.is_set():
         try:
-            raw, _ = sock.recvfrom(PACKET_SIZE_BYTES + 128)
+            raw, addr = sock.recvfrom(PACKET_SIZE_BYTES + 128)
         except socket.timeout:
             continue
         except OSError:
@@ -106,7 +106,8 @@ def udp_receiver_process(
 
         # ── In Queue legen ────────────────────────────────────────────────────
         try:
-            out_queue.put_nowait((node_id, timestamp, valid.copy()))
+            # Pass the sender IP (addr[0]) into the queue for dynamic routing
+            out_queue.put_nowait((node_id, timestamp, valid.copy(), addr[0]))
             pkt_ok += 1
         except Exception:
             pkt_drop += 1   # Queue voll → Paket verwerfen
@@ -123,6 +124,7 @@ def udp_receiver_process(
 
 def _send_hex_to_node(
     node_id: int,
+    target_ip: str,
     hex_data: bytes,
     result_cb=None,
 ) -> None:
@@ -132,10 +134,10 @@ def _send_hex_to_node(
 
     Args:
         node_id:   1 oder 2
+        target_ip: IP-Adresse des Nodes
         hex_data:  Binärinhalt der .hex-Datei
         result_cb: Optional. callable(node_id: int, success: bool, msg: str)
     """
-    target_ip   = NODE1_IP            if node_id == 1 else NODE2_IP
     target_port = TCP_FLASH_PORT_NODE1 if node_id == 1 else TCP_FLASH_PORT_NODE2
 
     log.info(f"[Flash] → Node {node_id} | {target_ip}:{target_port} | {len(hex_data):,} Bytes")
@@ -188,6 +190,8 @@ def flash_nodes(
     hex_path: str,
     node1: bool,
     node2: bool,
+    ip_node1: str,
+    ip_node2: str,
     result_cb=None,
 ) -> None:
     """
@@ -197,6 +201,8 @@ def flash_nodes(
         hex_path:  Pfad zur .hex-Datei auf dem RPi 5
         node1:     True → Node 1 flashen
         node2:     True → Node 2 flashen
+        ip_node1:  IP Adresse von Node 1
+        ip_node2:  IP Adresse von Node 2
         result_cb: Optional. Wird für jeden Node aufgerufen:
                    callable(node_id: int, success: bool, message: str)
     """
@@ -207,11 +213,11 @@ def flash_nodes(
     with open(hex_path, "rb") as f:
         hex_data = f.read()
 
-    for nid, enabled in ((1, node1), (2, node2)):
+    for nid, enabled, target_ip in ((1, node1, ip_node1), (2, node2, ip_node2)):
         if enabled:
             t = threading.Thread(
                 target=_send_hex_to_node,
-                args=(nid, hex_data, result_cb),
+                args=(nid, target_ip, hex_data, result_cb),
                 daemon=True,
                 name=f"Flash-Node{nid}",
             )

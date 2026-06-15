@@ -18,6 +18,8 @@ import sys
 import logging
 import argparse
 import multiprocessing as mp
+import platform
+from platform_utils import setup_hotspot
 
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtGui import QPalette, QColor
@@ -173,7 +175,6 @@ def main() -> None:
     app.setOrganizationName("RoboCup Debug System")
     ##app.setAttribute(Qt.ApplicationAttribute.AA_UseHighDpiPixmaps)
     _apply_dark_theme(app)
-
     # Netzwerk-Backend starten
     nm = NetworkManager()
     nm.start()

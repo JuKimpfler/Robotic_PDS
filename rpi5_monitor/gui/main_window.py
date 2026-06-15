@@ -195,8 +195,12 @@ class MainWindow(QMainWindow):
         batch: list[np.ndarray] = []
         try:
             while True:
-                _nid, _ts, values = q.get_nowait()
+                _nid, _ts, values, sender_ip = q.get_nowait()
                 batch.append(values)
+                # Dynamically track the IP address of each node
+                if not hasattr(self, '_node_ips'):
+                    self._node_ips = {1: "192.168.42.11", 2: "192.168.42.12"}
+                self._node_ips[_nid] = sender_ip
         except Exception:
             pass   # Queue leer
 
@@ -262,10 +266,16 @@ class MainWindow(QMainWindow):
         targets = [f"Node {i}" for i, f in ((1, n1), (2, n2)) if f]
         self._sb.showMessage(f"Flashe {' + '.join(targets)}…")
 
+        # Get dynamically tracked IPs, fallback to default config
+        if not hasattr(self, '_node_ips'):
+            self._node_ips = {1: "192.168.42.11", 2: "192.168.42.12"}
+
         flash_nodes(
             hex_path,
             node1=n1,
             node2=n2,
+            ip_node1=self._node_ips.get(1, "192.168.42.11"),
+            ip_node2=self._node_ips.get(2, "192.168.42.12"),
             result_cb=lambda nid, ok, msg: (
                 self._flash_bridge.result.emit(nid, ok, msg)
             ),

@@ -114,7 +114,8 @@ def _handle_client(conn: socket.socket, addr: tuple) -> None:
 
         # ── Schritt 4: Teensy flashen (serialisiert via Lock) ─────────────────
         with _flash_lock:
-            cmd = [TEENSY_CLI, f"--mcu={MCU}", "-w", "-v", FIRMWARE_PATH]
+            # -s = Soft-Reboot (automatisch in den Bootloader wechseln)
+            cmd = [TEENSY_CLI, f"--mcu={MCU}", "-w", "-s", "-v", FIRMWARE_PATH]
             log.info(f"Starte: {' '.join(cmd)}")
 
             result = subprocess.run(
