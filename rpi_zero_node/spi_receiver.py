@@ -57,13 +57,13 @@ UDP_PORT     = 5000 + NODE_ID          # 5001 oder 5002
 UART_PORT    = "/dev/ttyAMA0"          # PL011 Full-UART (nach dtoverlay=disable-bt)
 UART_BAUD    = 2_000_000               # 2 Mbps — stabiler für Steckkabel als 4 Mbps
 
-MAX_FLOATS   = 400                     # Muss mit Teensy main.cpp übereinstimmen!
+MAX_FLOATS   = 200                     # Muss mit Teensy main.cpp übereinstimmen!
 HEADER_SIZE  = 8                       # uint32 magic + uint32 timestamp
 PACKET_BYTES = HEADER_SIZE + MAX_FLOATS * 4   # 1608 Bytes
 
-MAGIC        = 0xDEAD_BEEF
+MAGIC        = 0xDEADBEEF
 MAGIC_BYTES  = struct.pack("<I", MAGIC)       # b'\xef\xbe\xad\xde' (little-endian)
-
+ 
 # Netzwerk-Prüfintervall in Sekunden
 NET_CHECK_INTERVAL = 15.0
 

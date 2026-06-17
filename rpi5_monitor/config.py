@@ -29,9 +29,9 @@ TCP_FLASH_PORT_NODE2 = 6002
 TCP_PARAM_PORT      = 7001   # Zukunft: Parameter-Übertragung
 
 # ── Paket-Format ──────────────────────────────────────────────────────────────
-PACKET_HEADER_MAGIC = 0xDEAD_BEEF    # Muss mit Teensy übereinstimmen
+PACKET_HEADER_MAGIC = 0xDEADBEEF    # Muss mit Teensy übereinstimmen
 HEADER_SIZE         = 8              # uint32 magic + uint32 timestamp
-MAX_FLOATS          = 400           # Maximale Anzahl float32 pro Paket
+MAX_FLOATS          = 200           # Maximale Anzahl float32 pro Paket
 PACKET_SIZE_BYTES   = HEADER_SIZE + MAX_FLOATS * 4   # 4008 Bytes
 DUMMY_VALUE         = 9898.0         # Füllwert für inaktive Kanäle
 
