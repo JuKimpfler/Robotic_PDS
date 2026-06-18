@@ -30,7 +30,6 @@ import threading
 import logging
 import time
 
-from rpi_zero_node.status_leds import StatusLEDs
 
 # ── Konfiguration ─────────────────────────────────────────────────────────────
 NODE_ID       = int(os.environ.get("NODE_ID", "1"))
@@ -49,9 +48,6 @@ log = logging.getLogger()
 
 # Verhindert parallele Flash-Vorgänge
 _flash_lock = threading.Lock()
-
-# Globaler LED-Controller (wird in main() initialisiert)
-_leds: StatusLEDs | None = None
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -85,13 +81,8 @@ def _handle_client(conn: socket.socket, addr: tuple) -> None:
         2a. Flash OK    → 3× langsames Blinken, dann AUS
         2b. Flash ERR   → 10× schnelles Blinken, dann AUS
     """
-    global _leds
     log.info(f"Flash-Anfrage von {addr[0]}:{addr[1]}")
     start_ts = time.monotonic()
-
-    # Rote LED einschalten: Empfang/Flash-Vorgang gestartet
-    if _leds:
-        _leds.set_flash_active(True)
 
     try:
         # ── Schritt 1: Dateigröße lesen ──────────────────────────────────────
@@ -130,25 +121,15 @@ def _handle_client(conn: socket.socket, addr: tuple) -> None:
         if result.returncode == 0:
             log.info(f"✅  Flash ERFOLGREICH ({elapsed_total:.1f}s)")
             conn.sendall(b"OK")
-            # LED: 3× langsames Blinken = Erfolg
-            if _leds:
-                _leds.set_flash_active(False)
-                _leds.flash_success()
         else:
             err = (result.stderr or result.stdout).strip()[:200]
             log.error(f"❌  Flash FEHLGESCHLAGEN: {err}")
             conn.sendall(f"ERR:{err}".encode("utf-8"))
             # LED: 10× schnelles Blinken = Fehler
-            if _leds:
-                _leds.set_flash_active(False)
-                _leds.flash_error()
 
     except subprocess.TimeoutExpired:
         msg = "Flash-Timeout nach 90s"
         log.error(msg)
-        if _leds:
-            _leds.set_flash_active(False)
-            _leds.flash_error()
         try:
             conn.sendall(f"ERR:{msg}".encode())
         except OSError:
@@ -156,9 +137,6 @@ def _handle_client(conn: socket.socket, addr: tuple) -> None:
 
     except Exception as exc:
         log.error(f"Fehler: {exc}")
-        if _leds:
-            _leds.set_flash_active(False)
-            _leds.flash_error()
         try:
             conn.sendall(f"ERR:{exc}".encode("utf-8"))
         except OSError:
@@ -174,11 +152,6 @@ def _handle_client(conn: socket.socket, addr: tuple) -> None:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def main() -> None:
-    global _leds
-
-    # ── LED-Controller initialisieren ────────────────────────────────────────
-    _leds = StatusLEDs()
-    _leds.start()
 
     # ── TCP-Server aufbauen ───────────────────────────────────────────────────
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -187,9 +160,6 @@ def main() -> None:
     server.listen(1)
 
     log.info(f"Flash Daemon bereit | Port: {FLASH_PORT} | MCU: {MCU}")
-
-    # ── Startup-Sequenz ───────────────────────────────────────────────────────
-    _leds.startup_sequence()
 
     try:
         while True:
@@ -206,7 +176,6 @@ def main() -> None:
     except KeyboardInterrupt:
         log.info("Flash Daemon gestoppt (KeyboardInterrupt).")
     finally:
-        _leds.stop()
         server.close()
         log.info("Ressourcen freigegeben.")
 

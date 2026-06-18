@@ -45,9 +45,6 @@ import threading
 import subprocess
 
 import serial
-import RPi.GPIO as GPIO
-
-from rpi_zero_node.status_leds import StatusLEDs
 
 # ── Konfiguration ─────────────────────────────────────────────────────────────
 NODE_ID      = int(os.environ.get("NODE_ID", "1"))
@@ -147,7 +144,6 @@ def _check_wlan_connected(expected_ip: str = "") -> bool:
 
 
 def _network_monitor_thread(
-    leds: StatusLEDs,
     stop_event: threading.Event,
 ) -> None:
     """Prüft WLAN-Verbindung alle NET_CHECK_INTERVAL Sekunden."""
@@ -155,7 +151,6 @@ def _network_monitor_thread(
     while not stop_event.is_set():
         # Leerer String ("") bedeutet: Prüfe nur, ob überhaupt eine IP zugewiesen wurde (DHCP erfolgreich)
         connected = _check_wlan_connected("")
-        leds.set_network(connected)
 
         if not connected:
             log.warning("WLAN nicht verbunden (keine IP-Adresse auf wlan0 erhalten)")
@@ -176,10 +171,6 @@ def main() -> None:
         f"UART {UART_PORT} @ {UART_BAUD // 1_000_000} Mbps | "
         f"{PACKET_BYTES} Bytes/Paket | {MAX_FLOATS} Floats"
     )
-
-    # ── LED-Controller ────────────────────────────────────────────────────────
-    leds = StatusLEDs()
-    leds.start()
 
     # ── UART öffnen ───────────────────────────────────────────────────────────
     try:
@@ -213,14 +204,11 @@ def main() -> None:
     stop_event = threading.Event()
     net_thread = threading.Thread(
         target=_network_monitor_thread,
-        args=(leds, stop_event),
+        args=(stop_event),
         daemon=True,
         name="NetworkMonitor",
     )
     net_thread.start()
-
-    # ── Startup-Sequenz ───────────────────────────────────────────────────────
-    leds.startup_sequence()
 
     # ── Statistik-Variablen ───────────────────────────────────────────────────
     pkt_sent     = 0
@@ -302,7 +290,6 @@ def main() -> None:
                 sent = sock.sendto(raw, ("255.255.255.255", UDP_PORT))
                 pkt_sent   += 1
                 bytes_sent += sent
-                leds.blink_data()
             except OSError as exc:
                 log.warning(f"UDP-Sendefehler: {exc}")
                 err_count += 1
@@ -323,8 +310,6 @@ def main() -> None:
         log.info("Gestoppt (KeyboardInterrupt).")
     finally:
         stop_event.set()
-        leds.stop()
-        GPIO.cleanup()
         ser.close()
         sock.close()
         log.info("Alle Ressourcen freigegeben.")

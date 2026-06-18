@@ -69,7 +69,8 @@ step "1 | Systempakete aktualisieren & installieren"
 info "apt-get update..."
 apt-get update -qq
 info "Installiere Pakete..."
-apt-get install -y --no-install-recommends \
+# Wir entfernen --no-install-recommends bei Python, um Core-Libraries nicht zu beschädigen
+apt-get install -y \
     python3 \
     python3-pip \
     python3-rpi.gpio \
@@ -84,13 +85,8 @@ apt-get install -y --no-install-recommends \
     git \
     curl
 
-# Python-Pakete die nicht als apt-Paket verfügbar sind
-info "Installiere Python-Pakete via pip..."
-pip3 install --break-system-packages \
-    pyserial \
-    RPi.GPIO
-
-ok "Pakete installiert"
+ok "Pakete via APT installiert."
+# Der pip3-Block wurde entfernt, da pyserial und RPi.GPIO bereits oben über APT installiert wurden.
 
 # ══════════════════════════════════════════════════════════════════════════════
 step "2 | UART freischalten (PL011 auf GPIO14/15)"
@@ -147,10 +143,10 @@ else
 fi
 
 # UART Base Clock auf 64 MHz erhöhen (Zwingend notwendig für 4 Mbps Baudrate!)
-if ! grep -q "^init_uart_clock=64000000" "$CONFIG"; then
-    echo "init_uart_clock=64000000" >> "$CONFIG"
-    ok "init_uart_clock=64000000 eingetragen (für 4 Mbps)"
-fi
+#if ! grep -q "^init_uart_clock=64000000" "$CONFIG"; then
+#    echo "init_uart_clock=64000000" >> "$CONFIG"
+#    ok "init_uart_clock=64000000 eingetragen (für 4 Mbps)"
+#fi
 
 # GPIO14/15 als UART konfigurieren (alt0 = UART0/PL011)
 if ! grep -q "dtoverlay=uart0" "$CONFIG"; then
