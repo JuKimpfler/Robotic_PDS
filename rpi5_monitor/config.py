@@ -44,8 +44,8 @@ GUI_FPS             = 30
 GUI_TIMER_MS        = 1000 // GUI_FPS        # 33 ms
 
 # ── Plotter ───────────────────────────────────────────────────────────────────
-PLOT_HISTORY_SEC    = 5              # Sekunden sichtbarer Verlauf
-PLOT_SAMPLE_RATE    = 100            # Erwartete Pakete/s vom Teensy
+PLOT_HISTORY_SEC    = 10              # Sekunden sichtbarer Verlauf
+PLOT_SAMPLE_RATE    = 50            # Erwartete Pakete/s vom Teensy
 PLOT_BUFFER_SIZE    = PLOT_HISTORY_SEC * PLOT_SAMPLE_RATE   # 500 Samples
 
 # ── Variablen-Mapping ─────────────────────────────────────────────────────────

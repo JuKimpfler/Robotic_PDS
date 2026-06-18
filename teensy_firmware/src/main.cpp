@@ -45,11 +45,11 @@
   #define ACTIVE_CHANNELS 200
 #endif
 
-static constexpr uint32_t UART_BAUD        = 4'000'000UL; // 4 Mbps
+static constexpr uint32_t UART_BAUD        = 1'000'000UL; // 4 Mbps
 static constexpr uint32_t HEADER_MAGIC     = 0xDEADBEEF;
 static constexpr int      MAX_FLOATS       = 200;
 static constexpr int      PACKET_BYTES     = 8 + MAX_FLOATS * 4;  // 1608
-static constexpr uint32_t SAMPLE_PERIOD_US = 100'000UL;            // 100 Hz
+static constexpr uint32_t SAMPLE_PERIOD_US = 10'000UL;            // 50 Hz
 
 // ── Serial1 TX-Buffer ─────────────────────────────────────────────────────────
 //    Default: 64 Bytes — zu klein für 1608 Bytes.
@@ -106,7 +106,7 @@ void setup() {
     delay(200);
 
     // Debug-Array initialisieren (alle Kanäle = inaktiv / Dummy)
-    for (int i = 0; i < MAX_FLOATS; i++) debugData[i] = 9899.0f;
+    for (int i = 0; i < MAX_FLOATS; i++) debugData[i] = 9898.0f;
 
     // Serial1 TX-Buffer erweitern und UART starten
     Serial3.addMemoryForWrite(_serial1_tx_buf, sizeof(_serial1_tx_buf));

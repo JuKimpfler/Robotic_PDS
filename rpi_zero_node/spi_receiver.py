@@ -55,7 +55,7 @@ RPI5_IP      = os.environ.get("RPI5_IP", "192.168.42.1")
 UDP_PORT     = 5000 + NODE_ID          # 5001 oder 5002
 
 UART_PORT    = "/dev/ttyAMA0"          # PL011 Full-UART (nach dtoverlay=disable-bt)
-UART_BAUD    = 2_000_000               # 2 Mbps — stabiler für Steckkabel als 4 Mbps
+UART_BAUD    = 1_000_000               # 1 Mbps — stabiler für Steckkabel als 4 Mbps
 
 MAX_FLOATS   = 200                     # Muss mit Teensy main.cpp übereinstimmen!
 HEADER_SIZE  = 8                       # uint32 magic + uint32 timestamp
@@ -307,9 +307,9 @@ def main() -> None:
                 log.warning(f"UDP-Sendefehler: {exc}")
                 err_count += 1
 
-            # ── Statistik alle 10 Sekunden ────────────────────────────────────
+            # ── Statistik alle 4 Sekunden ────────────────────────────────────
             elapsed = time.monotonic() - t_stat_start
-            if elapsed >= 10.0:
+            if elapsed >= 4.0:
                 pps  = pkt_sent   / elapsed
                 kbps = bytes_sent / elapsed / 1024
                 log.info(
