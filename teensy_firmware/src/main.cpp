@@ -106,7 +106,7 @@ void setup() {
     delay(200);
 
     // Debug-Array initialisieren (alle Kanäle = inaktiv / Dummy)
-    for (int i = 0; i < MAX_FLOATS; i++) debugData[i] = 9898.0f;
+    for (int i = 0; i < MAX_FLOATS; i++) debugData[i] = 0;  // 9898.0f Dummy wert
 
     // Serial1 TX-Buffer erweitern und UART starten
     Serial3.addMemoryForWrite(_serial1_tx_buf, sizeof(_serial1_tx_buf));
@@ -155,9 +155,59 @@ void loop() {
 
     DBG(CH_Start, digitalRead(10));
     DBG(2, 50);
-    DBG(3, 100);
+    DBG(3, -100);
     DBG(4, 200);
     DBG(5, 400);
+
+    DBG(50, 0);
+    DBG(51, 20);
+    DBG(52, 0);
+    DBG(53, 30);
+    DBG(54, 0);
+    DBG(55, 0);
+    DBG(56, 3500);
+    DBG(57, 0);
+    DBG(58, 0);
+    DBG(59, 0);
+    DBG(60, 0);
+    DBG(61, 1);
+    DBG(62, 0);
+    DBG(63, 0);
+    DBG(64, 1);
+    DBG(65, 0);
+    DBG(66, 0);
+    DBG(67, 3000);
+    DBG(68, 3000);
+    DBG(69, 0);
+    DBG(70, 1);
+    DBG(71, 0);
+    DBG(72, 0);
+    DBG(73, 0);
+    DBG(74, 0);
+    DBG(75, 0);
+    DBG(76, 0);
+    DBG(77, 0);
+    DBG(78, 0);
+    DBG(79, 0);
+    DBG(80, 0);
+    DBG(81, 0);
+    DBG(82, 0);
+    DBG(83, 0);
+    DBG(84, 0);
+    DBG(85, 0);
+    DBG(86, 0);
+    DBG(87, 0);
+    DBG(88, 0);
+    DBG(89, 0);
+    if(digitalRead(10)){
+        DBG(90, 1300);
+    }
+    else{
+        DBG(90, 5000);
+    }
+    
+
+
 
 
     // ── Alle 10 ms: Paket senden (100 Hz) ────────────────────────────────────

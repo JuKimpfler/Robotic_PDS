@@ -218,6 +218,9 @@ class MainWindow(QMainWindow):
             for v in batch:
                 self._tab_plotter.append_data(v)
 
+        # Tab 3: Visuals — Live-Overlay-Werte aktualisieren
+        self._tab_visuals.update_data(latest)
+
         # LED-Status
         self._node_active[self._active_node] = True
         led = self._led1 if self._active_node == 1 else self._led2

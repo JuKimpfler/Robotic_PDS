@@ -40,12 +40,12 @@ UDP_RECV_BUFFER     = 1024 * 1024    # 1 MB Kernel-Empfangspuffer
 DATA_QUEUE_MAXSIZE  = 300            # Maximale Queue-Tiefe (dann: Drop älteste)
 
 # ── GUI Timing ────────────────────────────────────────────────────────────────
-GUI_FPS             = 30
-GUI_TIMER_MS        = 1000 // GUI_FPS        # 33 ms
+GUI_FPS             = 20
+GUI_TIMER_MS        = 1000 // GUI_FPS        # 50 ms
 
 # ── Plotter ───────────────────────────────────────────────────────────────────
 PLOT_HISTORY_SEC    = 10              # Sekunden sichtbarer Verlauf
-PLOT_SAMPLE_RATE    = 50            # Erwartete Pakete/s vom Teensy
+PLOT_SAMPLE_RATE    = 100            # Erwartete Pakete/s vom Teensy
 PLOT_BUFFER_SIZE    = PLOT_HISTORY_SEC * PLOT_SAMPLE_RATE   # 500 Samples
 
 # ── Variablen-Mapping ─────────────────────────────────────────────────────────

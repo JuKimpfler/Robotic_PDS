@@ -8,6 +8,7 @@ PyQtGraph PlotWidget mit:
     im Hintergrund läuft die Queue weiter
 """
 
+from pyqtgraph.functions import colorStr
 import collections
 import numpy as np
 
@@ -52,10 +53,10 @@ class LivePlotterWidget(QWidget):
         self._var_combo.currentIndexChanged.connect(self._on_var_changed)
         toolbar.addWidget(self._var_combo)
 
-        toolbar.addWidget(QLabel("  Punkte:"))
+        toolbar.addWidget(QLabel("  Punkte:",))
         self._spin_pts = QSpinBox()
-        self._spin_pts.setRange(50, PLOT_BUFFER_SIZE)
-        self._spin_pts.setValue(200)
+        self._spin_pts.setRange(50, 600)
+        self._spin_pts.setValue(500)
         self._spin_pts.setSuffix(" Samples")
         self._spin_pts.setFixedWidth(120)
         toolbar.addWidget(self._spin_pts)

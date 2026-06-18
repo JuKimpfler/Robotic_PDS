@@ -1,0 +1,298 @@
+[
+  {
+    "image_idx": 1,
+    "label": "START",
+    "channel_idx": 0,
+    "x_pct": 53.0,
+    "y_pct": 83.0,
+    "color": "#19f3ec"
+  },
+  {
+    "image_idx": 2,
+    "label": "L1",
+    "channel_idx": 50,
+    "x_pct": 80.0,
+    "y_pct": 44.0,
+    "color": "#19f3ec"
+  },
+  {
+    "image_idx": 2,
+    "label": "L2",
+    "channel_idx": 51,
+    "x_pct": 79.0,
+    "y_pct": 38.0,
+    "color": "#19f3ec"
+  },
+  {
+    "image_idx": 2,
+    "label": "L3",
+    "channel_idx": 52,
+    "x_pct": 76.0,
+    "y_pct": 32.0,
+    "color": "#19f3ec"
+  },
+  {
+    "image_idx": 2,
+    "label": "L4",
+    "channel_idx": 53,
+    "x_pct": 72.5,
+    "y_pct": 27.0,
+    "color": "#19f3ec"
+  },
+  {
+    "image_idx": 2,
+    "label": "L5",
+    "channel_idx": 54,
+    "x_pct": 68.0,
+    "y_pct": 23.0,
+    "color": "#19f3ec"
+  },
+  {
+    "image_idx": 2,
+    "label": "L6",
+    "channel_idx": 55,
+    "x_pct": 62.0,
+    "y_pct": 19.5,
+    "color": "#19f3ec"
+  },
+  {
+    "image_idx": 2,
+    "label": "L7",
+    "channel_idx": 56,
+    "x_pct": 55.0,
+    "y_pct": 17.5,
+    "color": "#19f3ec"
+  },
+  {
+    "image_idx": 2,
+    "label": "L8",
+    "channel_idx": 55,
+    "x_pct": 48.0,
+    "y_pct": 17.0,
+    "color": "#19f3ec"
+  },
+  {
+    "image_idx": 2,
+    "label": "L9",
+    "channel_idx": 58,
+    "x_pct": 41.0,
+    "y_pct": 16.0,
+    "color": "#19f3ec"
+  },
+  {
+    "image_idx": 2,
+    "label": "L10",
+    "channel_idx": 59,
+    "x_pct": 35.0,
+    "y_pct": 19.5,
+    "color": "#19f3ec"
+  },
+  {
+    "image_idx": 2,
+    "label": "L11",
+    "channel_idx": 60,
+    "x_pct": 28.0,
+    "y_pct": 21.0,
+    "color": "#19f3ec"
+  },
+  {
+    "image_idx": 2,
+    "label": "L12",
+    "channel_idx": 61,
+    "x_pct": 23.0,
+    "y_pct": 25.0,
+    "color": "#19f3ec"
+  },
+  {
+    "image_idx": 2,
+    "label": "L13",
+    "channel_idx": 62,
+    "x_pct": 21.0,
+    "y_pct": 29.0,
+    "color": "#19f3ec"
+  },
+  {
+    "image_idx": 2,
+    "label": "L14",
+    "channel_idx": 63,
+    "x_pct": 18.0,
+    "y_pct": 34.0,
+    "color": "#19f3ec"
+  },
+  {
+    "image_idx": 2,
+    "label": "L15",
+    "channel_idx": 64,
+    "x_pct": 15.0,
+    "y_pct": 40.0,
+    "color": "#19f3ec"
+  },
+  {
+    "image_idx": 2,
+    "label": "L16",
+    "channel_idx": 65,
+    "x_pct": 16.0,
+    "y_pct": 47.0,
+    "color": "#19f3ec"
+  },
+  {
+    "image_idx": 2,
+    "label": "L17",
+    "channel_idx": 66,
+    "x_pct": 16.0,
+    "y_pct": 53.0,
+    "color": "#19f3ec"
+  },
+  {
+    "image_idx": 3,
+    "label": "L1",
+    "channel_idx": 50,
+    "x_pct": 80.0,
+    "y_pct": 44.0,
+    "color": "#19f3ec"
+  },
+  {
+    "image_idx": 3,
+    "label": "L2",
+    "channel_idx": 51,
+    "x_pct": 79.0,
+    "y_pct": 38.0,
+    "color": "#19f3ec"
+  },
+  {
+    "image_idx": 3,
+    "label": "L3",
+    "channel_idx": 52,
+    "x_pct": 76.0,
+    "y_pct": 32.0,
+    "color": "#19f3ec"
+  },
+  {
+    "image_idx": 3,
+    "label": "L4",
+    "channel_idx": 53,
+    "x_pct": 72.5,
+    "y_pct": 27.0,
+    "color": "#19f3ec"
+  },
+  {
+    "image_idx": 3,
+    "label": "L5",
+    "channel_idx": 54,
+    "x_pct": 68.0,
+    "y_pct": 23.0,
+    "color": "#19f3ec"
+  },
+  {
+    "image_idx": 3,
+    "label": "L6",
+    "channel_idx": 55,
+    "x_pct": 62.0,
+    "y_pct": 19.5,
+    "color": "#19f3ec"
+  },
+  {
+    "image_idx": 3,
+    "label": "L7",
+    "channel_idx": 56,
+    "x_pct": 55.0,
+    "y_pct": 17.5,
+    "color": "#19f3ec"
+  },
+  {
+    "image_idx": 3,
+    "label": "L8",
+    "channel_idx": 55,
+    "x_pct": 48.0,
+    "y_pct": 17.0,
+    "color": "#19f3ec"
+  },
+  {
+    "image_idx": 3,
+    "label": "L9",
+    "channel_idx": 58,
+    "x_pct": 41.0,
+    "y_pct": 16.0,
+    "color": "#19f3ec"
+  },
+  {
+    "image_idx": 3,
+    "label": "L10",
+    "channel_idx": 59,
+    "x_pct": 35.0,
+    "y_pct": 19.5,
+    "color": "#19f3ec"
+  },
+  {
+    "image_idx": 3,
+    "label": "L11",
+    "channel_idx": 60,
+    "x_pct": 28.0,
+    "y_pct": 21.0,
+    "color": "#19f3ec"
+  },
+  {
+    "image_idx": 3,
+    "label": "L12",
+    "channel_idx": 61,
+    "x_pct": 23.0,
+    "y_pct": 25.0,
+    "color": "#19f3ec"
+  },
+  {
+    "image_idx": 3,
+    "label": "L13",
+    "channel_idx": 62,
+    "x_pct": 21.0,
+    "y_pct": 29.0,
+    "color": "#19f3ec"
+  },
+  {
+    "image_idx": 3,
+    "label": "L14",
+    "channel_idx": 63,
+    "x_pct": 18.0,
+    "y_pct": 34.0,
+    "color": "#19f3ec"
+  },
+  {
+    "image_idx": 3,
+    "label": "L15",
+    "channel_idx": 64,
+    "x_pct": 15.0,
+    "y_pct": 40.0,
+    "color": "#19f3ec"
+  },
+  {
+    "image_idx": 3,
+    "label": "L16",
+    "channel_idx": 65,
+    "x_pct": 16.0,
+    "y_pct": 47.0,
+    "color": "#19f3ec"
+  },
+  {
+    "image_idx": 2,
+    "label": "L17",
+    "channel_idx": 66,
+    "x_pct": 16.0,
+    "y_pct": 53.0,
+    "color": "#19f3ec"
+  },
+  {
+    "image_idx": 2,
+    "label": "Line_Schwelle",
+    "channel_idx": 90,
+    "x_pct": 5.0,
+    "y_pct": 5.0,
+    "color": "#9cdcfe"
+  },
+  {
+    "image_idx": 3,
+    "label": "Line_Schwelle",
+    "channel_idx": 90,
+    "x_pct": 5.0,
+    "y_pct": 5.0,
+    "color": "#ce9178"
+  }
+]
