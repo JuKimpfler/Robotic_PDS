@@ -2,7 +2,7 @@
   {
     "image_idx": 1,
     "label": "START",
-    "channel_idx": 0,
+    "channel_idx": 30,
     "x_pct": 53.0,
     "y_pct": 83.0,
     "color": "#19f3ec"

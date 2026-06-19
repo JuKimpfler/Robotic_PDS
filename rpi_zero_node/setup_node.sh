@@ -46,8 +46,8 @@ fi
 # ── Abgeleitete Werte ─────────────────────────────────────────────────────────
 NODE_IP="192.168.42.1${NODE_ID}"          # 192.168.42.11 oder .12
 RPI5_IP="192.168.42.1"                    # RPi 5 Hotspot-Gateway
-AP_SSID="PowerDebugAP"                    # WLAN-Netz des RPi 5
-AP_PASS="HighSpeedDebug123"               # WLAN-Passwort
+AP_SSID="PowerDebug"                    # WLAN-Netz des RPi 5
+AP_PASS="robodebug123"               # WLAN-Passwort
 INSTALL_DIR="/opt/power_debug_node"       # Installations-Ziel
 SERVICE_RECV="uart-receiver"              # Name des Empfangsdiensts
 SERVICE_FLASH="flash-daemon"              # Name des Flash-Diensts
