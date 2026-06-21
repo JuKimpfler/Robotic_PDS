@@ -39,6 +39,9 @@
  */
 
 #include <Arduino.h>
+#include <elapsedMillis.h>
+
+elapsedMicros timer_cycle;
 
 // ── Compile-Time Konfiguration ───────────────────────────────────────────────
 #ifndef ACTIVE_CHANNELS
@@ -49,7 +52,7 @@ static constexpr uint32_t UART_BAUD        = 1'000'000UL; // 4 Mbps
 static constexpr uint32_t HEADER_MAGIC     = 0xDEADBEEF;
 static constexpr int      MAX_FLOATS       = 200;
 static constexpr int      PACKET_BYTES     = 8 + MAX_FLOATS * 4;  // 1608
-static constexpr uint32_t SAMPLE_PERIOD_US = 10'000UL;            // 50 Hz
+static constexpr uint32_t SAMPLE_PERIOD_US = 10;            // 50 Hz
 
 // ── Serial1 TX-Buffer ─────────────────────────────────────────────────────────
 //    Default: 64 Bytes — zu klein für 1608 Bytes.
@@ -80,10 +83,6 @@ static float debugData[MAX_FLOATS];
 // #define CH_LOOP_TIME       81
 
 
-// ══════════════════════════════════════════════════════════════════════════════
-//  Paket zusammenbauen
-// ══════════════════════════════════════════════════════════════════════════════
-
 void buildPacket() {
     // ── Header: Magic + Timestamp ─────────────────────────────────────────────
     const uint32_t magic = HEADER_MAGIC;
@@ -94,7 +93,6 @@ void buildPacket() {
     // ── Nutzdaten: debugData[] direkt kopieren ────────────────────────────────
     memcpy(_pkt_buf + 8, debugData, MAX_FLOATS * sizeof(float));
 }
-
 
 // ══════════════════════════════════════════════════════════════════════════════
 //  Setup
@@ -128,18 +126,19 @@ void setup() {
         1e6f / SAMPLE_PERIOD_US
     );
 }
-
-
+int time_counter =0;
+int time_cycle = 0;
 // ══════════════════════════════════════════════════════════════════════════════
 //  Hauptschleife
 // ══════════════════════════════════════════════════════════════════════════════
 static uint32_t pkt_count      = 0;
 void loop() {
+    timer_cycle = 0;
     static uint32_t last_sample_us = 0;
     static uint32_t last_stat_ms   = 0;
     static uint32_t loop_start_us  = 0;
 
-    loop_start_us = micros();
+    loop_start_us = millis();
 
     // ══════════════════════════════════════════════════════════════════════════
     //  HIER: eigenen Roboter-Code und DBG()-Aufrufe einsetzen
@@ -154,8 +153,9 @@ void loop() {
     // ══════════════════════════════════════════════════════════════════════════
 
     DBG(CH_Start, digitalRead(10));
-    DBG(2, 50);
-    DBG(3, -100);
+    DBG(1, 200);
+    DBG(2, time_cycle);
+    DBG(3, timer_cycle);
     DBG(4, 200);
     DBG(5, 400);
 
@@ -211,7 +211,7 @@ void loop() {
 
 
     // ── Alle 10 ms: Paket senden (100 Hz) ────────────────────────────────────
-    const uint32_t now = micros();
+    const uint32_t now = millis();
     if (now - last_sample_us >= SAMPLE_PERIOD_US) {
         last_sample_us = now;
 
@@ -236,4 +236,8 @@ void loop() {
                       hz, kbps, Serial3.availableForWrite(),pkt_count);
         pkt_count = 0;
     }
+
+    time_counter++;
+    time_cycle = timer_cycle ;
+    Serial.println(time_counter);
 }

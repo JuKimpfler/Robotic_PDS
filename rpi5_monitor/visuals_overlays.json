@@ -1,298 +1,459 @@
-[
-  {
-    "image_idx": 1,
-    "label": "START",
-    "channel_idx": 30,
-    "x_pct": 53.0,
-    "y_pct": 83.0,
-    "color": "#19f3ec"
-  },
-  {
-    "image_idx": 2,
-    "label": "L1",
-    "channel_idx": 50,
-    "x_pct": 80.0,
-    "y_pct": 44.0,
-    "color": "#19f3ec"
-  },
-  {
-    "image_idx": 2,
-    "label": "L2",
-    "channel_idx": 51,
-    "x_pct": 79.0,
-    "y_pct": 38.0,
-    "color": "#19f3ec"
-  },
-  {
-    "image_idx": 2,
-    "label": "L3",
-    "channel_idx": 52,
-    "x_pct": 76.0,
-    "y_pct": 32.0,
-    "color": "#19f3ec"
-  },
-  {
-    "image_idx": 2,
-    "label": "L4",
-    "channel_idx": 53,
-    "x_pct": 72.5,
-    "y_pct": 27.0,
-    "color": "#19f3ec"
-  },
-  {
-    "image_idx": 2,
-    "label": "L5",
-    "channel_idx": 54,
-    "x_pct": 68.0,
-    "y_pct": 23.0,
-    "color": "#19f3ec"
-  },
-  {
-    "image_idx": 2,
-    "label": "L6",
-    "channel_idx": 55,
-    "x_pct": 62.0,
-    "y_pct": 19.5,
-    "color": "#19f3ec"
-  },
-  {
-    "image_idx": 2,
-    "label": "L7",
-    "channel_idx": 56,
-    "x_pct": 55.0,
-    "y_pct": 17.5,
-    "color": "#19f3ec"
-  },
-  {
-    "image_idx": 2,
-    "label": "L8",
-    "channel_idx": 55,
-    "x_pct": 48.0,
-    "y_pct": 17.0,
-    "color": "#19f3ec"
-  },
-  {
-    "image_idx": 2,
-    "label": "L9",
-    "channel_idx": 58,
-    "x_pct": 41.0,
-    "y_pct": 16.0,
-    "color": "#19f3ec"
-  },
-  {
-    "image_idx": 2,
-    "label": "L10",
-    "channel_idx": 59,
-    "x_pct": 35.0,
-    "y_pct": 19.5,
-    "color": "#19f3ec"
-  },
-  {
-    "image_idx": 2,
-    "label": "L11",
-    "channel_idx": 60,
-    "x_pct": 28.0,
-    "y_pct": 21.0,
-    "color": "#19f3ec"
-  },
-  {
-    "image_idx": 2,
-    "label": "L12",
-    "channel_idx": 61,
-    "x_pct": 23.0,
-    "y_pct": 25.0,
-    "color": "#19f3ec"
-  },
-  {
-    "image_idx": 2,
-    "label": "L13",
-    "channel_idx": 62,
-    "x_pct": 21.0,
-    "y_pct": 29.0,
-    "color": "#19f3ec"
-  },
-  {
-    "image_idx": 2,
-    "label": "L14",
-    "channel_idx": 63,
-    "x_pct": 18.0,
-    "y_pct": 34.0,
-    "color": "#19f3ec"
-  },
-  {
-    "image_idx": 2,
-    "label": "L15",
-    "channel_idx": 64,
-    "x_pct": 15.0,
-    "y_pct": 40.0,
-    "color": "#19f3ec"
-  },
-  {
-    "image_idx": 2,
-    "label": "L16",
-    "channel_idx": 65,
-    "x_pct": 16.0,
-    "y_pct": 47.0,
-    "color": "#19f3ec"
-  },
-  {
-    "image_idx": 2,
-    "label": "L17",
-    "channel_idx": 66,
-    "x_pct": 16.0,
-    "y_pct": 53.0,
-    "color": "#19f3ec"
-  },
-  {
-    "image_idx": 3,
-    "label": "L1",
-    "channel_idx": 50,
-    "x_pct": 80.0,
-    "y_pct": 44.0,
-    "color": "#19f3ec"
-  },
-  {
-    "image_idx": 3,
-    "label": "L2",
-    "channel_idx": 51,
-    "x_pct": 79.0,
-    "y_pct": 38.0,
-    "color": "#19f3ec"
-  },
-  {
-    "image_idx": 3,
-    "label": "L3",
-    "channel_idx": 52,
-    "x_pct": 76.0,
-    "y_pct": 32.0,
-    "color": "#19f3ec"
-  },
-  {
-    "image_idx": 3,
-    "label": "L4",
-    "channel_idx": 53,
-    "x_pct": 72.5,
-    "y_pct": 27.0,
-    "color": "#19f3ec"
-  },
-  {
-    "image_idx": 3,
-    "label": "L5",
-    "channel_idx": 54,
-    "x_pct": 68.0,
-    "y_pct": 23.0,
-    "color": "#19f3ec"
-  },
-  {
-    "image_idx": 3,
-    "label": "L6",
-    "channel_idx": 55,
-    "x_pct": 62.0,
-    "y_pct": 19.5,
-    "color": "#19f3ec"
-  },
-  {
-    "image_idx": 3,
-    "label": "L7",
-    "channel_idx": 56,
-    "x_pct": 55.0,
-    "y_pct": 17.5,
-    "color": "#19f3ec"
-  },
-  {
-    "image_idx": 3,
-    "label": "L8",
-    "channel_idx": 55,
-    "x_pct": 48.0,
-    "y_pct": 17.0,
-    "color": "#19f3ec"
-  },
-  {
-    "image_idx": 3,
-    "label": "L9",
-    "channel_idx": 58,
-    "x_pct": 41.0,
-    "y_pct": 16.0,
-    "color": "#19f3ec"
-  },
-  {
-    "image_idx": 3,
-    "label": "L10",
-    "channel_idx": 59,
-    "x_pct": 35.0,
-    "y_pct": 19.5,
-    "color": "#19f3ec"
-  },
-  {
-    "image_idx": 3,
-    "label": "L11",
-    "channel_idx": 60,
-    "x_pct": 28.0,
-    "y_pct": 21.0,
-    "color": "#19f3ec"
-  },
-  {
-    "image_idx": 3,
-    "label": "L12",
-    "channel_idx": 61,
-    "x_pct": 23.0,
-    "y_pct": 25.0,
-    "color": "#19f3ec"
-  },
-  {
-    "image_idx": 3,
-    "label": "L13",
-    "channel_idx": 62,
-    "x_pct": 21.0,
-    "y_pct": 29.0,
-    "color": "#19f3ec"
-  },
-  {
-    "image_idx": 3,
-    "label": "L14",
-    "channel_idx": 63,
-    "x_pct": 18.0,
-    "y_pct": 34.0,
-    "color": "#19f3ec"
-  },
-  {
-    "image_idx": 3,
-    "label": "L15",
-    "channel_idx": 64,
-    "x_pct": 15.0,
-    "y_pct": 40.0,
-    "color": "#19f3ec"
-  },
-  {
-    "image_idx": 3,
-    "label": "L16",
-    "channel_idx": 65,
-    "x_pct": 16.0,
-    "y_pct": 47.0,
-    "color": "#19f3ec"
-  },
-  {
-    "image_idx": 2,
-    "label": "L17",
-    "channel_idx": 66,
-    "x_pct": 16.0,
-    "y_pct": 53.0,
-    "color": "#19f3ec"
-  },
-  {
-    "image_idx": 2,
-    "label": "Line_Schwelle",
-    "channel_idx": 90,
-    "x_pct": 5.0,
-    "y_pct": 5.0,
-    "color": "#9cdcfe"
-  },
-  {
-    "image_idx": 3,
-    "label": "Line_Schwelle",
-    "channel_idx": 90,
-    "x_pct": 5.0,
-    "y_pct": 5.0,
-    "color": "#ce9178"
-  }
-]
+{
+  "groups": [
+    {
+      "name": "Gruppe 1 (Bild 1)",
+      "image_idx": 1,
+      "overlays": [
+        {
+          "label": "START",
+          "channel_idx": 30,
+          "x_pct": 41.0,
+          "y_pct": 81.0,
+          "color": "#19f3ec"
+        }
+      ],
+      "graphics": [
+        {
+          "type": "gauge",
+          "label": "Motor L Speed",
+          "channel": 0,
+          "min": -5.0,
+          "max": 5.0
+        },
+        {
+          "type": "gauge",
+          "label": "Motor R Speed",
+          "channel": 1,
+          "min": -5.0,
+          "max": 5.0
+        },
+        {
+          "type": "gauge",
+          "label": "Akku-Spannung",
+          "channel": 10,
+          "min": 0.0,
+          "max": 24.0
+        },
+        {
+          "type": "gauge",
+          "label": "System-Temp",
+          "channel": 11,
+          "min": 0.0,
+          "max": 100.0
+        },
+        {
+          "type": "rotation",
+          "label": "Rad FL",
+          "channel": 2
+        },
+        {
+          "type": "rotation",
+          "label": "Rad FR",
+          "channel": 3
+        },
+        {
+          "type": "rotation",
+          "label": "Rad RL",
+          "channel": 4
+        },
+        {
+          "type": "rotation",
+          "label": "Rad RR",
+          "channel": 5
+        },
+        {
+          "type": "vector",
+          "label": "Bewegungsrichtung",
+          "channel_angle": 6,
+          "channel_speed": 7,
+          "max_val": 10.0
+        },
+        {
+          "type": "vector",
+          "label": "Windrichtung",
+          "channel_angle": 8,
+          "channel_speed": 9,
+          "max_val": 5.0
+        },
+        {
+          "type": "table",
+          "title": "System-Status (0-9)",
+          "channels": "0-9"
+        }
+      ]
+    },
+    {
+      "name": "Gruppe 2 (Bild 2)",
+      "image_idx": 2,
+      "overlays": [
+        {
+          "label": "L1",
+          "channel_idx": 50,
+          "x_pct": 49.0,
+          "y_pct": 13.0,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L2",
+          "channel_idx": 51,
+          "x_pct": 44.0,
+          "y_pct": 13.0,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L3",
+          "channel_idx": 52,
+          "x_pct": 39.0,
+          "y_pct": 13.0,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L4",
+          "channel_idx": 53,
+          "x_pct": 32.5,
+          "y_pct": 11.0,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L5",
+          "channel_idx": 53,
+          "x_pct": 27.0,
+          "y_pct": 9.0,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L6",
+          "channel_idx": 49,
+          "x_pct": 22.0,
+          "y_pct": 11.5,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L7",
+          "channel_idx": 56,
+          "x_pct": 17.0,
+          "y_pct": 15.5,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L8",
+          "channel_idx": 55,
+          "x_pct": 13.0,
+          "y_pct": 20.0,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L9",
+          "channel_idx": 58,
+          "x_pct": 10.0,
+          "y_pct": 25.0,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L10",
+          "channel_idx": 59,
+          "x_pct": 7.0,
+          "y_pct": 30.0,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L11",
+          "channel_idx": 60,
+          "x_pct": 5.0,
+          "y_pct": 35.0,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L12",
+          "channel_idx": 61,
+          "x_pct": 4.0,
+          "y_pct": 41.0,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L13",
+          "channel_idx": 62,
+          "x_pct": 3.0,
+          "y_pct": 47.0,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L14",
+          "channel_idx": 63,
+          "x_pct": 3.0,
+          "y_pct": 53.0,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L15",
+          "channel_idx": 64,
+          "x_pct": 4.0,
+          "y_pct": 59.0,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L16",
+          "channel_idx": 65,
+          "x_pct": 6.0,
+          "y_pct": 64.0,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L17",
+          "channel_idx": 66,
+          "x_pct": 8.0,
+          "y_pct": 70.0,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L18",
+          "channel_idx": 67,
+          "x_pct": 11.0,
+          "y_pct": 75.0,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L19",
+          "channel_idx": 68,
+          "x_pct": 11.0,
+          "y_pct": 75.0,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L20",
+          "channel_idx": 69,
+          "x_pct": 11.0,
+          "y_pct": 75.0,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L21",
+          "channel_idx": 70,
+          "x_pct": 11.0,
+          "y_pct": 75.0,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L22",
+          "channel_idx": 71,
+          "x_pct": 11.0,
+          "y_pct": 75.0,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L23",
+          "channel_idx": 72,
+          "x_pct": 11.0,
+          "y_pct": 75.0,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L24",
+          "channel_idx": 73,
+          "x_pct": 11.0,
+          "y_pct": 75.0,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L25",
+          "channel_idx": 74,
+          "x_pct": 11.0,
+          "y_pct": 75.0,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L26",
+          "channel_idx": 75,
+          "x_pct": 11.0,
+          "y_pct": 75.0,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L27",
+          "channel_idx": 76,
+          "x_pct": 11.0,
+          "y_pct": 75.0,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L28",
+          "channel_idx": 77,
+          "x_pct": 11.0,
+          "y_pct": 75.0,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L29",
+          "channel_idx": 78,
+          "x_pct": 11.0,
+          "y_pct": 75.0,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L30",
+          "channel_idx": 79,
+          "x_pct": 11.0,
+          "y_pct": 75.0,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L31",
+          "channel_idx": 80,
+          "x_pct": 11.0,
+          "y_pct": 75.0,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L32",
+          "channel_idx": 81,
+          "x_pct": 11.0,
+          "y_pct": 75.0,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L33",
+          "channel_idx": 82,
+          "x_pct": 11.0,
+          "y_pct": 75.0,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L34",
+          "channel_idx": 83,
+          "x_pct": 11.0,
+          "y_pct": 75.0,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L35",
+          "channel_idx": 84,
+          "x_pct": 11.0,
+          "y_pct": 75.0,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L36",
+          "channel_idx": 85,
+          "x_pct": 11.0,
+          "y_pct": 75.0,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L37",
+          "channel_idx": 86,
+          "x_pct": 11.0,
+          "y_pct": 75.0,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L38",
+          "channel_idx": 87,
+          "x_pct": 11.0,
+          "y_pct": 75.0,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L39",
+          "channel_idx": 88,
+          "x_pct": 11.0,
+          "y_pct": 75.0,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L40",
+          "channel_idx": 89,
+          "x_pct": 11.0,
+          "y_pct": 75.0,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L41",
+          "channel_idx": 90,
+          "x_pct": 11.0,
+          "y_pct": 75.0,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L42",
+          "channel_idx": 91,
+          "x_pct": 11.0,
+          "y_pct": 75.0,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L43",
+          "channel_idx": 92,
+          "x_pct": 11.0,
+          "y_pct": 75.0,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L44",
+          "channel_idx": 93,
+          "x_pct": 11.0,
+          "y_pct": 75.0,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L45",
+          "channel_idx": 94,
+          "x_pct": 11.0,
+          "y_pct": 75.0,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L46",
+          "channel_idx": 95,
+          "x_pct": 11.0,
+          "y_pct": 75.0,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L47",
+          "channel_idx": 96,
+          "x_pct": 11.0,
+          "y_pct": 75.0,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L48",
+          "channel_idx": 97,
+          "x_pct": 11.0,
+          "y_pct": 75.0,
+          "color": "#19f3ec"
+        }
+      ],
+      "graphics": [
+        {
+          "type": "table",
+          "title": "Kanalwerte 50-66",
+          "channels": "50-66"
+        }
+      ]
+    },
+    {
+      "name": "Gruppe 3 (Bild 3)",
+      "image_idx": 3,
+      "overlays": [],
+      "graphics": [
+        {
+          "type": "table",
+          "title": "Kanalwerte 50-66",
+          "channels": "50-66"
+        }
+      ]
+    },
+    {
+      "name": "Gruppe 4 (Bild 4)",
+      "image_idx": 4,
+      "overlays": [],
+      "graphics": [
+        {
+          "type": "table",
+          "title": "Statuskanäle",
+          "channels": "0-9"
+        }
+      ]
+    }
+  ]
+}

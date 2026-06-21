@@ -134,12 +134,12 @@ def _udp_simulator_process(stop_event: mp.Event) -> None:
             header = struct.pack("<II", PACKET_HEADER_MAGIC, ts)
 
             data = np.zeros(MAX_FLOATS, dtype=np.float32)
-            for i in range(500):
+            for i in range(min(500, MAX_FLOATS)):
                 freq = 0.5 + i * 0.002
                 data[i] = (np.sin(2 * np.pi * freq * t) * 3.3
                            + (node_id - 1) * 1.0       # Offset pro Node
-                           + np.random.normal(0, 0.05))
-            data[500:] = 9898.0   # Dummy-Füllung
+                           + np.random.normal(0, 0.05))*10
+            data[min(500, MAX_FLOATS):] = 9898.0   # Dummy-Füllung
 
             raw = header + data.tobytes()
             sock.sendto(raw, ("127.0.0.1", port))
