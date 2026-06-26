@@ -597,6 +597,229 @@ class DataGridWidget(QWidget):
                 val = float(values[chan])
                 lbl.setText(f"{val:+.3f}")
 
+# ── TwoBodiesWidget ──────────────────────────────────────────────────────────
+class TwoBodiesWidget(QWidget):
+    """
+    Ersetzt das Bild-Widget für spezielle Gruppen.
+    Zeigt Bild<image_idx>.png als Hintergrund und zeichnet 2 Körper darüber.
+    Koordinaten: X=rechts, Y=oben, Winkel: 0°=rechts, +CW, -CCW, ±180°.
+    Das Widget füllt den gesamten Bereich aus (kein erzwungenes Seitenverhältnis).
+    """
+    def __init__(self, label: str,
+                 b1_label: str, b1_color: str, b1_diam: float,
+                 b1_ch_x: int, b1_ch_y: int, b1_ch_angle: int, b1_ch_diam: int,
+                 b2_label: str, b2_color: str, b2_diam: float,
+                 b2_ch_x: int, b2_ch_y: int, b2_ch_angle: int, b2_ch_diam: int,
+                 field_w: float = 2.0, field_h: float = 1.5,
+                 image_idx: int = -1,
+                 parent=None):
+        super().__init__(parent)
+        self.label       = label
+        self.b1_label    = b1_label
+        self.b1_color    = QColor(b1_color)
+        self.b1_diam     = b1_diam
+        self.b1_ch_x     = b1_ch_x
+        self.b1_ch_y     = b1_ch_y
+        self.b1_ch_angle = b1_ch_angle
+        self.b1_ch_diam  = b1_ch_diam
+        self.b2_label    = b2_label
+        self.b2_color    = QColor(b2_color)
+        self.b2_diam     = b2_diam
+        self.b2_ch_x     = b2_ch_x
+        self.b2_ch_y     = b2_ch_y
+        self.b2_ch_angle = b2_ch_angle
+        self.b2_ch_diam  = b2_ch_diam
+        self.field_w     = field_w
+        self.field_h     = field_h
+
+        # Hintergrundbild laden
+        self._pixmap: Optional[QPixmap] = None
+        if image_idx > 0:
+            path = _BILD_DIR / f"Bild{image_idx}.png"
+            if path.exists():
+                px = QPixmap(str(path))
+                if not px.isNull():
+                    self._pixmap = px
+
+        # Livestreams
+        self._b1_x = 0.0;  self._b1_y = 0.0;  self._b1_angle = 0.0;  self._b1_r = b1_diam
+        self._b2_x = 0.5;  self._b2_y = 0.5;  self._b2_angle = 45.0; self._b2_r = b2_diam
+
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.setMinimumSize(800,600)
+        self.setMaximumSize(801,601)
+
+    def reload_image(self, image_idx: int) -> None:
+        """Lädt das Hintergrundbild neu."""
+        if image_idx > 0:
+            path = _BILD_DIR / f"Bild{image_idx}.png"
+            if path.exists():
+                px = QPixmap(str(path))
+                self._pixmap = px if not px.isNull() else None
+            else:
+                self._pixmap = None
+        else:
+            self._pixmap = None
+        self.update()
+
+    def update_value(self, values: np.ndarray):
+        n = len(values)
+        def v(ch): return float(values[ch]) if 0 <= ch < n else 0.0
+        self._b1_x     = v(self.b1_ch_x)
+        self._b1_y     = v(self.b1_ch_y)
+        self._b1_angle = v(self.b1_ch_angle)
+        self._b1_r     = v(self.b1_ch_diam) if self.b1_ch_diam >= 0 else self.b1_diam
+        self._b2_x     = v(self.b2_ch_x)
+        self._b2_y     = v(self.b2_ch_y)
+        self._b2_angle = v(self.b2_ch_angle)
+        self._b2_r     = v(self.b2_ch_diam) if self.b2_ch_diam >= 0 else self.b2_diam
+        self.update()
+
+    def _field_to_px(self, fx: float, fy: float, W: float, H: float) -> tuple[float, float]:
+        """Feldkoordinaten -> Pixelkoordinaten.
+        Feld: X+ rechts, Y+ oben.  Ursprung (0,0) = Bildmitte.
+        Screen: Y+ nach unten.
+        """
+        px = (fx / self.field_w + 0.5) * W
+        py = (0.5 - fy / self.field_h) * H
+        return px, py
+
+    def _scale_for_diam(self, W: float, H: float) -> float:
+        """Einheitlicher Skalierfaktor für Durchmesser (kleinere Achse)."""
+        return min(W / self.field_w, H / self.field_h)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+
+        W, H = float(self.width()), float(self.height())
+        full_rect = QRectF(0, 0, W, H)
+
+        # ── Hintergrund: Bild oder Farbverlauf ─────────────────────────────
+        if self._pixmap and not self._pixmap.isNull():
+            # Bild skaliert auf gesamte Fläche (gestreckt wie ImageOverlayWidget)
+            painter.drawPixmap(full_rect.toRect(), self._pixmap)
+        else:
+            grad = QLinearGradient(full_rect.topLeft(), full_rect.bottomRight())
+            grad.setColorAt(0, QColor("#0d1520"))
+            grad.setColorAt(1, QColor("#111a28"))
+            painter.fillRect(full_rect, grad)
+
+        # Halbdurchsichtiger dunkler Overlay damit Gitter/Körper sichtbar bleiben
+        painter.fillRect(full_rect, QColor(0, 0, 0, 90))
+
+        # ── Rand ────────────────────────────────────────────────────────────
+        painter.setPen(QPen(QColor("#264f78"), 1.5))
+        painter.drawRect(full_rect.adjusted(1, 1, -1, -1))
+
+        # ── Rasterlinien ────────────────────────────────────────────────────
+        grid_step = max(self.field_w, self.field_h) / 10.0
+        pen_grid = QPen(QColor(60, 120, 200, 70), 0.6, Qt.PenStyle.DotLine)
+        painter.setPen(pen_grid)
+        x_f = -self.field_w / 2
+        while x_f <= self.field_w / 2 + 1e-9:
+            px, _ = self._field_to_px(x_f, 0, W, H)
+            painter.drawLine(QPointF(px, 0), QPointF(px, H))
+            x_f += grid_step
+        y_f = -self.field_h / 2
+        while y_f <= self.field_h / 2 + 1e-9:
+            _, py = self._field_to_px(0, y_f, W, H)
+            painter.drawLine(QPointF(0, py), QPointF(W, py))
+            y_f += grid_step
+
+        # ── Fadenkreuz Ursprung ────────────────────────────────────────────
+        cx_px, cy_px = self._field_to_px(0, 0, W, H)
+        painter.setPen(QPen(QColor(80, 160, 255, 160), 1.2))
+        painter.drawLine(QPointF(0, cy_px), QPointF(W, cy_px))
+        painter.drawLine(QPointF(cx_px, 0), QPointF(cx_px, H))
+
+        # ── Titel oben links ─────────────────────────────────────────────
+        f_title = QFont("Segoe UI", 9, QFont.Weight.Bold)
+        painter.setFont(f_title)
+        painter.setPen(QColor("#9cdcfe"))
+        painter.drawText(QRectF(8, 4, W - 16, 18),
+                         Qt.AlignmentFlag.AlignLeft, self.label)
+
+        # ── Körper zeichnen ────────────────────────────────────────────────
+        diam_scale = self._scale_for_diam(W, H)
+
+        for (fx, fy, fangle, fr, color, blabel) in [
+            (self._b1_x, self._b1_y, self._b1_angle, self._b1_r, self.b1_color, self.b1_label),
+            (self._b2_x, self._b2_y, self._b2_angle, self._b2_r, self.b2_color, self.b2_label),
+        ]:
+            bx, by = self._field_to_px(fx, fy, W, H)
+
+            # Radius in Pixeln
+            r_px = max(8.0, abs(fr) / 2.0 * diam_scale)
+
+            # Glow
+            glow = QColor(color)
+            glow.setAlpha(45)
+            painter.setBrush(QBrush(glow))
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawEllipse(QPointF(bx, by), r_px + 8, r_px + 8)
+
+            # Körper
+            fill = QColor(color)
+            fill.setAlpha(170)
+            painter.setBrush(QBrush(fill))
+            painter.setPen(QPen(color, 2.5))
+            painter.drawEllipse(QPointF(bx, by), r_px, r_px)
+
+            # Richtungspfeil (0°=rechts, +CW => Screen-Y nach unten = CW ✓)
+            rad = math.radians(fangle)
+            arrow_len = r_px + max(14.0, r_px * 0.9)
+            ax = bx + arrow_len * math.cos(rad)
+            ay = by + arrow_len * math.sin(rad)
+
+            pen_arrow = QPen(color, 2.5)
+            pen_arrow.setCapStyle(Qt.PenCapStyle.RoundCap)
+            painter.setPen(pen_arrow)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            sx = bx + r_px * math.cos(rad)
+            sy = by + r_px * math.sin(rad)
+            painter.drawLine(QPointF(sx, sy), QPointF(ax, ay))
+
+            head = 10.0
+            theta = math.atan2(ay - sy, ax - sx)
+            w1 = QPointF(ax - head * math.cos(theta - math.pi / 6),
+                         ay - head * math.sin(theta - math.pi / 6))
+            w2 = QPointF(ax - head * math.cos(theta + math.pi / 6),
+                         ay - head * math.sin(theta + math.pi / 6))
+            painter.setBrush(QBrush(color))
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawPolygon(QPolygonF([QPointF(ax, ay), w1, w2]))
+
+            # Label über dem Körper
+            f_lbl = QFont("Segoe UI", 9, QFont.Weight.Bold)
+            painter.setFont(f_lbl)
+            lbl_color = QColor(color)
+            lbl_color.setAlpha(230)
+            painter.setPen(lbl_color)
+            fm = QFontMetrics(f_lbl)
+            lbl_w = fm.horizontalAdvance(blabel) + 10
+            lbl_h = fm.height()
+            lbl_x = bx - lbl_w / 2
+            lbl_y = by - r_px - lbl_h - 4
+            painter.fillRect(QRectF(lbl_x - 2, lbl_y - 1, lbl_w + 4, lbl_h + 2),
+                             QColor(0, 0, 0, 150))
+            painter.drawText(QRectF(lbl_x, lbl_y, lbl_w, lbl_h),
+                             Qt.AlignmentFlag.AlignCenter, blabel)
+
+            # Winkel-Badge rechts neben dem Körper
+            angle_str = f"{fangle:+.1f}°"
+            f_badge = QFont("Segoe UI", 8)
+            painter.setFont(f_badge)
+            painter.setPen(QColor(color).lighter(150))
+            painter.drawText(
+                QRectF(bx + r_px + 4, by - fm.height() / 2, 65, fm.height()),
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                angle_str
+            )
+
+        painter.end()
+
 # ── ImageOverlayWidget ────────────────────────────────────────────────────────
 class ImageOverlayWidget(QWidget):
     def __init__(self, image_idx: int, parent=None) -> None:
@@ -1037,6 +1260,7 @@ class SystemVisualsWidget(QWidget):
         self._values = np.zeros(MAX_FLOATS, dtype=np.float32)
         self._graphic_widgets = []
         self._config = load_config()
+        self._cols_limit = 2  # dynamic: 2 with config, 3 without
         self._setup_ui()
 
     def _setup_ui(self) -> None:
@@ -1121,7 +1345,7 @@ class SystemVisualsWidget(QWidget):
         self._img_title_bar.setStyleSheet("background: #252526; border-radius: 3px; border: none;")
         tb_layout = QHBoxLayout(self._img_title_bar)
         tb_layout.setContentsMargins(8, 0, 8, 0)
-        
+
         dot = QLabel("●")
         dot.setStyleSheet("color: #007acc; font-size: 9pt; border: none;")
         self._lbl_img_title = QLabel("Systemansicht")
@@ -1164,6 +1388,19 @@ class SystemVisualsWidget(QWidget):
         self._graphics_scroll.setWidget(self._graphics_container)
         main_layout.addWidget(self._graphics_scroll, stretch=1)
 
+        # ── Bodies-Vollflächen-Widget (ersetzt Bild+Grafik bei bodies-Gruppen) ─
+        self._bodies_widget: Optional[TwoBodiesWidget] = None
+        self._bodies_frame = QFrame()
+        self._bodies_frame.setStyleSheet(
+            "QFrame { border: 1px solid #2d2d30; border-radius: 6px; background: #0d1520; }"
+        )
+        bodies_fl = QVBoxLayout(self._bodies_frame)
+        bodies_fl.setContentsMargins(0, 0, 0, 0)
+        bodies_fl.setSpacing(0)
+        # Placeholder – wird in _load_active_group befüllt
+        self._bodies_frame.setVisible(False)
+        main_layout.addWidget(self._bodies_frame, stretch=1)
+
         self._splitter.addWidget(self._main_display)
 
         # ── Right Side: Collapsible Config Panel ──────────────────────────────
@@ -1179,7 +1416,7 @@ class SystemVisualsWidget(QWidget):
         rp_layout.addWidget(self._config_table)
 
         self._splitter.addWidget(self._right_panel)
-        
+
         self._splitter.setSizes([750, 450])
         root.addWidget(self._splitter)
 
@@ -1200,52 +1437,113 @@ class SystemVisualsWidget(QWidget):
 
         group = groups[idx]
         image_idx = int(group.get("image_idx", 1))
+        graphics_cfg = group.get("graphics", [])
 
-        self._img_widget._image_idx = image_idx
-        self._img_widget._style = IMAGE_STYLES.get(image_idx, OverlayStyle.ARROW)
-        self._img_widget.reload_image()
-        self._lbl_img_title.setText(f"Bild {image_idx}  —  {_BILD_DIR / f'Bild{image_idx}.png'}")
+        # Prüfen ob diese Gruppe ein 'bodies'-Widget hat
+        bodies_cfg = next(
+            (g for g in graphics_cfg if g.get("type", "").lower() == "bodies"), None
+        )
 
-        overlays = []
-        for ov_dict in group.get("overlays", []):
-            overlays.append(TextOverlay(
-                image_idx   = image_idx,
-                label       = str(ov_dict.get("label", "Label")),
-                channel_idx = int(ov_dict.get("channel_idx", 0)),
-                x_pct       = float(ov_dict.get("x_pct", 5.0)),
-                y_pct       = float(ov_dict.get("y_pct", 5.0)),
-                color       = str(ov_dict.get("color", "#4ec9b0")),
-            ))
-        
-        self._img_widget.set_overlays(overlays)
+        if bodies_cfg is not None:
+            # ── Bodies-Modus: ersetzt Bild + Grafik-Scroll-Area ────────────
+            self._img_frame.setVisible(False)
+            self._graphics_scroll.setVisible(False)
+            self._bodies_frame.setVisible(True)
 
-        self._config_table._image_idx = image_idx
-        self._config_table._overlays = overlays
-        self._config_table._populate()
+            def _bi(cfg_body: dict, key: str, default):
+                return cfg_body.get(key, default)
 
-        self._build_graphics_widgets(group.get("graphics", []))
+            b1  = bodies_cfg.get("body1", {})
+            b2  = bodies_cfg.get("body2", {})
+            fw  = float(bodies_cfg.get("field_width",  2.0))
+            fh  = float(bodies_cfg.get("field_height", 1.5))
+            lbl = bodies_cfg.get("label", "Körper-Feld")
+
+            # Altes Bodies-Widget entfernen falls vorhanden
+            if self._bodies_widget is not None:
+                self._bodies_frame.layout().removeWidget(self._bodies_widget)
+                self._bodies_widget.deleteLater()
+
+            self._bodies_widget = TwoBodiesWidget(
+                label      = lbl,
+                b1_label   = str(_bi(b1, "label",            "Körper 1")),
+                b1_color   = str(_bi(b1, "color",            "#4ec9b0")),
+                b1_diam    = float(_bi(b1, "diameter",       0.3)),
+                b1_ch_x    = int(_bi(b1, "channel_x",        -1)),
+                b1_ch_y    = int(_bi(b1, "channel_y",        -1)),
+                b1_ch_angle = int(_bi(b1, "channel_angle",   -1)),
+                b1_ch_diam  = int(_bi(b1, "channel_diameter", -1)),
+                b2_label   = str(_bi(b2, "label",            "Körper 2")),
+                b2_color   = str(_bi(b2, "color",            "#f0c060")),
+                b2_diam    = float(_bi(b2, "diameter",       0.3)),
+                b2_ch_x    = int(_bi(b2, "channel_x",        -1)),
+                b2_ch_y    = int(_bi(b2, "channel_y",        -1)),
+                b2_ch_angle = int(_bi(b2, "channel_angle",   -1)),
+                b2_ch_diam  = int(_bi(b2, "channel_diameter", -1)),
+                field_w    = fw,
+                field_h    = fh,
+                image_idx  = image_idx,
+            )
+            self._bodies_frame.layout().addWidget(self._bodies_widget)
+
+            # Grafik-Widgets leeren (keine normalen Widgets in bodies-Modus)
+            self._build_graphics_widgets([
+                g for g in graphics_cfg if g.get("type", "").lower() != "bodies"
+            ])
+
+        else:
+            # ── Normaler Modus: Bild + Grafik-Scroll-Area ─────────────────
+            self._bodies_frame.setVisible(False)
+            self._img_frame.setVisible(True)
+            self._graphics_scroll.setVisible(True)
+
+            self._img_widget._image_idx = image_idx
+            self._img_widget._style = IMAGE_STYLES.get(image_idx, OverlayStyle.ARROW)
+            self._img_widget.reload_image()
+            self._lbl_img_title.setText(f"Bild {image_idx}  —  {_BILD_DIR / f'Bild{image_idx}.png'}")
+
+            overlays = []
+            for ov_dict in group.get("overlays", []):
+                overlays.append(TextOverlay(
+                    image_idx   = image_idx,
+                    label       = str(ov_dict.get("label", "Label")),
+                    channel_idx = int(ov_dict.get("channel_idx", 0)),
+                    x_pct       = float(ov_dict.get("x_pct", 5.0)),
+                    y_pct       = float(ov_dict.get("y_pct", 5.0)),
+                    color       = str(ov_dict.get("color", "#4ec9b0")),
+                ))
+
+            self._img_widget.set_overlays(overlays)
+
+            self._config_table._image_idx = image_idx
+            self._config_table._overlays = overlays
+            self._config_table._populate()
+
+            self._build_graphics_widgets(graphics_cfg)
+
         self.update_data(self._values)
 
     def _build_graphics_widgets(self, graphics_config: list) -> None:
+        """Erstellt alle Grafik-Widgets neu basierend auf der Konfiguration."""
         for w in self._graphic_widgets:
             self._graphics_layout.removeWidget(w)
             w.deleteLater()
         self._graphic_widgets.clear()
 
+        cols_limit = self._cols_limit
         row = 0
         col = 0
-        cols_limit = 2
 
         for g_cfg in graphics_config:
             g_type = g_cfg.get("type", "").lower()
             label = g_cfg.get("label", "")
-            
+
             channels = []
             if "channels" in g_cfg:
                 channels = parse_channels(g_cfg["channels"])
             elif "channel" in g_cfg:
                 channels = parse_channels(g_cfg["channel"])
-            
+
             if g_type == "gauge":
                 min_val = float(g_cfg.get("min", -1.0))
                 max_val = float(g_cfg.get("max", 1.0))
@@ -1257,7 +1555,7 @@ class SystemVisualsWidget(QWidget):
                     self._graphics_layout.addWidget(w, row, col)
                     row, col = self._increment_grid(row, col, cols_limit)
                     self._graphic_widgets.append(w)
-                    
+
             elif g_type == "rotation":
                 for chan in channels:
                     lbl = label if len(channels) == 1 else f"{label} ({VARIABLE_NAMES.get(chan, f'Var_{chan}')})"
@@ -1267,15 +1565,14 @@ class SystemVisualsWidget(QWidget):
                     self._graphics_layout.addWidget(w, row, col)
                     row, col = self._increment_grid(row, col, cols_limit)
                     self._graphic_widgets.append(w)
-                    
+
             elif g_type == "vector":
-                channel_x = int(g_cfg.get("channel_x", -1))
-                channel_y = int(g_cfg.get("channel_y", -1))
+                channel_x     = int(g_cfg.get("channel_x", -1))
+                channel_y     = int(g_cfg.get("channel_y", -1))
                 channel_angle = int(g_cfg.get("channel_angle", -1))
                 channel_speed = int(g_cfg.get("channel_speed", -1))
-                scale = float(g_cfg.get("scale", 1.0))
-                max_val = float(g_cfg.get("max_val", 10.0))
-                
+                scale         = float(g_cfg.get("scale", 1.0))
+                max_val       = float(g_cfg.get("max_val", 10.0))
                 lbl = label
                 if not lbl:
                     if channel_x >= 0 and channel_y >= 0:
@@ -1286,7 +1583,7 @@ class SystemVisualsWidget(QWidget):
                 self._graphics_layout.addWidget(w, row, col)
                 row, col = self._increment_grid(row, col, cols_limit)
                 self._graphic_widgets.append(w)
-                
+
             elif g_type == "table":
                 title = g_cfg.get("title", label if label else "Datentabelle")
                 w = DataGridWidget(title, channels)
@@ -1297,7 +1594,77 @@ class SystemVisualsWidget(QWidget):
                 row += 1
                 self._graphic_widgets.append(w)
 
-        # Add spacer to stretch
+            elif g_type == "bodies":
+                # ── Zwei-Körper-Visualisierung ─────────────────────────────
+                def _bi(cfg_body: dict, key: str, default):
+                    return cfg_body.get(key, default)
+
+                b1 = g_cfg.get("body1", {})
+                b2 = g_cfg.get("body2", {})
+                fw = float(g_cfg.get("field_width",  2.0))
+                fh = float(g_cfg.get("field_height", 1.5))
+
+                w = TwoBodiesWidget(
+                    label   = label if label else "Körper-Feld",
+                    b1_label  = str(_bi(b1, "label",         "Körper 1")),
+                    b1_color  = str(_bi(b1, "color",         "#4ec9b0")),
+                    b1_diam   = float(_bi(b1, "diameter",    0.3)),
+                    b1_ch_x   = int(_bi(b1, "channel_x",     -1)),
+                    b1_ch_y   = int(_bi(b1, "channel_y",     -1)),
+                    b1_ch_angle = int(_bi(b1, "channel_angle", -1)),
+                    b1_ch_diam  = int(_bi(b1, "channel_diameter", -1)),
+                    b2_label  = str(_bi(b2, "label",         "Körper 2")),
+                    b2_color  = str(_bi(b2, "color",         "#f0c060")),
+                    b2_diam   = float(_bi(b2, "diameter",    0.3)),
+                    b2_ch_x   = int(_bi(b2, "channel_x",     -1)),
+                    b2_ch_y   = int(_bi(b2, "channel_y",     -1)),
+                    b2_ch_angle = int(_bi(b2, "channel_angle", -1)),
+                    b2_ch_diam  = int(_bi(b2, "channel_diameter", -1)),
+                    field_w = fw,
+                    field_h = fh,
+                )
+                if col > 0:
+                    col = 0
+                    row += 1
+                self._graphics_layout.addWidget(w, row, 0, 1, cols_limit)
+                row += 1
+                self._graphic_widgets.append(w)
+
+        # Spacer am Ende
+        spacer = QWidget()
+        spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self._graphics_layout.addWidget(spacer, row, 0, 1, cols_limit)
+        self._graphics_layout.setRowStretch(row, 1)
+
+    def _relayout_graphics(self, cols_limit: int) -> None:
+        """Ordnet bestehende Widgets im Grid ohne Neuaufbau neu an."""
+        # Alle Widgets aus dem Layout entfernen (ohne zu löschen)
+        for w in self._graphic_widgets:
+            self._graphics_layout.removeWidget(w)
+        # Spacer-Zeilen-Stretchfaktoren zurücksetzen
+        for r in range(self._graphics_layout.rowCount()):
+            self._graphics_layout.setRowStretch(r, 0)
+        # Alle verbleibenden Items (z.B. Spacer) entfernen
+        while self._graphics_layout.count():
+            item = self._graphics_layout.takeAt(0)
+            if item and item.widget() and item.widget() not in self._graphic_widgets:
+                item.widget().deleteLater()
+
+        row = 0
+        col = 0
+        for w in self._graphic_widgets:
+            # DataGridWidget und TwoBodiesWidget nehmen volle Breite
+            if isinstance(w, (DataGridWidget, TwoBodiesWidget)):
+                if col > 0:
+                    col = 0
+                    row += 1
+                self._graphics_layout.addWidget(w, row, 0, 1, cols_limit)
+                row += 1
+            else:
+                self._graphics_layout.addWidget(w, row, col)
+                row, col = self._increment_grid(row, col, cols_limit)
+
+        # Neuer Spacer
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._graphics_layout.addWidget(spacer, row, 0, 1, cols_limit)
@@ -1348,13 +1715,20 @@ class SystemVisualsWidget(QWidget):
         visible = self._right_panel.isVisible()
         self._right_panel.setVisible(not visible)
         if visible:
+            # Config wird ausgeblendet → 3 Spalten
             self._btn_toggle_config.setText("◀  Konfiguration ausklappen")
+            self._cols_limit = 3
         else:
+            # Config wird eingeblendet → 2 Spalten
             self._btn_toggle_config.setText("▶  Konfiguration einklappen")
+            self._cols_limit = 2
+        self._relayout_graphics(self._cols_limit)
 
     def update_data(self, values: np.ndarray) -> None:
         self._values = values
         self._img_widget.update_values(values)
+        if self._bodies_widget is not None:
+            self._bodies_widget.update_value(values)
         for w in self._graphic_widgets:
             if hasattr(w, "update_value"):
                 w.update_value(values)

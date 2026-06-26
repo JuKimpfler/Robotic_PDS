@@ -10,6 +10,13 @@
           "x_pct": 41.0,
           "y_pct": 81.0,
           "color": "#19f3ec"
+        },
+        {
+          "label": "Neu",
+          "channel_idx": 30,
+          "x_pct": 12.0,
+          "y_pct": 5.0,
+          "color": "#f0c060"
         }
       ],
       "graphics": [
@@ -208,217 +215,217 @@
         {
           "label": "L18",
           "channel_idx": 67,
-          "x_pct": 11.0,
-          "y_pct": 75.0,
+          "x_pct": 15.0,
+          "y_pct": 79.0,
           "color": "#19f3ec"
         },
         {
           "label": "L19",
           "channel_idx": 68,
-          "x_pct": 11.0,
-          "y_pct": 75.0,
+          "x_pct": 19.0,
+          "y_pct": 83.0,
           "color": "#19f3ec"
         },
         {
           "label": "L20",
           "channel_idx": 69,
-          "x_pct": 11.0,
-          "y_pct": 75.0,
+          "x_pct": 24.0,
+          "y_pct": 86.0,
           "color": "#19f3ec"
         },
         {
           "label": "L21",
           "channel_idx": 70,
-          "x_pct": 11.0,
-          "y_pct": 75.0,
+          "x_pct": 29.0,
+          "y_pct": 89.0,
           "color": "#19f3ec"
         },
         {
           "label": "L22",
           "channel_idx": 71,
-          "x_pct": 11.0,
-          "y_pct": 75.0,
+          "x_pct": 35.0,
+          "y_pct": 91.0,
           "color": "#19f3ec"
         },
         {
           "label": "L23",
           "channel_idx": 72,
-          "x_pct": 11.0,
-          "y_pct": 75.0,
+          "x_pct": 41.0,
+          "y_pct": 92.0,
           "color": "#19f3ec"
         },
         {
           "label": "L24",
           "channel_idx": 73,
-          "x_pct": 11.0,
-          "y_pct": 75.0,
+          "x_pct": 47.0,
+          "y_pct": 93.0,
           "color": "#19f3ec"
         },
         {
           "label": "L25",
           "channel_idx": 74,
-          "x_pct": 11.0,
-          "y_pct": 75.0,
+          "x_pct": 53.0,
+          "y_pct": 93.0,
           "color": "#19f3ec"
         },
         {
           "label": "L26",
           "channel_idx": 75,
-          "x_pct": 11.0,
-          "y_pct": 75.0,
+          "x_pct": 59.0,
+          "y_pct": 92.0,
           "color": "#19f3ec"
         },
         {
           "label": "L27",
           "channel_idx": 76,
-          "x_pct": 11.0,
-          "y_pct": 75.0,
+          "x_pct": 64.0,
+          "y_pct": 90.0,
           "color": "#19f3ec"
         },
         {
           "label": "L28",
           "channel_idx": 77,
-          "x_pct": 11.0,
-          "y_pct": 75.0,
+          "x_pct": 69.0,
+          "y_pct": 87.0,
           "color": "#19f3ec"
         },
         {
           "label": "L29",
           "channel_idx": 78,
-          "x_pct": 11.0,
-          "y_pct": 75.0,
+          "x_pct": 74.0,
+          "y_pct": 84.0,
           "color": "#19f3ec"
         },
         {
           "label": "L30",
           "channel_idx": 79,
-          "x_pct": 11.0,
-          "y_pct": 75.0,
+          "x_pct": 79.0,
+          "y_pct": 81.0,
           "color": "#19f3ec"
         },
         {
           "label": "L31",
           "channel_idx": 80,
-          "x_pct": 11.0,
-          "y_pct": 75.0,
+          "x_pct": 83.0,
+          "y_pct": 77.0,
           "color": "#19f3ec"
         },
         {
           "label": "L32",
           "channel_idx": 81,
-          "x_pct": 11.0,
-          "y_pct": 75.0,
+          "x_pct": 87.0,
+          "y_pct": 72.0,
           "color": "#19f3ec"
         },
         {
           "label": "L33",
           "channel_idx": 82,
-          "x_pct": 11.0,
-          "y_pct": 75.0,
+          "x_pct": 89.0,
+          "y_pct": 66.0,
           "color": "#19f3ec"
         },
         {
           "label": "L34",
           "channel_idx": 83,
-          "x_pct": 11.0,
-          "y_pct": 75.0,
+          "x_pct": 91.0,
+          "y_pct": 61.0,
           "color": "#19f3ec"
         },
         {
           "label": "L35",
           "channel_idx": 84,
-          "x_pct": 11.0,
-          "y_pct": 75.0,
+          "x_pct": 92.0,
+          "y_pct": 55.0,
           "color": "#19f3ec"
         },
         {
           "label": "L36",
           "channel_idx": 85,
-          "x_pct": 11.0,
-          "y_pct": 75.0,
+          "x_pct": 93.0,
+          "y_pct": 49.0,
           "color": "#19f3ec"
         },
         {
           "label": "L37",
           "channel_idx": 86,
-          "x_pct": 11.0,
-          "y_pct": 75.0,
+          "x_pct": 93.0,
+          "y_pct": 43.0,
           "color": "#19f3ec"
         },
         {
           "label": "L38",
           "channel_idx": 87,
-          "x_pct": 11.0,
-          "y_pct": 75.0,
+          "x_pct": 92.0,
+          "y_pct": 38.0,
           "color": "#19f3ec"
         },
         {
           "label": "L39",
           "channel_idx": 88,
-          "x_pct": 11.0,
-          "y_pct": 75.0,
+          "x_pct": 90.0,
+          "y_pct": 32.0,
           "color": "#19f3ec"
         },
         {
           "label": "L40",
           "channel_idx": 89,
-          "x_pct": 11.0,
-          "y_pct": 75.0,
+          "x_pct": 88.0,
+          "y_pct": 27.0,
           "color": "#19f3ec"
         },
         {
           "label": "L41",
           "channel_idx": 90,
-          "x_pct": 11.0,
-          "y_pct": 75.0,
+          "x_pct": 85.0,
+          "y_pct": 22.0,
           "color": "#19f3ec"
         },
         {
           "label": "L42",
           "channel_idx": 91,
-          "x_pct": 11.0,
-          "y_pct": 75.0,
+          "x_pct": 81.0,
+          "y_pct": 17.0,
           "color": "#19f3ec"
         },
         {
           "label": "L43",
           "channel_idx": 92,
-          "x_pct": 11.0,
-          "y_pct": 75.0,
+          "x_pct": 76.0,
+          "y_pct": 13.0,
           "color": "#19f3ec"
         },
         {
           "label": "L44",
           "channel_idx": 93,
-          "x_pct": 11.0,
-          "y_pct": 75.0,
+          "x_pct": 66.0,
+          "y_pct": 52.0,
           "color": "#19f3ec"
         },
         {
           "label": "L45",
           "channel_idx": 94,
-          "x_pct": 11.0,
+          "x_pct": 63.0,
           "y_pct": 75.0,
           "color": "#19f3ec"
         },
         {
           "label": "L46",
           "channel_idx": 95,
-          "x_pct": 11.0,
+          "x_pct": 37.0,
           "y_pct": 75.0,
           "color": "#19f3ec"
         },
         {
           "label": "L47",
           "channel_idx": 96,
-          "x_pct": 11.0,
+          "x_pct": 27.0,
           "y_pct": 75.0,
           "color": "#19f3ec"
         },
         {
           "label": "L48",
-          "channel_idx": 97,
-          "x_pct": 11.0,
+          "channel_idx": 79,
+          "x_pct": 49.0,
           "y_pct": 75.0,
           "color": "#19f3ec"
         }
@@ -446,12 +453,137 @@
     {
       "name": "Gruppe 4 (Bild 4)",
       "image_idx": 4,
-      "overlays": [],
+      "overlays": [
+        {
+          "label": "START",
+          "channel_idx": 30,
+          "x_pct": 0.0,
+          "y_pct": 0.0,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "Neu",
+          "channel_idx": 0,
+          "x_pct": 5.0,
+          "y_pct": 5.0,
+          "color": "#f0c060"
+        },
+        {
+          "label": "Neu",
+          "channel_idx": 0,
+          "x_pct": 5.0,
+          "y_pct": 5.0,
+          "color": "#f48771"
+        },
+        {
+          "label": "Neu",
+          "channel_idx": 0,
+          "x_pct": 5.0,
+          "y_pct": 5.0,
+          "color": "#9cdcfe"
+        },
+        {
+          "label": "Neu",
+          "channel_idx": 0,
+          "x_pct": 5.0,
+          "y_pct": 5.0,
+          "color": "#ce9178"
+        },
+        {
+          "label": "Neu",
+          "channel_idx": 0,
+          "x_pct": 5.0,
+          "y_pct": 5.0,
+          "color": "#dcdcaa"
+        },
+        {
+          "label": "Neu",
+          "channel_idx": 0,
+          "x_pct": 5.0,
+          "y_pct": 5.0,
+          "color": "#c586c0"
+        },
+        {
+          "label": "Neu",
+          "channel_idx": 0,
+          "x_pct": 5.0,
+          "y_pct": 5.0,
+          "color": "#569cd6"
+        },
+        {
+          "label": "Neu",
+          "channel_idx": 0,
+          "x_pct": 5.0,
+          "y_pct": 5.0,
+          "color": "#4ec9b0"
+        },
+        {
+          "label": "Neu",
+          "channel_idx": 0,
+          "x_pct": 5.0,
+          "y_pct": 5.0,
+          "color": "#f0c060"
+        },
+        {
+          "label": "Neu",
+          "channel_idx": 0,
+          "x_pct": 5.0,
+          "y_pct": 5.0,
+          "color": "#f48771"
+        },
+        {
+          "label": "Neu",
+          "channel_idx": 0,
+          "x_pct": 5.0,
+          "y_pct": 5.0,
+          "color": "#9cdcfe"
+        },
+        {
+          "label": "Neu",
+          "channel_idx": 0,
+          "x_pct": 5.0,
+          "y_pct": 5.0,
+          "color": "#ce9178"
+        },
+        {
+          "label": "Neu",
+          "channel_idx": 0,
+          "x_pct": 5.0,
+          "y_pct": 5.0,
+          "color": "#dcdcaa"
+        },
+        {
+          "label": "Neu",
+          "channel_idx": 0,
+          "x_pct": 100.0,
+          "y_pct": 5.0,
+          "color": "#c586c0"
+        }
+      ],
       "graphics": [
         {
-          "type": "table",
-          "title": "Statuskanäle",
-          "channels": "0-9"
+          "type": "bodies",
+          "label": "Körper-Feld",
+          "field_width": 240,
+          "field_height": 180,
+          "body1": {
+            "label": "Ball",
+            "color": "#4ec9b0",
+            "diameter": 3,
+            "channel_x": 100,
+            "channel_y": 101,
+            "channel_angle": 102,
+            "channel_diameter": -1
+          },
+          "body2": {
+            "label": "Robo",
+            "color": "#f0c060",
+            "diameter": 22,
+            "channel_x": 103,
+            "channel_y": 104,
+            "channel_angle": 105,
+            "channel_diameter": -1
+          }
         }
       ]
     }
