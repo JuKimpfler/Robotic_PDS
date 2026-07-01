@@ -6,16 +6,16 @@
       "overlays": [
         {
           "label": "START",
-          "channel_idx": 30,
+          "channel_idx": 35,
           "x_pct": 41.0,
           "y_pct": 81.0,
           "color": "#19f3ec"
         },
         {
-          "label": "Neu",
-          "channel_idx": 30,
-          "x_pct": 12.0,
-          "y_pct": 5.0,
+          "label": "BNO055",
+          "channel_idx": 21,
+          "x_pct": 42.0,
+          "y_pct": 46.0,
           "color": "#f0c060"
         }
       ],
