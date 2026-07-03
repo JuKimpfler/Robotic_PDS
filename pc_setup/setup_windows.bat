@@ -26,7 +26,7 @@ echo Firewall rules added successfully.
 echo.
 echo Installing Python dependencies...
 if exist "%~dp0..\requirements.txt" (
-    python -m pip install -r "%~dp0..\requirements.txt"
+    "C:\Users\Roboter AG\AppData\Local\Programs\Python\Python314\python.exe" -m pip install -r "%~dp0..\requirements.txt"
 ) else (
     echo requirements.txt not found.
 )
@@ -55,6 +55,6 @@ pause
 echo.
 echo Starting Power Debug Monitor GUI...
 cd "%~dp0.."
-python rpi5_monitor\main.py
+"C:\Users\Roboter AG\AppData\Local\Programs\Python\Python314\python.exe" rpi5_monitor\main.py
 
 pause
