@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "floats": [
+    { "index": 0, "name": "Kp_Motor_L",        "widget": "slider" },
+    { "index": 1, "name": "Kp_Motor_R",        "widget": "slider" },
+    { "index": 2, "name": "Zielgeschwindigkeit","widget": "text", "min": -100.0, "max": 100.0, "default": 0.0 }
+  ],
+  "bools": [
+    { "index": 0, "name": "Motor_Enable", "widget": "toggle", "default": false },
+    { "index": 1, "name": "Kick_Trigger", "widget": "button", "momentary": true, "default": false }
+  ],
+  "fast_floats": [
+    { "index": 0, "name": "Joystick_X",  "widget": "joystick_axis" },
+    { "index": 1, "name": "Joystick_Y",  "widget": "joystick_axis" },
+    { "index": 2, "name": "Rotation",    "widget": "slider" },
+    { "index": 3, "name": "Speed_Scale", "widget": "slider" },
+    { "index": 4, "name": "Reserve",     "widget": "text", "min": -10.0, "max": 10.0, "default": 0.0 }
+  ],
+  "joysticks": [
+    {
+      "name": "Fahr-Joystick",
+      "source": "fast",
+      "x_index": 0,
+      "y_index": 1,
+      "return_to_center": true
+    }
+  ]
+}
