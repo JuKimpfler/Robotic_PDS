@@ -25,7 +25,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import QTimer, Qt, pyqtSignal, QObject
 from PyQt6.QtGui import QFont
 
-from config import GUI_TIMER_MS
+from config import GUI_TIMER_MS, NODE1_IP, NODE2_IP
 from network_worker import NetworkManager, flash_nodes
 from gui.tab_table   import TelemetryTableWidget
 from gui.tab_plotter import LivePlotterWidget
@@ -158,7 +158,7 @@ class MainWindow(QMainWindow):
         self._tab_table   = TelemetryTableWidget()
         self._tab_plotter = LivePlotterWidget()
         self._tab_visuals = SystemVisualsWidget()
-        self._tab_params  = ParamEditorWidget()
+        self._tab_params  = ParamEditorWidget(get_node_ip=self.get_active_node_ip)
 
         tabs.addTab(self._tab_table,   "📊  Live-Tabelle")
         tabs.addTab(self._tab_plotter, "📈  Live-Plotter")
@@ -244,6 +244,7 @@ class MainWindow(QMainWindow):
         self._active_node = btn_id
         self._tab_table.clear_stats()
         self._tab_plotter.clear_buffer()
+        self._tab_params.set_active_node(btn_id)
         self._sb.showMessage(f"Node {btn_id} aktiviert.", 2000)
 
     def _on_flash_clicked(self) -> None:
@@ -295,6 +296,23 @@ class MainWindow(QMainWindow):
     # ══════════════════════════════════════════════════════════════════════════
     #  Hilfsmethoden
     # ══════════════════════════════════════════════════════════════════════════
+
+    def get_active_node_ip(self, node_id: int) -> str:
+        """
+        Liefert die aktuell bekannte IP eines Node — dynamisch aus dem
+        Absender der Telemetrie-Broadcasts gelernt (siehe _poll_data),
+        mit statischem Fallback aus config.py, solange von diesem Node
+        noch kein Paket empfangen wurde (z. B. direkt nach GUI-Start).
+
+        Wird als Callback an ParamEditorWidget übergeben, damit der
+        Param-Downlink (tab_params.py) nicht selbst wissen muss, wie die
+        Node-IP ermittelt wird — Node-IPs werden per DHCP vergeben und
+        sind daher nicht statisch bekannt.
+        """
+        if not hasattr(self, "_node_ips"):
+            self._node_ips = {1: NODE1_IP, 2: NODE2_IP}
+        default_ip = NODE1_IP if node_id == 1 else NODE2_IP
+        return self._node_ips.get(node_id, default_ip)
 
     @staticmethod
     def _set_led(lbl: QLabel, connected: bool) -> None:

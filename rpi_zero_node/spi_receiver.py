@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-spi_receiver.py — RPi Zero W Node  (v3 — UART statt SPI)
+spi_receiver.py — RPi Zero W Node  (v4 — UART + Param-Downlink)
 ==========================================================
 Liest Binärpakete vom Teensy 4.0 über UART und leitet
 sie sofort als UDP-Datagramm an den RPi 5 weiter.
@@ -8,17 +8,32 @@ sie sofort als UDP-Datagramm an den RPi 5 weiter.
 Kein SPI, kein DATA_READY-Signal — der Teensy sendet kontinuierlich.
 Paketsynchronisation erfolgt über den Magic-Header (0xDEADBEEF).
 
+NEU (v4): Param-Downlink in Gegenrichtung (RPi 5 → Teensy).
+Zwei zusätzliche Hintergrund-Threads lauschen je auf einem UDP-Port
+und reichen empfangene Pakete unverändert über UART_DBG-TX an den
+Teensy weiter — reiner Relay, keine Interpretation der Werte:
+
+    Slow-Kanal (Port 700X): 50 Floats + 50 Bools, 2 Hz  (Magic 0xCAFEFEED)
+    Fast-Kanal (Port 701X): 5 Floats, 100 Hz             (Magic 0xFA57DA7A)
+
+Da zwei Threads potenziell gleichzeitig auf dieselbe serielle
+Schnittstelle SCHREIBEN, ist ein gemeinsamer Lock (_uart_write_lock)
+nötig — sonst könnten sich zwei Pakete mitten im Schreiben überlappen
+und der Teensy bekäme einen unbrauchbaren Byte-Mix. Das bestehende
+LESEN (Telemetrie, ein einzelner Reader-Thread) ist davon nicht
+betroffen und bleibt unverändert.
+
 Umgebungsvariablen:
     NODE_ID  = 1 oder 2  (Standard: 1)
     RPI5_IP  = IP des RPi 5 (Standard: 192.168.42.1)
 
-Paket-Format (vom Teensy):
-    [Header: 4 Bytes = 0xDEADBEEF][Timestamp: 4 Bytes][Data: 400 × float32]
+Paket-Format (vom Teensy, Telemetrie):
+    [Header: 4 Bytes = 0xDEADBEEF][Timestamp: 4 Bytes][Data: 200 × float32]
     Gesamt: 1608 Bytes
 
 Verdrahtung:
     RPi GPIO15 (Pin 10, UART RX) ←── Teensy Pin 1 (TX1)
-    RPi GPIO14 (Pin  8, UART TX) ──→ Teensy Pin 0 (RX1)  [optional]
+    RPi GPIO14 (Pin  8, UART TX) ──→ Teensy Pin 0 (RX1)  [jetzt PFLICHT, nicht mehr optional]
     GND (Pin 6)                  ───  GND
 
 UART-Einrichtung (RPi Zero W, einmalig):
@@ -28,16 +43,11 @@ UART-Einrichtung (RPi Zero W, einmalig):
     /boot/firmware/cmdline.txt:
         console=serial0,115200  ← DIESE ZEILE ENTFERNEN (kein Login-Prompt)
     Danach: sudo reboot
-
-LED-Status (GPIO BCM):
-    GPIO 27 — Heartbeat  (grün,  blinkt 1 Hz = läuft)
-    GPIO 22 — Netzwerk   (blau,  AN = WiFi OK)
-    GPIO 24 — Daten      (gelb,  blinkt = Paket empfangen)
-    GPIO 25 — Flash/Err  (rot,   aus bei normalem Betrieb)
 """
 
 import os
 import time
+import queue
 import socket
 import struct
 import logging
@@ -46,23 +56,45 @@ import subprocess
 
 import serial
 
-# ── Konfiguration ─────────────────────────────────────────────────────────────
+# ── Konfiguration: Telemetrie (unverändert) ────────────────────────────────
 NODE_ID      = int(os.environ.get("NODE_ID", "1"))
 RPI5_IP      = os.environ.get("RPI5_IP", "192.168.42.1")
 UDP_PORT     = 5000 + NODE_ID          # 5001 oder 5002
 
 UART_PORT    = "/dev/ttyAMA0"          # PL011 Full-UART (nach dtoverlay=disable-bt)
-UART_BAUD    = 1_000_000               # 1 Mbps — stabiler für Steckkabel als 4 Mbps
+UART_BAUD    = 1_000_000               # 1 Mbps — muss mit params.h (UART_DBG_BAUD) übereinstimmen!
 
-MAX_FLOATS   = 200                     # Muss mit Teensy main.cpp übereinstimmen!
+MAX_FLOATS   = 200                     # Muss mit Teensy PDS.cpp (MAX_FLOATS) übereinstimmen!
 HEADER_SIZE  = 8                       # uint32 magic + uint32 timestamp
 PACKET_BYTES = HEADER_SIZE + MAX_FLOATS * 4   # 1608 Bytes
 
 MAGIC        = 0xDEADBEEF
 MAGIC_BYTES  = struct.pack("<I", MAGIC)       # b'\xef\xbe\xad\xde' (little-endian)
- 
+
 # Netzwerk-Prüfintervall in Sekunden
 NET_CHECK_INTERVAL = 15.0
+
+# ── Konfiguration: Param-Downlink (NEU) ─────────────────────────────────────
+# Muss exakt mit params.h (Teensy) und config.py (RPi 5) übereinstimmen!
+
+PARAM_SLOW_MAGIC        = 0xCAFEFEED
+PARAM_SLOW_MAGIC_BYTES  = struct.pack("<I", PARAM_SLOW_MAGIC)
+PARAM_SLOW_FLOAT_COUNT  = 50
+PARAM_SLOW_BOOL_COUNT   = 50
+PARAM_SLOW_PACKET_BYTES = HEADER_SIZE + PARAM_SLOW_FLOAT_COUNT * 4 + PARAM_SLOW_BOOL_COUNT   # 258
+UDP_PARAM_SLOW_PORT     = 7000 + NODE_ID   # 7001 / 7002
+
+PARAM_FAST_MAGIC        = 0xFA57DA7A
+PARAM_FAST_MAGIC_BYTES  = struct.pack("<I", PARAM_FAST_MAGIC)
+PARAM_FAST_FLOAT_COUNT  = 5
+PARAM_FAST_PACKET_BYTES = HEADER_SIZE + PARAM_FAST_FLOAT_COUNT * 4                            # 28
+UDP_PARAM_FAST_PORT     = 7010 + NODE_ID   # 7011 / 7012
+
+# Gemeinsamer Lock für alle Schreibzugriffe auf `ser` (siehe Modul-Docstring).
+# Wird beim Öffnen des UART in main() nicht mehr neu erzeugt, sondern hier
+# einmalig auf Modulebene, damit beide Downlink-Threads dieselbe Instanz
+# verwenden, ohne sie extra durchreichen zu müssen.
+_uart_write_lock = threading.Lock()
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -74,7 +106,7 @@ log = logging.getLogger()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  Paket-Synchronisation
+#  Paket-Synchronisation (Telemetrie, unverändert)
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _read_exactly(ser: serial.Serial, n: int) -> bytes | None:
@@ -127,7 +159,7 @@ def _sync_to_magic(ser: serial.Serial) -> bool:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  Netzwerk-Monitor (Hintergrundthread)
+#  Netzwerk-Monitor (Hintergrundthread, unverändert bis auf Bugfix)
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _check_wlan_connected(expected_ip: str = "") -> bool:
@@ -162,6 +194,101 @@ def _network_monitor_thread(
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+#  NEU — Param-Downlink: UDP (von RPi 5) → UART_DBG-TX (an Teensy)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _param_downlink_thread(
+    ser: serial.Serial,
+    udp_port: int,
+    magic_bytes: bytes,
+    packet_bytes: int,
+    stop_event: threading.Event,
+    label: str,
+) -> None:
+    """
+    Lauscht auf UDP-Pakete vom RPi 5 (Parameter-Stream) und reicht sie
+    unverändert (Magic- und Längen-geprüft) über UART_DBG-TX an den
+    Teensy weiter.
+
+    Reiner Relay-Thread: keine Interpretation der Werte, kein Rückkanal
+    (Fire-and-Forget) — der RPi Zero weiß nichts über die Bedeutung der
+    Parameter, das lebt ausschließlich in der GUI auf dem RPi 5.
+
+    Args:
+        ser:          gemeinsam mit dem Reader-Thread genutztes Serial-Objekt.
+                      Schreibzugriffe sind über `_uart_write_lock` serialisiert.
+        udp_port:     Port, auf dem dieser Thread lauscht.
+        magic_bytes:  erwarteter 4-Byte-Magic-Header (Little-Endian).
+        packet_bytes: erwartete Gesamtlänge eines gültigen Pakets.
+        stop_event:   wird beim Beenden des Hauptprogramms gesetzt.
+        label:        nur für Log-Ausgaben ("Slow" / "Fast").
+    """
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.bind(("0.0.0.0", udp_port))
+    sock.settimeout(0.5)
+    log.info(f"Param-Downlink[{label}] lauscht auf :{udp_port} "
+             f"(erwarte {packet_bytes} Byte/Paket)")
+
+    fwd_ok, fwd_bad = 0, 0
+    t_stat = time.monotonic()
+
+    while not stop_event.is_set():
+        try:
+            data, _addr = sock.recvfrom(packet_bytes + 64)
+        except socket.timeout:
+            continue
+        except OSError:
+            break
+
+        if len(data) != packet_bytes or data[:4] != magic_bytes:
+            fwd_bad += 1
+            log.debug(f"[{label}] ungültiges Paket verworfen "
+                       f"({len(data)} Byte, magic={data[:4].hex() if len(data) >= 4 else '??'})")
+            continue
+
+        try:
+            with _uart_write_lock:
+                ser.write(data)
+            fwd_ok += 1
+        except serial.SerialException as exc:
+            log.warning(f"[{label}] UART-Schreibfehler: {exc}")
+            fwd_bad += 1
+
+        if time.monotonic() - t_stat >= 10.0:
+            log.info(f"[{label}] weitergeleitet={fwd_ok} verworfen={fwd_bad}")
+            fwd_ok = fwd_bad = 0
+            t_stat = time.monotonic()
+
+    sock.close()
+    log.info(f"Param-Downlink[{label}] beendet.")
+
+
+def start_param_downlink_threads(
+    ser: serial.Serial,
+    stop_event: threading.Event,
+) -> list[threading.Thread]:
+    """Startet Slow- und Fast-Downlink-Thread und gibt beide zum späteren
+    Aufräumen (join) zurück."""
+    threads = [
+        threading.Thread(
+            target=_param_downlink_thread,
+            args=(ser, UDP_PARAM_SLOW_PORT, PARAM_SLOW_MAGIC_BYTES,
+                  PARAM_SLOW_PACKET_BYTES, stop_event, "Slow"),
+            daemon=True, name="ParamDownlinkSlow",
+        ),
+        threading.Thread(
+            target=_param_downlink_thread,
+            args=(ser, UDP_PARAM_FAST_PORT, PARAM_FAST_MAGIC_BYTES,
+                  PARAM_FAST_PACKET_BYTES, stop_event, "Fast"),
+            daemon=True, name="ParamDownlinkFast",
+        ),
+    ]
+    for t in threads:
+        t.start()
+    return threads
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 #  Hauptfunktion
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -170,6 +297,10 @@ def main() -> None:
         f"Starte | NODE_ID={NODE_ID} | UDP→{RPI5_IP}:{UDP_PORT} | "
         f"UART {UART_PORT} @ {UART_BAUD // 1_000_000} Mbps | "
         f"{PACKET_BYTES} Bytes/Paket | {MAX_FLOATS} Floats"
+    )
+    log.info(
+        f"Param-Downlink | Slow: UDP :{UDP_PARAM_SLOW_PORT} -> {PARAM_SLOW_PACKET_BYTES} B | "
+        f"Fast: UDP :{UDP_PARAM_FAST_PORT} -> {PARAM_FAST_PACKET_BYTES} B"
     )
 
     # ── UART öffnen ───────────────────────────────────────────────────────────
@@ -195,7 +326,7 @@ def main() -> None:
     ser.reset_input_buffer()
     log.info(f"UART {UART_PORT} geöffnet — warte auf ersten Teensy-Frame...")
 
-    # ── UDP Socket ────────────────────────────────────────────────────────────
+    # ── UDP Socket (Telemetrie, Broadcast an RPi 5) ─────────────────────────────
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 512 * 1024)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
@@ -204,11 +335,16 @@ def main() -> None:
     stop_event = threading.Event()
     net_thread = threading.Thread(
         target=_network_monitor_thread,
-        args=(stop_event),
+        args=(stop_event,),   # ← Komma ergänzt: vorher (stop_event) war KEIN Tuple,
+                               #    der Thread starb dadurch beim Start lautlos mit
+                               #    TypeError ("Event"-Objekt ist nicht iterierbar).
         daemon=True,
         name="NetworkMonitor",
     )
     net_thread.start()
+
+    # ── NEU: Param-Downlink-Threads (Slow + Fast) ───────────────────────────────
+    param_threads = start_param_downlink_threads(ser, stop_event)
 
     # ── Statistik-Variablen ───────────────────────────────────────────────────
     pkt_sent     = 0
@@ -225,10 +361,9 @@ def main() -> None:
         log.info("Synchronisiert — Empfang läuft.")
 
     # ══════════════════════════════════════════════════════════════════════════
-    #  Haupt-Empfangsschleife
+    #  Haupt-Empfangsschleife (Telemetrie, unverändert)
     # ══════════════════════════════════════════════════════════════════════════
     # ── Queue für Entkopplung ─────────────────────────────────────────────────
-    import queue
     # Maxsize 2: Wir wollen immer die FRISCHESTEN Daten.
     # Wenn UDP (WLAN) zu langsam ist, verwerfen wir alte Pakete, statt sie
     # zu verzögern (verhindert Delay-Stau und UART-Pufferüberläufe!)
@@ -310,6 +445,8 @@ def main() -> None:
         log.info("Gestoppt (KeyboardInterrupt).")
     finally:
         stop_event.set()
+        for t in param_threads:
+            t.join(timeout=1.0)
         ser.close()
         sock.close()
         log.info("Alle Ressourcen freigegeben.")
