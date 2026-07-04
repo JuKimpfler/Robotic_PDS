@@ -1,39 +1,50 @@
 #!/usr/bin/env python3
 """
-spi_receiver.py — RPi Zero W Node  (v4 — UART + Param-Downlink)
+spi_receiver.py — RPi Zero W Node  (v5 — Einthreadige Event-Loop)
 ==========================================================
-Liest Binärpakete vom Teensy 4.0 über UART und leitet
-sie sofort als UDP-Datagramm an den RPi 5 weiter.
+Liest Binärpakete vom Teensy 4.0 über UART und leitet sie sofort als
+UDP-Datagramm an den RPi 5 weiter. Empfängt außerdem zwei Param-Downlink-
+Streams (Slow + Fast) vom RPi 5 und reicht sie unverändert über UART_DBG-TX
+an den Teensy weiter.
 
-Kein SPI, kein DATA_READY-Signal — der Teensy sendet kontinuierlich.
-Paketsynchronisation erfolgt über den Magic-Header (0xDEADBEEF).
+────────────────────────────────────────────────────────────────────────────
+WARUM v5 EIN KOMPLETTER UMBAU IST (Bugfix für Throughput-Einbruch):
+────────────────────────────────────────────────────────────────────────────
+In v4 liefen UART-Reader, NetworkMonitor, ParamDownlinkSlow und
+ParamDownlinkFast als VIER separate Python-Threads. Sobald der Fast-Kanal
+(100 Hz) aktiv gesendet hat, ist die Telemetrie-Rate von 100 auf ca. 70
+Pakete/s eingebrochen — das war kein Bandbreiten- oder Kabelproblem
+(2.8 kB/s Fast-Traffic sind nichts gegen die ~100 kB/s Baud-Budget),
+sondern ein GIL-Scheduling-Problem: CPython fuehrt nur EINEN Thread
+gleichzeitig aus. Der Fast-Downlink-Thread wachte 100x/s auf und hat dem
+UART-Reader-Thread Ausfuehrungszeit auf dem schwachen Cortex-A53-Kern des
+RPi Zero 2 W weggenommen. Geriet der Reader dadurch kurz in Verzug, war die
+(alte) Resync-Logik selbst wieder teuer (Byte-fuer-Byte-Lesen), was den
+Effekt verstaerkt hat.
 
-NEU (v4): Param-Downlink in Gegenrichtung (RPi 5 → Teensy).
-Zwei zusätzliche Hintergrund-Threads lauschen je auf einem UDP-Port
-und reichen empfangene Pakete unverändert über UART_DBG-TX an den
-Teensy weiter — reiner Relay, keine Interpretation der Werte:
-
-    Slow-Kanal (Port 700X): 50 Floats + 50 Bools, 2 Hz  (Magic 0xCAFEFEED)
-    Fast-Kanal (Port 701X): 5 Floats, 100 Hz             (Magic 0xFA57DA7A)
-
-Da zwei Threads potenziell gleichzeitig auf dieselbe serielle
-Schnittstelle SCHREIBEN, ist ein gemeinsamer Lock (_uart_write_lock)
-nötig — sonst könnten sich zwei Pakete mitten im Schreiben überlappen
-und der Teensy bekäme einen unbrauchbaren Byte-Mix. Das bestehende
-LESEN (Telemetrie, ein einzelner Reader-Thread) ist davon nicht
-betroffen und bleibt unverändert.
+v5 loest das strukturell: ALLES (UART lesen/schreiben, beide UDP-Ports)
+laeuft in EINEM einzigen Thread ueber eine `selectors`-Event-Loop (wie
+select/epoll). Es gibt keine konkurrierenden Python-Threads mehr, also auch
+keine GIL-Umschaltung zwischen ihnen. Zusaetzlich ersetzt ein einfacher
+Puffer-Zustandsautomat (TelemetryFrameAssembler) die alte byte-fuer-byte
+Resync-Schleife durch ein effizientes bytearray.find()-basiertes Verfahren.
 
 Umgebungsvariablen:
     NODE_ID  = 1 oder 2  (Standard: 1)
-    RPI5_IP  = IP des RPi 5 (Standard: 192.168.42.1)
+    RPI5_IP  = IP des RPi 5 (Standard: 192.168.42.1) — aktuell nur fuer
+               Logging verwendet, der eigentliche Versand ist Broadcast.
 
 Paket-Format (vom Teensy, Telemetrie):
     [Header: 4 Bytes = 0xDEADBEEF][Timestamp: 4 Bytes][Data: 200 × float32]
-    Gesamt: 1608 Bytes
+    Gesamt: 808 Bytes   (bei MAX_FLOATS=200 — siehe PDS.cpp)
+
+Param-Downlink (vom RPi 5, Gegenrichtung):
+    Slow-Kanal (Port 700X): 50 Floats + 50 Bools, 2 Hz    (Magic 0xCAFEFEED, 258 B)
+    Fast-Kanal (Port 701X): 5 Floats, 100 Hz               (Magic 0xFA57DA7A, 28 B)
 
 Verdrahtung:
     RPi GPIO15 (Pin 10, UART RX) ←── Teensy Pin 1 (TX1)
-    RPi GPIO14 (Pin  8, UART TX) ──→ Teensy Pin 0 (RX1)  [jetzt PFLICHT, nicht mehr optional]
+    RPi GPIO14 (Pin  8, UART TX) ──→ Teensy Pin 0 (RX1)  [Pflicht fuer Param-Downlink]
     GND (Pin 6)                  ───  GND
 
 UART-Einrichtung (RPi Zero W, einmalig):
@@ -47,16 +58,15 @@ UART-Einrichtung (RPi Zero W, einmalig):
 
 import os
 import time
-import queue
 import socket
 import struct
 import logging
-import threading
+import selectors
 import subprocess
 
 import serial
 
-# ── Konfiguration: Telemetrie (unverändert) ────────────────────────────────
+# ── Konfiguration: Telemetrie ────────────────────────────────────────────────
 NODE_ID      = int(os.environ.get("NODE_ID", "1"))
 RPI5_IP      = os.environ.get("RPI5_IP", "192.168.42.1")
 UDP_PORT     = 5000 + NODE_ID          # 5001 oder 5002
@@ -66,15 +76,15 @@ UART_BAUD    = 1_000_000               # 1 Mbps — muss mit params.h (UART_DBG_
 
 MAX_FLOATS   = 200                     # Muss mit Teensy PDS.cpp (MAX_FLOATS) übereinstimmen!
 HEADER_SIZE  = 8                       # uint32 magic + uint32 timestamp
-PACKET_BYTES = HEADER_SIZE + MAX_FLOATS * 4   # 1608 Bytes
+PACKET_BYTES = HEADER_SIZE + MAX_FLOATS * 4   # 808 Bytes (bei MAX_FLOATS=200)
 
 MAGIC        = 0xDEADBEEF
-MAGIC_BYTES  = struct.pack("<I", MAGIC)       # b'\xef\xbe\xad\xde' (little-endian)
+MAGIC_BYTES  = struct.pack("<I", MAGIC)
 
-# Netzwerk-Prüfintervall in Sekunden
-NET_CHECK_INTERVAL = 15.0
+NET_CHECK_INTERVAL = 15.0   # Sekunden
+STAT_LOG_INTERVAL  = 4.0    # Sekunden
 
-# ── Konfiguration: Param-Downlink (NEU) ─────────────────────────────────────
+# ── Konfiguration: Param-Downlink ────────────────────────────────────────────
 # Muss exakt mit params.h (Teensy) und config.py (RPi 5) übereinstimmen!
 
 PARAM_SLOW_MAGIC        = 0xCAFEFEED
@@ -90,12 +100,6 @@ PARAM_FAST_FLOAT_COUNT  = 5
 PARAM_FAST_PACKET_BYTES = HEADER_SIZE + PARAM_FAST_FLOAT_COUNT * 4                            # 28
 UDP_PARAM_FAST_PORT     = 7010 + NODE_ID   # 7011 / 7012
 
-# Gemeinsamer Lock für alle Schreibzugriffe auf `ser` (siehe Modul-Docstring).
-# Wird beim Öffnen des UART in main() nicht mehr neu erzeugt, sondern hier
-# einmalig auf Modulebene, damit beide Downlink-Threads dieselbe Instanz
-# verwenden, ohne sie extra durchreichen zu müssen.
-_uart_write_lock = threading.Lock()
-
 # ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
@@ -106,195 +110,80 @@ log = logging.getLogger()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  Paket-Synchronisation (Telemetrie, unverändert)
+#  TelemetryFrameAssembler — ersetzt die alte byte-für-byte Resync-Schleife
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _read_exactly(ser: serial.Serial, n: int) -> bytes | None:
+class TelemetryFrameAssembler:
     """
-    Liest exakt n Bytes aus dem UART.
-    Gibt None zurück bei Timeout oder unvollständigem Empfang.
-    Intern: mehrere read()-Aufrufe bis alle n Bytes da sind.
+    Nimmt beliebig große, beliebig geschnittene Byte-Chunks entgegen (wie sie
+    von einem nicht-blockierenden UART-Read zurückkommen) und liefert
+    vollständige Telemetrie-Pakete zurück, sobald sie komplett sind.
+
+    Nutzt bytearray.find() für die Magic-Suche statt einer Python-Schleife
+    mit Einzelbyte-Reads — das ist der Teil, der in v4 bei Sync-Verlust
+    unverhältnismäßig teuer war und zum GIL-Kontentions-Teufelskreis
+    beigetragen hat (siehe Modul-Docstring).
     """
-    buf = bytearray()
-    while len(buf) < n:
-        chunk = ser.read(n - len(buf))
+
+    def __init__(self) -> None:
+        self._buf = bytearray()
+        self.sync_losses = 0
+        self.packets_out = 0
+
+    def feed(self, chunk: bytes) -> list[bytes]:
         if not chunk:
-            return None   # Timeout
-        buf.extend(chunk)
-    return bytes(buf)
+            return []
+        self._buf.extend(chunk)
+        packets: list[bytes] = []
 
+        while True:
+            idx = self._buf.find(MAGIC_BYTES)
+            if idx == -1:
+                # Kein vollständiger Magic im Puffer -- die letzten 3 Bytes
+                # könnten der Anfang eines noch nicht komplett angekommenen
+                # Magic sein, den Rest können wir gefahrlos verwerfen.
+                if len(self._buf) > 3:
+                    del self._buf[:-3]
+                break
 
-def _sync_to_magic(ser: serial.Serial) -> bool:
-    """
-    Schiebt ein 4-Byte-Fenster Byte für Byte durch den UART-Stream,
-    bis das Magic-Pattern 0xDEADBEEF gefunden wird.
+            if idx > 0:
+                # Byte-Müll vor dem Magic -- Sync-Verlust zählen und verwerfen
+                self.sync_losses += 1
+                del self._buf[:idx]
 
-    Normal-Fall (kein Fehler): Magic steht direkt am Paket-Anfang —
-    dann kehrt diese Funktion nach 4 Bytes zurück.
+            if len(self._buf) < PACKET_BYTES:
+                break   # Paket ist noch nicht vollständig angekommen
 
-    Fehler-Fall (verlorene Synchronisation): Suche kann viele Bytes dauern.
-    Bei Timeout wird False zurückgegeben.
+            packets.append(bytes(self._buf[:PACKET_BYTES]))
+            del self._buf[:PACKET_BYTES]
+            self.packets_out += 1
 
-    Returns:
-        True  — Magic gefunden, nächste Bytes sind Timestamp + Daten
-        False — Timeout ohne Magic-Fund
-    """
-    window = bytearray(4)
-    bytes_searched = 0
-
-    while True:
-        b = ser.read(1)
-        if not b:
-            return False   # Timeout
-
-        # Fenster verschieben und neues Byte anhängen
-        window[0:3] = window[1:4]
-        window[3]   = b[0]
-        bytes_searched += 1
-
-        if bytes(window) == MAGIC_BYTES:
-            if bytes_searched > 4:
-                log.warning(f"Re-Sync nach {bytes_searched} Bytes")
-            return True
+        return packets
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  Netzwerk-Monitor (Hintergrundthread, unverändert bis auf Bugfix)
+#  Netzwerk-Check (jetzt eine einfache Funktion statt eigenem Thread)
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _check_wlan_connected(expected_ip: str = "") -> bool:
-    """Prüft ob wlan0 die erwartete IP besitzt (ohne Netzwerkzugriff)."""
+def _check_wlan_connected() -> bool:
+    """Prüft ob wlan0 überhaupt eine IP-Adresse besitzt (DHCP erfolgreich)."""
     try:
         result = subprocess.run(
             ["ip", "addr", "show", "wlan0"],
             capture_output=True, text=True, timeout=3,
         )
-        output = result.stdout
-        return (expected_ip in output) if expected_ip else ("inet " in output)
+        return "inet " in result.stdout
     except Exception:
         return False
 
 
-def _network_monitor_thread(
-    stop_event: threading.Event,
-) -> None:
-    """Prüft WLAN-Verbindung alle NET_CHECK_INTERVAL Sekunden."""
-
-    while not stop_event.is_set():
-        # Leerer String ("") bedeutet: Prüfe nur, ob überhaupt eine IP zugewiesen wurde (DHCP erfolgreich)
-        connected = _check_wlan_connected("")
-
-        if not connected:
-            log.warning("WLAN nicht verbunden (keine IP-Adresse auf wlan0 erhalten)")
-
-        for _ in range(int(NET_CHECK_INTERVAL)):
-            if stop_event.is_set():
-                break
-            time.sleep(1.0)
-
-
 # ══════════════════════════════════════════════════════════════════════════════
-#  NEU — Param-Downlink: UDP (von RPi 5) → UART_DBG-TX (an Teensy)
-# ══════════════════════════════════════════════════════════════════════════════
-
-def _param_downlink_thread(
-    ser: serial.Serial,
-    udp_port: int,
-    magic_bytes: bytes,
-    packet_bytes: int,
-    stop_event: threading.Event,
-    label: str,
-) -> None:
-    """
-    Lauscht auf UDP-Pakete vom RPi 5 (Parameter-Stream) und reicht sie
-    unverändert (Magic- und Längen-geprüft) über UART_DBG-TX an den
-    Teensy weiter.
-
-    Reiner Relay-Thread: keine Interpretation der Werte, kein Rückkanal
-    (Fire-and-Forget) — der RPi Zero weiß nichts über die Bedeutung der
-    Parameter, das lebt ausschließlich in der GUI auf dem RPi 5.
-
-    Args:
-        ser:          gemeinsam mit dem Reader-Thread genutztes Serial-Objekt.
-                      Schreibzugriffe sind über `_uart_write_lock` serialisiert.
-        udp_port:     Port, auf dem dieser Thread lauscht.
-        magic_bytes:  erwarteter 4-Byte-Magic-Header (Little-Endian).
-        packet_bytes: erwartete Gesamtlänge eines gültigen Pakets.
-        stop_event:   wird beim Beenden des Hauptprogramms gesetzt.
-        label:        nur für Log-Ausgaben ("Slow" / "Fast").
-    """
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.bind(("0.0.0.0", udp_port))
-    sock.settimeout(0.5)
-    log.info(f"Param-Downlink[{label}] lauscht auf :{udp_port} "
-             f"(erwarte {packet_bytes} Byte/Paket)")
-
-    fwd_ok, fwd_bad = 0, 0
-    t_stat = time.monotonic()
-
-    while not stop_event.is_set():
-        try:
-            data, _addr = sock.recvfrom(packet_bytes + 64)
-        except socket.timeout:
-            continue
-        except OSError:
-            break
-
-        if len(data) != packet_bytes or data[:4] != magic_bytes:
-            fwd_bad += 1
-            log.debug(f"[{label}] ungültiges Paket verworfen "
-                       f"({len(data)} Byte, magic={data[:4].hex() if len(data) >= 4 else '??'})")
-            continue
-
-        try:
-            with _uart_write_lock:
-                ser.write(data)
-            fwd_ok += 1
-        except serial.SerialException as exc:
-            log.warning(f"[{label}] UART-Schreibfehler: {exc}")
-            fwd_bad += 1
-
-        if time.monotonic() - t_stat >= 10.0:
-            log.info(f"[{label}] weitergeleitet={fwd_ok} verworfen={fwd_bad}")
-            fwd_ok = fwd_bad = 0
-            t_stat = time.monotonic()
-
-    sock.close()
-    log.info(f"Param-Downlink[{label}] beendet.")
-
-
-def start_param_downlink_threads(
-    ser: serial.Serial,
-    stop_event: threading.Event,
-) -> list[threading.Thread]:
-    """Startet Slow- und Fast-Downlink-Thread und gibt beide zum späteren
-    Aufräumen (join) zurück."""
-    threads = [
-        threading.Thread(
-            target=_param_downlink_thread,
-            args=(ser, UDP_PARAM_SLOW_PORT, PARAM_SLOW_MAGIC_BYTES,
-                  PARAM_SLOW_PACKET_BYTES, stop_event, "Slow"),
-            daemon=True, name="ParamDownlinkSlow",
-        ),
-        threading.Thread(
-            target=_param_downlink_thread,
-            args=(ser, UDP_PARAM_FAST_PORT, PARAM_FAST_MAGIC_BYTES,
-                  PARAM_FAST_PACKET_BYTES, stop_event, "Fast"),
-            daemon=True, name="ParamDownlinkFast",
-        ),
-    ]
-    for t in threads:
-        t.start()
-    return threads
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  Hauptfunktion
+#  Hauptfunktion — einthreadige Event-Loop
 # ══════════════════════════════════════════════════════════════════════════════
 
 def main() -> None:
     log.info(
-        f"Starte | NODE_ID={NODE_ID} | UDP→{RPI5_IP}:{UDP_PORT} | "
+        f"Starte | NODE_ID={NODE_ID} | UDP→{RPI5_IP}:{UDP_PORT} (Broadcast) | "
         f"UART {UART_PORT} @ {UART_BAUD // 1_000_000} Mbps | "
         f"{PACKET_BYTES} Bytes/Paket | {MAX_FLOATS} Floats"
     )
@@ -302,8 +191,9 @@ def main() -> None:
         f"Param-Downlink | Slow: UDP :{UDP_PARAM_SLOW_PORT} -> {PARAM_SLOW_PACKET_BYTES} B | "
         f"Fast: UDP :{UDP_PARAM_FAST_PORT} -> {PARAM_FAST_PACKET_BYTES} B"
     )
+    log.info("v5: einthreadige selectors-Event-Loop (kein GIL-Konkurrenzproblem mehr)")
 
-    # ── UART öffnen ───────────────────────────────────────────────────────────
+    # ── UART öffnen (nicht-blockierend: timeout=0 -> read() kehrt sofort zurück) ──
     try:
         ser = serial.Serial(
             port         = UART_PORT,
@@ -311,9 +201,10 @@ def main() -> None:
             bytesize     = serial.EIGHTBITS,
             parity       = serial.PARITY_NONE,
             stopbits     = serial.STOPBITS_ONE,
-            timeout      = 2.0,    # Gesamt-Read-Timeout [s]
-            xonxoff      = False,  # Kein Software-Handshake
-            rtscts       = False,  # Kein Hardware-Handshake
+            timeout      = 0,      # nicht-blockierend: read() liefert sofort, was da ist
+            write_timeout = 0,     # write() blockiert ebenfalls nicht
+            xonxoff      = False,
+            rtscts       = False,
             dsrdtr       = False,
         )
     except serial.SerialException as exc:
@@ -322,133 +213,124 @@ def main() -> None:
         log.error("→ Prüfe: console=serial0,... in cmdline.txt entfernt?")
         raise SystemExit(1)
 
-    # Eingangspuffer leeren (Reste aus vorherigen Starts verwerfen)
     ser.reset_input_buffer()
     log.info(f"UART {UART_PORT} geöffnet — warte auf ersten Teensy-Frame...")
 
     # ── UDP Socket (Telemetrie, Broadcast an RPi 5) ─────────────────────────────
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 512 * 1024)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    udp_out = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    udp_out.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 512 * 1024)
+    udp_out.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
 
-    # ── Netzwerk-Monitor ──────────────────────────────────────────────────────
-    stop_event = threading.Event()
-    net_thread = threading.Thread(
-        target=_network_monitor_thread,
-        args=(stop_event,),   # ← Komma ergänzt: vorher (stop_event) war KEIN Tuple,
-                               #    der Thread starb dadurch beim Start lautlos mit
-                               #    TypeError ("Event"-Objekt ist nicht iterierbar).
-        daemon=True,
-        name="NetworkMonitor",
-    )
-    net_thread.start()
+    # ── UDP Sockets (Param-Downlink, empfangend, nicht-blockierend) ────────────
+    slow_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    slow_sock.setblocking(False)
+    slow_sock.bind(("0.0.0.0", UDP_PARAM_SLOW_PORT))
 
-    # ── NEU: Param-Downlink-Threads (Slow + Fast) ───────────────────────────────
-    param_threads = start_param_downlink_threads(ser, stop_event)
+    fast_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    fast_sock.setblocking(False)
+    fast_sock.bind(("0.0.0.0", UDP_PARAM_FAST_PORT))
 
-    # ── Statistik-Variablen ───────────────────────────────────────────────────
-    pkt_sent     = 0
-    bytes_sent   = 0
-    err_count    = 0
-    sync_losses  = 0
-    t_stat_start = time.monotonic()
+    # ── Event-Loop: alle vier Quellen (UART, 2× UDP) über EINEN Selector ───────
+    sel = selectors.DefaultSelector()
+    sel.register(ser.fileno(), selectors.EVENT_READ, data="uart")
+    sel.register(slow_sock, selectors.EVENT_READ, data="param_slow")
+    sel.register(fast_sock, selectors.EVENT_READ, data="param_fast")
 
-    # ── Erste Synchronisation ─────────────────────────────────────────────────
-    log.info("Suche Magic-Header (0xDEADBEEF) …")
-    if not _sync_to_magic(ser):
-        log.error("Kein Signal vom Teensy (Timeout 2 s). Kabel prüfen!")
-    else:
-        log.info("Synchronisiert — Empfang läuft.")
+    assembler = TelemetryFrameAssembler()
 
-    # ══════════════════════════════════════════════════════════════════════════
-    #  Haupt-Empfangsschleife (Telemetrie, unverändert)
-    # ══════════════════════════════════════════════════════════════════════════
-    # ── Queue für Entkopplung ─────────────────────────────────────────────────
-    # Maxsize 2: Wir wollen immer die FRISCHESTEN Daten.
-    # Wenn UDP (WLAN) zu langsam ist, verwerfen wir alte Pakete, statt sie
-    # zu verzögern (verhindert Delay-Stau und UART-Pufferüberläufe!)
-    packet_queue = queue.Queue(maxsize=2)
+    # ── Statistik ────────────────────────────────────────────────────────────
+    pkt_sent      = 0
+    bytes_sent    = 0
+    send_errors   = 0
+    fwd_slow_ok   = 0
+    fwd_fast_ok   = 0
+    fwd_bad       = 0
+    last_sync_losses = 0
 
-    def _uart_reader_thread():
-        nonlocal err_count, sync_losses
-        log.info("UART-Reader-Thread gestartet.")
-        while True:
-            # Schritt 1: Header lesen
-            header = _read_exactly(ser, 4)
-            if header is None:
-                err_count += 1
-                _sync_to_magic(ser)
-                sync_losses += 1
-                continue
+    t_stat_start   = time.monotonic()
+    t_last_netcheck = time.monotonic()
 
-            if header != MAGIC_BYTES:
-                ser.reset_input_buffer()
-                if not _sync_to_magic(ser):
-                    err_count += 1
-                    continue
-                sync_losses += 1
-                payload = _read_exactly(ser, PACKET_BYTES - 4)
-                if payload is None:
-                    continue
-                raw = MAGIC_BYTES + payload
-            else:
-                payload = _read_exactly(ser, PACKET_BYTES - 4)
-                if payload is None:
-                    err_count += 1
-                    _sync_to_magic(ser)
-                    sync_losses += 1
-                    continue
-                raw = header + payload
+    log.info("Event-Loop gestartet — warte auf Daten (UART + 2× UDP)...")
 
-            # Paket in die Queue schieben (ältestes verwerfen falls voll)
-            try:
-                packet_queue.put_nowait(raw)
-            except queue.Full:
-                try:
-                    packet_queue.get_nowait() # Altes Paket wegwerfen
-                    packet_queue.put_nowait(raw)
-                except (queue.Empty, queue.Full):
-                    pass
-
-    # Reader-Thread starten
-    threading.Thread(target=_uart_reader_thread, daemon=True, name="UART-Reader").start()
-
-    # ══════════════════════════════════════════════════════════════════════════
-    #  Haupt-Schleife (UDP Senden)
-    # ══════════════════════════════════════════════════════════════════════════
     try:
         while True:
-            # Warten bis ein frisches Paket da ist
-            raw = packet_queue.get()
+            # timeout=1.0: mind. 1x/s aufwachen, auch wenn nichts anliegt,
+            # damit periodische Aufgaben (Stats, Netzwerk-Check) nicht liegen bleiben
+            events = sel.select(timeout=1.0)
 
-            try:
-                sent = sock.sendto(raw, ("255.255.255.255", UDP_PORT))
-                pkt_sent   += 1
-                bytes_sent += sent
-            except OSError as exc:
-                log.warning(f"UDP-Sendefehler: {exc}")
-                err_count += 1
+            for key, _mask in events:
+                if key.data == "uart":
+                    # Nicht-blockierend: liefert sofort 0..N verfügbare Bytes
+                    chunk = ser.read(4096)
+                    for raw in assembler.feed(chunk):
+                        try:
+                            sent = udp_out.sendto(raw, ("255.255.255.255", UDP_PORT))
+                            pkt_sent += 1
+                            bytes_sent += sent
+                        except OSError as exc:
+                            log.warning(f"UDP-Sendefehler: {exc}")
+                            send_errors += 1
 
-            # ── Statistik alle 4 Sekunden ────────────────────────────────────
-            elapsed = time.monotonic() - t_stat_start
-            if elapsed >= 4.0:
-                pps  = pkt_sent   / elapsed
+                elif key.data == "param_slow":
+                    try:
+                        data, _addr = slow_sock.recvfrom(PARAM_SLOW_PACKET_BYTES + 64)
+                    except (BlockingIOError, OSError):
+                        continue
+                    if len(data) == PARAM_SLOW_PACKET_BYTES and data[:4] == PARAM_SLOW_MAGIC_BYTES:
+                        try:
+                            ser.write(data)
+                            fwd_slow_ok += 1
+                        except serial.SerialException as exc:
+                            log.warning(f"[Slow] UART-Schreibfehler: {exc}")
+                    else:
+                        fwd_bad += 1
+
+                elif key.data == "param_fast":
+                    try:
+                        data, _addr = fast_sock.recvfrom(PARAM_FAST_PACKET_BYTES + 64)
+                    except (BlockingIOError, OSError):
+                        continue
+                    if len(data) == PARAM_FAST_PACKET_BYTES and data[:4] == PARAM_FAST_MAGIC_BYTES:
+                        try:
+                            ser.write(data)
+                            fwd_fast_ok += 1
+                        except serial.SerialException as exc:
+                            log.warning(f"[Fast] UART-Schreibfehler: {exc}")
+                    else:
+                        fwd_bad += 1
+
+            # ── Periodische Aufgaben (statt eigener Threads) ────────────────────
+            now = time.monotonic()
+
+            if now - t_stat_start >= STAT_LOG_INTERVAL:
+                elapsed = now - t_stat_start
+                pps = pkt_sent / elapsed
                 kbps = bytes_sent / elapsed / 1024
+                new_losses = assembler.sync_losses - last_sync_losses
                 log.info(
-                    f"Throughput: {pps:.1f} Pkt/s | {kbps:.1f} KB/s | "
-                    f"Sync-Verluste: {sync_losses} | Fehler: {err_count}"
+                    f"Telemetrie: {pps:.1f} Pkt/s | {kbps:.1f} KB/s | "
+                    f"Sync-Verluste: {new_losses} | Sendefehler: {send_errors} || "
+                    f"Param-Downlink: Slow={fwd_slow_ok} Fast={fwd_fast_ok} "
+                    f"({fwd_fast_ok / elapsed:.1f} Pkt/s) ungültig={fwd_bad}"
                 )
-                pkt_sent = bytes_sent = err_count = sync_losses = 0
-                t_stat_start = time.monotonic()
+                pkt_sent = bytes_sent = send_errors = 0
+                fwd_slow_ok = fwd_fast_ok = fwd_bad = 0
+                last_sync_losses = assembler.sync_losses
+                t_stat_start = now
+
+            if now - t_last_netcheck >= NET_CHECK_INTERVAL:
+                if not _check_wlan_connected():
+                    log.warning("WLAN nicht verbunden (keine IP-Adresse auf wlan0)")
+                t_last_netcheck = now
 
     except KeyboardInterrupt:
         log.info("Gestoppt (KeyboardInterrupt).")
     finally:
-        stop_event.set()
-        for t in param_threads:
-            t.join(timeout=1.0)
+        sel.close()
         ser.close()
-        sock.close()
+        udp_out.close()
+        slow_sock.close()
+        fast_sock.close()
         log.info("Alle Ressourcen freigegeben.")
 
 
