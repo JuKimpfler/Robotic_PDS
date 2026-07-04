@@ -35,7 +35,22 @@ Parameters can be configured directly in the GUI and sent back to the active nod
 - **RPi Zero Node** listens to these UDP ports and forwards the raw bytes immediately over UART to the Teensy.
 - **Teensy 4.0** parses the incoming packet stream via a synchronized parser in the `PowerDebugger` class, updating the RAM values for the robot logic.
 
-*Note: Firmware flashing and USB-C gadget network features have been completely removed from this project.*
+### 3. Wireless Firmware Flashing (Windows PC → Bluetooth → RPi Zero 2 W → USB → Teensy 4.0)
+A `.hex` firmware image can be sent wirelessly from any Windows PC to one or both
+RPi Zero 2 W nodes over Bluetooth Classic (RFCOMM/SPP), independent of the
+WLAN/UDP telemetry path above. The node receives the file, verifies its SHA-256
+hash, and flashes it via `teensy_loader_cli` over the existing USB connection —
+no physical button press on the Teensy needed. See `Flash_Implementierung.md`
+for the full architecture/protocol and `pc_setup/pc_flash_tool/README.md` for
+usage instructions.
+
+```
+Windows PC ──Bluetooth (RFCOMM/SPP)──▶ RPi Zero 2 W ──USB──▶ Teensy 4.0
+ bt_flash_sender.py                    bt_flash_receiver.py   (teensy_loader_cli)
+```
+
+*Note: this feature was added after the original "firmware flashing has been
+removed" note in earlier revisions of this README — that note is now outdated.*
 
 ---
 
@@ -49,11 +64,15 @@ Parameters can be configured directly in the GUI and sent back to the active nod
   - `setup_node.sh`: Auto-installer script for the Pi Zero.
   - `spi_receiver.py` (installed as `uart_receiver.py`): Receives serial data from Teensy and sends UDP broadcasts.
   - `status_leds.py`: Drives heartbeat, data transmission, and network status LEDs.
+  - `bt_flash_receiver.py`: Bluetooth SPP server; receives `.hex` files and flashes the Teensy via `teensy_loader_cli`.
 - **`teensy_firmware/`**: PlatformIO project for the Teensy 4.0 firmware.
   - `src/PDS.h` / `PDS.cpp`: The `PowerDebugger` class.
   - `src/params.h`: Parameter structures and constants.
+- **`shared/`**: Code shared between PC and Pi.
+  - `bt_flash_protocol.py`: Frame protocol used by both `bt_flash_sender.py` and `bt_flash_receiver.py`.
 - **`pc_setup/`**: Batch file and documentation to run the GUI on a Windows 11 PC.
   - `setup_windows.bat`: Opens Windows firewall rules and opens mobile hotspot settings.
+  - `pc_flash_tool/bt_flash_sender.py`: Sends a `.hex` file over Bluetooth to one or both nodes (see Wireless Flashing above).
 
 ---
 

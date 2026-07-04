@@ -17,13 +17,21 @@
 #    • Quad-Core: Python-Services laufen paralleler ohne GIL-Probleme
 #
 #  WAS DIESES SKRIPT TUT:
-#    1. Systempakete installieren (Python, pyserial, GPIO-Libs, ...)
-#    2. UART freischalten (PL011 auf GPIO14/15, Bluetooth deaktivieren)
+#    1. Systempakete installieren (Python, pyserial, GPIO-Libs, BlueZ/D-Bus, ...)
+#    2. UART freischalten (PL011 auf GPIO14/15), Bluetooth auf Mini-UART
+#       (dtoverlay=miniuart-bt) — Bluetooth bleibt AKTIV fuer das Wireless-
+#       Flash-Feature (Windows-PC -> Bluetooth -> USB -> Teensy 4.0)
 #    3. SPI deaktivieren (nicht genutzt)
 #    4. WLAN zum RPi 5 konfigurieren (DHCP — IP kommt vom RPi-5-Hotspot)
-#    5. Projektdateien installieren (/opt/power_debug_node/)
-#    6. Systemdienst anlegen (uart-receiver)
-#    7. Dienst aktivieren (startet automatisch bei jedem Boot)
+#    5. Projektdateien installieren (/opt/power_debug_node/), Auth-Token fuer
+#       den Bluetooth-Flash-Kanal generieren
+#    6. Systemdienste anlegen (uart-receiver, bt-flash-receiver)
+#    7. Dienste aktivieren (starten automatisch bei jedem Boot)
+#
+#  WIRELESS-FLASH-FEATURE (siehe Flash_Implementierung.md im Projekt-Root):
+#    Nach Abschluss + reboot gibt dieses Skript MAC-Adresse, Auth-Token und
+#    RFCOMM-Kanal aus — diese Werte in
+#    pc_setup/pc_flash_tool/bt_targets.json auf dem Windows-PC eintragen.
 #
 #  WLAN-Zugang:
 #    SSID:     RoboDebug          ← muss mit RPi 5 AP übereinstimmen
@@ -128,7 +136,17 @@ apt-get install -y --no-install-recommends \
     avrdude \
     teensy-loader-cli \
     git \
-    curl
+    curl \
+    bluez \
+    python3-dbus \
+    python3-gi
+
+# Hinweis Bluetooth-Flash-Feature (siehe Flash_Implementierung.md, Abweichung):
+#   Es wird bewusst NICHT auf `bluez-tools`/`bt-agent` bzw. `sdptool` gesetzt,
+#   da deren Verfügbarkeit auf "Raspberry Pi OS Lite (Legacy, 64-bit)" nicht
+#   zuverlässig garantiert ist. bt_flash_receiver.py registriert Pairing-Agent
+#   und SPP-Profil stattdessen direkt über D-Bus (python3-dbus/python3-gi),
+#   die auf Legacy- wie auf aktuellen Images identisch verfügbar sind.
 
 # ── RPi.GPIO: auf 64-bit Pi OS Bookworm noch verfügbar, aber deprecated ───────
 # Für status_leds.py wird RPi.GPIO benötigt (direkter GPIO-Zugriff)
@@ -192,16 +210,23 @@ elif ! grep -q "dtparam=spi" "$CONFIG"; then
     echo "dtparam=spi=off" >> "$CONFIG"
 fi
 
-# Bluetooth deaktivieren → gibt PL011-UART frei
-# (Funktioniert auf Pi Zero 2 W identisch zum Pi Zero W)
-if ! grep -q "^dtoverlay=disable-bt" "$CONFIG"; then
+# Bluetooth NICHT mehr komplett deaktivieren, sondern auf Mini-UART umlegen
+# → gibt PL011 (GPIO14/15) weiterhin exklusiv fuer den Teensy frei, UND laesst
+#   Bluetooth (Wireless-Flash-Feature) parallel ueber die Mini-UART laufen.
+# (Abweichung vom urspruenglichen "disable-bt"-Verhalten dieses Skripts — siehe
+#  Flash_Implementierung.md Abschnitt 3.1/6. Ein evtl. aus einem aelteren Lauf
+#  vorhandener disable-bt-Eintrag wird dabei automatisch ersetzt.)
+if grep -q "^dtoverlay=disable-bt" "$CONFIG"; then
+    sed -i 's/^dtoverlay=disable-bt/dtoverlay=miniuart-bt/' "$CONFIG"
+    ok "dtoverlay=disable-bt -> dtoverlay=miniuart-bt umgestellt (alter Eintrag ersetzt)"
+elif ! grep -q "^dtoverlay=miniuart-bt" "$CONFIG"; then
     echo "" >> "$CONFIG"
-    echo "# Power Debug System: PL011-UART freischalten" >> "$CONFIG"
-    echo "# Bluetooth deaktiviert — Pi Zero 2 W identisch zu Pi Zero W" >> "$CONFIG"
-    echo "dtoverlay=disable-bt" >> "$CONFIG"
-    ok "dtoverlay=disable-bt eingetragen"
+    echo "# Power Debug System: PL011-UART fuer Teensy freischalten," >> "$CONFIG"
+    echo "# Bluetooth auf Mini-UART (fuer Wireless-Flash-Feature, siehe Flash_Implementierung.md)" >> "$CONFIG"
+    echo "dtoverlay=miniuart-bt" >> "$CONFIG"
+    ok "dtoverlay=miniuart-bt eingetragen"
 else
-    ok "dtoverlay=disable-bt bereits vorhanden"
+    ok "dtoverlay=miniuart-bt bereits vorhanden"
 fi
 
 # UART aktivieren
@@ -239,10 +264,14 @@ if grep -q "console=ttyAMA0" "$CMDLINE"; then
     ok "ttyAMA0-Konsole entfernt"
 fi
 
-# Bluetooth-Dienste deaktivieren
-info "Bluetooth-Dienste deaktivieren..."
-systemctl disable hciuart.service bluetooth.service 2>/dev/null || true
-ok "Bluetooth-Dienste deaktiviert"
+# Bluetooth-Dienste aktivieren (Wireless-Flash-Feature — siehe Flash_Implementierung.md)
+# Zuvor deaktivierte dieses Skript hciuart/bluetooth komplett; das ist mit
+# dtoverlay=miniuart-bt (siehe oben) nicht mehr noetig bzw. wuerde das neue
+# Feature verhindern.
+info "Bluetooth-Dienste aktivieren..."
+systemctl unmask hciuart.service bluetooth.service 2>/dev/null || true
+systemctl enable hciuart.service bluetooth.service 2>/dev/null || true
+ok "Bluetooth-Dienste aktiviert (hciuart, bluetooth)"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -312,7 +341,36 @@ else
 fi
 
 
-chmod +x "$INSTALL_DIR/"*.py 2>/dev/null || true
+# bt_flash_receiver.py + gemeinsames Protokoll (Wireless-Flash-Feature)
+SHARED_SRC="$(dirname "$PROJECT_SRC")/shared"
+mkdir -p "$INSTALL_DIR/shared"
+if [[ -f "$PROJECT_SRC/bt_flash_receiver.py" ]]; then
+    cp "$PROJECT_SRC/bt_flash_receiver.py" "$INSTALL_DIR/rpi_zero_node/"
+    ok "bt_flash_receiver.py installiert"
+else
+    warn "bt_flash_receiver.py nicht gefunden — Wireless-Flash-Feature nicht verfuegbar"
+fi
+if [[ -f "$SHARED_SRC/bt_flash_protocol.py" ]]; then
+    cp "$SHARED_SRC/bt_flash_protocol.py" "$INSTALL_DIR/shared/"
+    cp "$SHARED_SRC/bt_flash_protocol.py" "$INSTALL_DIR/rpi_zero_node/"
+    ok "bt_flash_protocol.py installiert"
+else
+    warn "bt_flash_protocol.py (shared/) nicht gefunden — Wireless-Flash-Feature nicht verfuegbar"
+fi
+
+# Auth-Token fuer den Bluetooth-Flash-Kanal generieren (einmalig, bleibt ueber
+# spaetere Setup-Laeufe hinweg erhalten, damit bt_targets.json auf dem PC nicht
+# staendig neu gepflegt werden muss)
+SECRET_FILE="$INSTALL_DIR/bt_flash_secret"
+if [[ ! -f "$SECRET_FILE" ]]; then
+    python3 -c "import secrets; print(secrets.token_hex(16))" > "$SECRET_FILE"
+    chmod 600 "$SECRET_FILE"
+    ok "Neuer Auth-Token fuer Bluetooth-Flash generiert: $SECRET_FILE"
+else
+    ok "Auth-Token bereits vorhanden: $SECRET_FILE"
+fi
+
+chmod +x "$INSTALL_DIR/"*.py "$INSTALL_DIR/rpi_zero_node/"*.py 2>/dev/null || true
 ok "Projektdateien installiert"
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -348,14 +406,59 @@ SVCEOF
 ok "uart-receiver.service erstellt"
 
 # ══════════════════════════════════════════════════════════════════════════════
-step "6 | Dienst aktivieren"
+step "5b | Systemdienst: bt-flash-receiver (Wireless-Flash-Feature)"
+# ══════════════════════════════════════════════════════════════════════════════
+SERVICE_BT="bt-flash-receiver"
+BT_CHANNEL="${BT_FLASH_CHANNEL:-4}"
+
+if [[ -f "$INSTALL_DIR/rpi_zero_node/bt_flash_receiver.py" ]]; then
+cat > /etc/systemd/system/${SERVICE_BT}.service << SVCEOF
+[Unit]
+Description=Power Debug Bluetooth Flash Receiver (Node ${NODE_ID}) — RPi Zero 2 W
+After=bluetooth.target bluetooth.service dbus.service
+Wants=bluetooth.target
+Requires=dbus.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=${INSTALL_DIR}/rpi_zero_node
+Environment="NODE_ID=${NODE_ID}"
+Environment="INSTALL_DIR=${INSTALL_DIR}"
+Environment="BT_FLASH_CHANNEL=${BT_CHANNEL}"
+Environment="PYTHONUNBUFFERED=1"
+ExecStart=/usr/bin/python3 ${INSTALL_DIR}/rpi_zero_node/bt_flash_receiver.py
+Restart=on-failure
+RestartSec=5s
+StartLimitInterval=60s
+StartLimitBurst=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=bt-flash-receiver
+
+[Install]
+WantedBy=multi-user.target
+SVCEOF
+    ok "${SERVICE_BT}.service erstellt (Kanal ${BT_CHANNEL})"
+else
+    warn "bt_flash_receiver.py nicht installiert — ${SERVICE_BT}.service wird uebersprungen"
+    SERVICE_BT=""
+fi
+
+# ══════════════════════════════════════════════════════════════════════════════
+step "6 | Dienste aktivieren"
 # ══════════════════════════════════════════════════════════════════════════════
 
 systemctl daemon-reload
 systemctl enable ${SERVICE_RECV}.service
 ok "uart-receiver aktiviert"
 
-warn "Dienst startet erst nach 'sudo reboot' (UART-Konfiguration braucht Neustart)"
+if [[ -n "$SERVICE_BT" ]]; then
+    systemctl enable ${SERVICE_BT}.service
+    ok "bt-flash-receiver aktiviert"
+fi
+
+warn "Dienste starten erst nach 'sudo reboot' (UART/Bluetooth-Konfiguration braucht Neustart)"
 
 # ══════════════════════════════════════════════════════════════════════════════
 step "7 | Verifizierung"
@@ -384,6 +487,27 @@ python3 -c "import lgpio; print('   ✅ lgpio (moderne GPIO-Alternative)')" 2>/d
     echo "   ⚠️  lgpio nicht gefunden"
 
 echo ""
+info "──── Bluetooth-Flash-Feature ────"
+if command -v bluetoothctl &>/dev/null; then
+    BT_MAC=$(bluetoothctl show 2>/dev/null | awk -F': ' '/Controller/ {print $2; exit}')
+    echo "   Controller-MAC: ${BT_MAC:-nicht ermittelbar (bluetooth.service evtl. erst nach Reboot aktiv)}"
+else
+    echo "   ⚠️  bluetoothctl nicht gefunden"
+fi
+systemctl is-enabled ${SERVICE_BT:-bt-flash-receiver}.service 2>/dev/null && \
+    echo "   ✅ bt-flash-receiver: enabled" || echo "   ❌ bt-flash-receiver: NOT enabled"
+if [[ -f "$SECRET_FILE" ]]; then
+    echo "   Auth-Token (für bt_targets.json auf dem PC):"
+    echo "     $(cat "$SECRET_FILE")"
+fi
+echo "   RFCOMM-Kanal: ${BT_CHANNEL}"
+echo "   Geraetename:  PDS-Node${NODE_ID}-BT (sichtbar erst NACH sudo reboot)"
+echo "   Pairing-PIN:  0000 (Auto-Accept-Agent, siehe bt_flash_receiver.py)"
+echo ""
+echo "   -> Diese drei Werte (MAC, Token, Kanal) in bt_targets.json auf dem"
+echo "      Windows-PC eintragen (pc_setup/pc_flash_tool/bt_targets.json)."
+
+echo ""
 info "──── Verdrahtung (Teensy ↔ RPi Zero 2 W) ────"
 echo "   ACHTUNG: main.cpp nutzt Serial3 (nicht Serial1)!"
 echo "   Teensy Pin 14 (TX3) → RPi GPIO15 (Pin 10, UART RX)"
@@ -410,8 +534,10 @@ echo "║     🟢 Grün blinkt  → Dienste laufen normal             ║"
 echo "║                                                          ║"
 echo "║   Diagnose:                                              ║"
 echo "║     journalctl -u uart-receiver -f                       ║"
+echo "║     journalctl -u bt-flash-receiver -f                   ║"
 echo "║     ls -la /dev/ttyAMA0                                  ║"
 echo "║     ip addr show wlan0                                   ║"
+echo "║     bluetoothctl show                                    ║"
 echo "║                                                          ║"
 echo "║   Hinweis Verdrahtung:                                   ║"
 echo "║     Teensy nutzt Serial3 (Pin 14/15), nicht Serial1!     ║"
