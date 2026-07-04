@@ -49,6 +49,7 @@ class ParamEntry:
     max: float = 1.0
     step: float = 0.01
     momentary: bool = False
+    group: str = ""   # Optionale Gruppe für Sub-Abschnitte im Param-Tab
 
 
 @dataclass
@@ -131,6 +132,7 @@ def _resolve_entries(
             max=e.get("max", max_default),
             step=e.get("step", 0.01),
             momentary=e.get("momentary", False),
+            group=e.get("group", ""),
         )
 
     # Fallback-Einträge für alle nicht konfigurierten Indizes ergänzen

@@ -27,9 +27,9 @@ import numpy as np
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QSlider, QLineEdit, QGroupBox, QSizePolicy, QDoubleSpinBox,
-    QScrollArea, QCheckBox,
+    QScrollArea, QCheckBox, QFrame,
 )
-from PyQt6.QtGui import QPainter, QPen, QColor, QDoubleValidator
+from PyQt6.QtGui import QPainter, QPen, QColor, QDoubleValidator, QFont
 from PyQt6.QtCore import Qt, QTimer, QPointF
 
 from config import (
@@ -374,35 +374,76 @@ _WIDGET_FACTORIES: dict[str, Callable] = {
 }
 
 
-def _titled(inner: QWidget, title: str) -> QWidget:
-    box = QGroupBox(title)
-    layout = QVBoxLayout(box)
-    layout.addWidget(inner)
-    return box
+# ── Helfer: abschnitt-Trennlinie mit farbiger Markierung ─────────────────
+
+def _section_header(title: str, color: str = "#9cdcfe") -> QWidget:
+    """Gibt einen stilisierten Abschnitts-Header zurück, der an die
+    farbigen Gruppen-Überschriften im Systemansicht-Tab angelehnt ist."""
+    w = QWidget()
+    row = QHBoxLayout(w)
+    row.setContentsMargins(0, 10, 0, 4)
+    row.setSpacing(8)
+
+    accent = QFrame()
+    accent.setFixedSize(4, 22)
+    accent.setStyleSheet(f"background: {color}; border-radius: 2px;")
+
+    lbl = QLabel(title)
+    font = QFont()
+    font.setBold(True)
+    font.setPointSize(10)
+    lbl.setFont(font)
+    lbl.setStyleSheet(f"color: {color};")
+
+    line = QFrame()
+    line.setFrameShape(QFrame.Shape.HLine)
+    line.setFrameShadow(QFrame.Shadow.Sunken)
+    line.setStyleSheet("color: #3a3a3d;")
+
+    row.addWidget(accent)
+    row.addWidget(lbl)
+    row.addWidget(line, stretch=1)
+    return w
 
 
-def _build_group(
+def _build_flat_entries(
     entries: list[ParamEntry],
-    joysticks: list[JoystickEntry],
-    source: str,
+    joystick_indices: set[int],
     on_change_float: Callable[[int, float], None] | None,
     on_change_bool: Callable[[int, bool], None] | None,
+    layout: QVBoxLayout,
+) -> None:
+    """Rendert alle entries (ohne Joystick-Indizes) als flache Widget-Liste."""
+    for e in entries:
+        if e.index in joystick_indices:
+            continue
+        is_bool = e.widget in ("toggle", "button")
+        factory = _WIDGET_FACTORIES[e.widget]
+        if is_bool:
+            cb = (lambda v, i=e.index: on_change_bool(i, v))  # type: ignore[arg-type]
+        else:
+            cb = (lambda v, i=e.index: on_change_float(i, v))  # type: ignore[arg-type]
+        layout.addWidget(factory(e, cb))
+
+
+def _build_fast_section(
+    entries: list[ParamEntry],
+    joysticks: list[JoystickEntry],
+    on_change_float: Callable[[int, float], None],
 ) -> QWidget:
-    """Baut eine vertikale Liste von Widgets für eine der drei Gruppen
-    (slow-floats, slow-bools, fast-floats). Indizes, die von einem Joystick
-    referenziert werden, werden NICHT zusätzlich einzeln gerendert — sie
-    stecken bereits im Joystick-Widget (siehe Implementierungsplan v2,
-    Abschnitt 9.3.5)."""
+    """Baut den ⚡ Fast-Param-Bereich (Joysticks + Echtzeit-Floats)."""
     joystick_indices = {
-        idx for js in joysticks if js.source == source
+        idx for js in joysticks if js.source == "fast"
         for idx in (js.x_index, js.y_index)
     }
 
     box = QWidget()
     layout = QVBoxLayout(box)
+    layout.setSpacing(6)
 
+    # Joystick-Widgets zuerst
     for js in joysticks:
-        if js.source != source:
+        if js.source != "fast":
             continue
         layout.addWidget(make_joystick_widget(
             js,
@@ -410,16 +451,76 @@ def _build_group(
             on_change_y=lambda v, i=js.y_index: on_change_float(i, v),
         ))
 
-    for e in entries:
+    _build_flat_entries(entries, joystick_indices, on_change_float, None, layout)
+    layout.addStretch(1)
+    return box
+
+
+def _build_slow_section(
+    floats: list[ParamEntry],
+    bools: list[ParamEntry],
+    joysticks: list[JoystickEntry],
+    on_change_float: Callable[[int, float], None],
+    on_change_bool: Callable[[int, bool], None],
+) -> QWidget:
+    """Baut den 🐢 Slow-Param-Bereich, unterteilt nach den 'group'-Feldern
+    in param_config.json.  Alle Einträge ohne group-Feld landen in einem
+    Fallback-Abschnitt 'Allgemein'."""
+    joystick_indices = {
+        idx for js in joysticks if js.source == "slow"
+        for idx in (js.x_index, js.y_index)
+    }
+
+    # Joystick-Widgets für slow-Quelle
+    slow_joysticks = [js for js in joysticks if js.source == "slow"]
+
+    box = QWidget()
+    layout = QVBoxLayout(box)
+    layout.setSpacing(2)
+
+    # ── Joystick-Widgets (haben kein group-Feld) ─────────────────────────
+    for js in slow_joysticks:
+        layout.addWidget(make_joystick_widget(
+            js,
+            on_change_x=lambda v, i=js.x_index: on_change_float(i, v),
+            on_change_y=lambda v, i=js.y_index: on_change_float(i, v),
+        ))
+
+    # ── Floats nach Gruppe gruppieren ────────────────────────────────────
+    from collections import OrderedDict
+    float_groups: OrderedDict[str, list[ParamEntry]] = OrderedDict()
+    for e in floats:
         if e.index in joystick_indices:
             continue
-        is_bool = e.widget in ("toggle", "button")
-        factory = _WIDGET_FACTORIES[e.widget]
-        if is_bool:
-            cb = (lambda v, i=e.index: on_change_bool(i, v))
-        else:
+        grp = e.group or "Allgemein"
+        float_groups.setdefault(grp, []).append(e)
+
+    bool_groups: OrderedDict[str, list[ParamEntry]] = OrderedDict()
+    for e in bools:
+        grp = e.group or "Schalter"
+        bool_groups.setdefault(grp, []).append(e)
+
+    # Floats rendern
+    for grp_name, grp_entries in float_groups.items():
+        grp_box = QGroupBox(grp_name)
+        grp_layout = QVBoxLayout(grp_box)
+        grp_layout.setSpacing(4)
+        for e in grp_entries:
+            factory = _WIDGET_FACTORIES[e.widget]
             cb = (lambda v, i=e.index: on_change_float(i, v))
-        layout.addWidget(factory(e, cb))
+            grp_layout.addWidget(factory(e, cb))
+        layout.addWidget(grp_box)
+
+    # Bools rendern (eigene Gruppe)
+    for grp_name, grp_entries in bool_groups.items():
+        grp_box = QGroupBox(grp_name)
+        grp_layout = QVBoxLayout(grp_box)
+        grp_layout.setSpacing(4)
+        for e in grp_entries:
+            factory = _WIDGET_FACTORIES[e.widget]
+            cb = (lambda v, i=e.index: on_change_bool(i, v))
+            grp_layout.addWidget(factory(e, cb))
+        layout.addWidget(grp_box)
 
     layout.addStretch(1)
     return box
@@ -512,39 +613,72 @@ class ParamEditorWidget(QWidget):
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
 
         content = QWidget()
         content_layout = QVBoxLayout(content)
+        content_layout.setSpacing(4)
+        content_layout.setContentsMargins(8, 8, 8, 8)
 
-        fast_box = _build_group(
-            self._config.fast_floats, self._config.joysticks, "fast",
-            self._on_fast_float_changed, None,
+        # ── ⚡ Fast Params ────────────────────────────────────────────────
+        content_layout.addWidget(
+            _section_header("⚡ Fast Params  ·  100 Hz", color="#f0c060")
         )
-        content_layout.addWidget(_titled(fast_box, "⚡ Echtzeit-Steuerung (100 Hz)"))
+        fast_box = _build_fast_section(
+            self._config.fast_floats,
+            self._config.joysticks,
+            self._on_fast_float_changed,
+        )
+        fast_frame = QGroupBox()
+        fast_frame.setStyleSheet(
+            "QGroupBox { border: 1px solid #4a4010; border-radius: 6px; "
+            "background: #1e1c10; padding: 6px; }"
+        )
+        fast_frame_layout = QVBoxLayout(fast_frame)
+        fast_frame_layout.setContentsMargins(4, 4, 4, 4)
+        fast_frame_layout.addWidget(fast_box)
+        content_layout.addWidget(fast_frame)
 
-        slow_floats_box = _build_group(
-            self._config.floats, self._config.joysticks, "slow",
-            self._on_slow_float_changed, None,
+        # ── 🐢 Slow Params ───────────────────────────────────────────────
+        content_layout.addWidget(
+            _section_header("🐢 Slow Params  ·  2 Hz", color="#4ec9b0")
         )
-        content_layout.addWidget(_titled(slow_floats_box, "Parameter (Floats, 2 Hz)"))
-
-        slow_bools_box = _build_group(
-            self._config.bools, [], "slow",
-            None, self._on_slow_bool_changed,
+        slow_box = _build_slow_section(
+            self._config.floats,
+            self._config.bools,
+            self._config.joysticks,
+            self._on_slow_float_changed,
+            self._on_slow_bool_changed,
         )
-        content_layout.addWidget(_titled(slow_bools_box, "Schalter (Bools, 2 Hz)"))
+        slow_frame = QGroupBox()
+        slow_frame.setStyleSheet(
+            "QGroupBox { border: 1px solid #10403a; border-radius: 6px; "
+            "background: #0e1e1c; padding: 6px; }"
+        )
+        slow_frame_layout = QVBoxLayout(slow_frame)
+        slow_frame_layout.setContentsMargins(4, 4, 4, 4)
+        slow_frame_layout.addWidget(slow_box)
+        content_layout.addWidget(slow_frame)
 
         content_layout.addStretch(1)
         scroll.setWidget(content)
         root.addWidget(scroll, stretch=1)
 
     def _build_toolbar(self) -> QWidget:
-        bar = QWidget()
+        bar = QFrame()
+        bar.setFrameShape(QFrame.Shape.StyledPanel)
+        bar.setStyleSheet(
+            "QFrame { background: #252527; border-radius: 5px; "
+            "border: 1px solid #3a3a3d; }"
+        )
         layout = QHBoxLayout(bar)
-        layout.setContentsMargins(0, 0, 0, 6)
+        layout.setContentsMargins(8, 4, 8, 4)
 
         self._status_label = QLabel()
-        self._status_label.setStyleSheet("font-family: monospace; color: #4ec9b0;")
+        self._status_label.setStyleSheet(
+            "font-family: monospace; color: #4ec9b0; "
+            "background: transparent; border: none;"
+        )
         self._refresh_status_label()
         layout.addWidget(self._status_label, stretch=1)
 
@@ -553,13 +687,16 @@ class ParamEditorWidget(QWidget):
         self._chk_enabled.toggled.connect(self._on_enabled_toggled)
         layout.addWidget(self._chk_enabled)
 
-        self._btn_save = QPushButton("💾 Speichern als Default (.h)")
+        self._btn_save = QPushButton("💾 Als Default speichern")
         self._btn_save.clicked.connect(self._on_save_clicked)
         layout.addWidget(self._btn_save)
 
         if self._defaults_loaded_from_file:
-            hint = QLabel(f"(Defaults geladen aus {PARAM_DEFAULTS_H_PATH.name})")
-            hint.setStyleSheet("color: #888; font-style: italic;")
+            hint = QLabel(f"✓ {PARAM_DEFAULTS_H_PATH.name} geladen")
+            hint.setStyleSheet(
+                "color: #4ec9b0; font-style: italic; "
+                "background: transparent; border: none;"
+            )
             layout.addWidget(hint)
 
         return bar

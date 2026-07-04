@@ -3,12 +3,12 @@ main_window.py — Hauptfenster des Power Debug Monitors
 ========================================================
 Layout:
   ┌─────────────────────────────────────────────────────┐
-  │  [Node-Selektor]          [Flash-Management-Zone]   │  ← Steuerungsleiste
+  │  [Node-Selektor]                                    │  ← Steuerungsleiste
   ├─────────────────────────────────────────────────────┤
   │  Tab 1: Live-Tabelle                                │
   │  Tab 2: Live-Plotter                                │
-  │  Tab 3: Systemansicht (Phase 2)                     │
-  │  Tab 4: Parameter     (Phase 2)                     │
+  │  Tab 3: Systemansicht                               │
+  │  Tab 4: Parameter                                   │
   └─────────────────────────────────────────────────────┘
 """
 
