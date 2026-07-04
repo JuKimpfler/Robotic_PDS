@@ -27,7 +27,7 @@ import numpy as np
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QSlider, QLineEdit, QGroupBox, QSizePolicy, QDoubleSpinBox,
-    QScrollArea, QCheckBox, QFrame,
+    QScrollArea, QCheckBox, QFrame, QComboBox, QStackedWidget,
 )
 from PyQt6.QtGui import QPainter, QPen, QColor, QDoubleValidator, QFont
 from PyQt6.QtCore import Qt, QTimer, QPointF
@@ -431,99 +431,159 @@ def _build_fast_section(
     joysticks: list[JoystickEntry],
     on_change_float: Callable[[int, float], None],
 ) -> QWidget:
-    """Baut den ⚡ Fast-Param-Bereich (Joysticks + Echtzeit-Floats)."""
+    """Baut den ⚡ Fast-Param-Bereich.
+
+    Layout: LINKS die Schieberegler/Zahlen-/Texteingaben (alle
+    Nicht-Joystick-Einträge), RECHTS der/die Joystick(s) — nebeneinander
+    statt übereinander, analog zur Bild+Grafik-Aufteilung im
+    Systemansicht-Tab (tab_visuals.py)."""
     joystick_indices = {
         idx for js in joysticks if js.source == "fast"
         for idx in (js.x_index, js.y_index)
     }
 
-    box = QWidget()
-    layout = QVBoxLayout(box)
-    layout.setSpacing(6)
+    container = QWidget()
+    h_layout = QHBoxLayout(container)
+    h_layout.setContentsMargins(0, 0, 0, 0)
+    h_layout.setSpacing(12)
 
-    # Joystick-Widgets zuerst
+    # ── Links: Slider / Zahlen / Text / Schalter ────────────────────────
+    left = QWidget()
+    left_layout = QVBoxLayout(left)
+    left_layout.setContentsMargins(0, 0, 0, 0)
+    left_layout.setSpacing(6)
+    _build_flat_entries(entries, joystick_indices, on_change_float, None, left_layout)
+    left_layout.addStretch(1)
+
+    # ── Rechts: Joystick(s) ──────────────────────────────────────────────
+    right = QWidget()
+    right_layout = QVBoxLayout(right)
+    right_layout.setContentsMargins(0, 0, 0, 0)
+    right_layout.setSpacing(6)
     for js in joysticks:
         if js.source != "fast":
             continue
-        layout.addWidget(make_joystick_widget(
+        right_layout.addWidget(make_joystick_widget(
             js,
             on_change_x=lambda v, i=js.x_index: on_change_float(i, v),
             on_change_y=lambda v, i=js.y_index: on_change_float(i, v),
         ))
+    right_layout.addStretch(1)
 
-    _build_flat_entries(entries, joystick_indices, on_change_float, None, layout)
-    layout.addStretch(1)
-    return box
+    h_layout.addWidget(left, stretch=2)
+    h_layout.addWidget(right, stretch=1)
+    return container
 
 
-def _build_slow_section(
-    floats: list[ParamEntry],
-    bools: list[ParamEntry],
-    joysticks: list[JoystickEntry],
-    on_change_float: Callable[[int, float], None],
+def _wrap_group_frame(inner: QWidget, border_color: str, bg_color: str) -> QWidget:
+    """Einheitlicher Rahmen für eine Gruppen-Seite (gleiche Optik wie zuvor
+    die Fast-/Slow-Blöcke)."""
+    frame = QGroupBox()
+    frame.setStyleSheet(
+        f"QGroupBox {{ border: 1px solid {border_color}; border-radius: 6px; "
+        f"background: {bg_color}; padding: 6px; }}"
+    )
+    layout = QVBoxLayout(frame)
+    layout.setContentsMargins(4, 4, 4, 4)
+    layout.addWidget(inner)
+    return frame
+
+
+def _build_group_pages(
+    config: "ParamConfig",
+    on_change_fast_float: Callable[[int, float], None],
+    on_change_slow_float: Callable[[int, float], None],
     on_change_bool: Callable[[int, bool], None],
-) -> QWidget:
-    """Baut den 🐢 Slow-Param-Bereich, unterteilt nach den 'group'-Feldern
-    in param_config.json.  Alle Einträge ohne group-Feld landen in einem
-    Fallback-Abschnitt 'Allgemein'."""
+) -> list[tuple[str, QWidget]]:
+    """Baut EINE Seite pro auswählbarer Gruppe (analog zum Gruppen-Dropdown
+    im Systemansicht-Tab, tab_visuals.py) statt alle Bereiche gleichzeitig
+    untereinander anzuzeigen.
+
+    Reihenfolge der Seiten:
+      1. ⚡ Fast Params        (links Slider/Text, rechts Joystick)
+      2. 🎮 Joysticks (Slow)   (falls vorhanden)
+      3. 🐢 <Gruppenname>      (je 'group'-Feld aus param_config.json,
+                                 Floats + zugehörige Bools zusammen)
+
+    WICHTIG: Fast- und Slow-Floats liegen in getrennten Arrays im
+    ParamStore (siehe ParamStore.set_float vs. set_fast_float) — daher
+    zwei separate Float-Callbacks, nicht einen gemeinsamen.
+    """
+    from collections import OrderedDict
+
+    pages: list[tuple[str, QWidget]] = []
+
+    # ── 1) Fast Params ───────────────────────────────────────────────────
+    fast_widget = _build_fast_section(config.fast_floats, config.joysticks, on_change_fast_float)
+    pages.append((
+        "⚡ Fast Params · 100 Hz",
+        _wrap_group_frame(fast_widget, "#4a4010", "#1e1c10"),
+    ))
+
+    # ── 2) Slow-Joysticks (haben kein group-Feld) ───────────────────────
+    slow_joysticks = [js for js in config.joysticks if js.source == "slow"]
     joystick_indices = {
-        idx for js in joysticks if js.source == "slow"
-        for idx in (js.x_index, js.y_index)
+        idx for js in slow_joysticks for idx in (js.x_index, js.y_index)
     }
-
-    # Joystick-Widgets für slow-Quelle
-    slow_joysticks = [js for js in joysticks if js.source == "slow"]
-
-    box = QWidget()
-    layout = QVBoxLayout(box)
-    layout.setSpacing(2)
-
-    # ── Joystick-Widgets (haben kein group-Feld) ─────────────────────────
-    for js in slow_joysticks:
-        layout.addWidget(make_joystick_widget(
-            js,
-            on_change_x=lambda v, i=js.x_index: on_change_float(i, v),
-            on_change_y=lambda v, i=js.y_index: on_change_float(i, v),
+    if slow_joysticks:
+        jbox = QWidget()
+        jlayout = QVBoxLayout(jbox)
+        jlayout.setSpacing(6)
+        for js in slow_joysticks:
+            jlayout.addWidget(make_joystick_widget(
+                js,
+                on_change_x=lambda v, i=js.x_index: on_change_slow_float(i, v),
+                on_change_y=lambda v, i=js.y_index: on_change_slow_float(i, v),
+            ))
+        jlayout.addStretch(1)
+        pages.append((
+            "🎮 Joysticks · 2 Hz",
+            _wrap_group_frame(jbox, "#3a1a40", "#160c1a"),
         ))
 
-    # ── Floats nach Gruppe gruppieren ────────────────────────────────────
-    from collections import OrderedDict
-    float_groups: OrderedDict[str, list[ParamEntry]] = OrderedDict()
-    for e in floats:
+    # ── 3) Floats + Bools nach 'group'-Feld zusammenfassen ──────────────
+    combined: "OrderedDict[str, dict[str, list[ParamEntry]]]" = OrderedDict()
+    for e in config.floats:
         if e.index in joystick_indices:
             continue
         grp = e.group or "Allgemein"
-        float_groups.setdefault(grp, []).append(e)
-
-    bool_groups: OrderedDict[str, list[ParamEntry]] = OrderedDict()
-    for e in bools:
+        combined.setdefault(grp, {"floats": [], "bools": []})["floats"].append(e)
+    for e in config.bools:
         grp = e.group or "Schalter"
-        bool_groups.setdefault(grp, []).append(e)
+        combined.setdefault(grp, {"floats": [], "bools": []})["bools"].append(e)
 
-    # Floats rendern
-    for grp_name, grp_entries in float_groups.items():
-        grp_box = QGroupBox(grp_name)
-        grp_layout = QVBoxLayout(grp_box)
-        grp_layout.setSpacing(4)
-        for e in grp_entries:
-            factory = _WIDGET_FACTORIES[e.widget]
-            cb = (lambda v, i=e.index: on_change_float(i, v))
-            grp_layout.addWidget(factory(e, cb))
-        layout.addWidget(grp_box)
+    for grp_name, parts in combined.items():
+        page = QWidget()
+        page_layout = QVBoxLayout(page)
+        page_layout.setSpacing(6)
 
-    # Bools rendern (eigene Gruppe)
-    for grp_name, grp_entries in bool_groups.items():
-        grp_box = QGroupBox(grp_name)
-        grp_layout = QVBoxLayout(grp_box)
-        grp_layout.setSpacing(4)
-        for e in grp_entries:
-            factory = _WIDGET_FACTORIES[e.widget]
-            cb = (lambda v, i=e.index: on_change_bool(i, v))
-            grp_layout.addWidget(factory(e, cb))
-        layout.addWidget(grp_box)
+        if parts["floats"]:
+            f_box = QGroupBox(grp_name)
+            f_layout = QVBoxLayout(f_box)
+            f_layout.setSpacing(4)
+            for e in parts["floats"]:
+                factory = _WIDGET_FACTORIES[e.widget]
+                cb = (lambda v, i=e.index: on_change_slow_float(i, v))
+                f_layout.addWidget(factory(e, cb))
+            page_layout.addWidget(f_box)
 
-    layout.addStretch(1)
-    return box
+        if parts["bools"]:
+            b_box = QGroupBox(f"{grp_name} — Schalter" if parts["floats"] else grp_name)
+            b_layout = QVBoxLayout(b_box)
+            b_layout.setSpacing(4)
+            for e in parts["bools"]:
+                factory = _WIDGET_FACTORIES[e.widget]
+                cb = (lambda v, i=e.index: on_change_bool(i, v))
+                b_layout.addWidget(factory(e, cb))
+            page_layout.addWidget(b_box)
+
+        page_layout.addStretch(1)
+        pages.append((
+            f"🐢 {grp_name}",
+            _wrap_group_frame(page, "#10403a", "#0e1e1c"),
+        ))
+
+    return pages
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -611,58 +671,54 @@ class ParamEditorWidget(QWidget):
 
         root.addWidget(self._build_toolbar())
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        # ── Gruppen-Auswahl (analog zum Dropdown im Systemansicht-Tab) ────
+        root.addWidget(self._build_group_selector())
 
-        content = QWidget()
-        content_layout = QVBoxLayout(content)
-        content_layout.setSpacing(4)
-        content_layout.setContentsMargins(8, 8, 8, 8)
+        self._pages_stack = QStackedWidget()
+        for _name, page_widget in self._group_pages:
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setFrameShape(QFrame.Shape.NoFrame)
+            scroll.setWidget(page_widget)
+            self._pages_stack.addWidget(scroll)
+        root.addWidget(self._pages_stack, stretch=1)
 
-        # ── ⚡ Fast Params ────────────────────────────────────────────────
-        content_layout.addWidget(
-            _section_header("⚡ Fast Params  ·  100 Hz", color="#f0c060")
-        )
-        fast_box = _build_fast_section(
-            self._config.fast_floats,
-            self._config.joysticks,
-            self._on_fast_float_changed,
-        )
-        fast_frame = QGroupBox()
-        fast_frame.setStyleSheet(
-            "QGroupBox { border: 1px solid #4a4010; border-radius: 6px; "
-            "background: #1e1c10; padding: 6px; }"
-        )
-        fast_frame_layout = QVBoxLayout(fast_frame)
-        fast_frame_layout.setContentsMargins(4, 4, 4, 4)
-        fast_frame_layout.addWidget(fast_box)
-        content_layout.addWidget(fast_frame)
+    def _build_group_selector(self) -> QWidget:
+        """Leiste mit Gruppen-Dropdown — optisch an tab_visuals.py angelehnt,
+        damit stets nur EINE Gruppe (Fast/Joysticks/Slow-Gruppe) sichtbar ist."""
+        bar = QWidget()
+        bar.setStyleSheet("background: #1e1e1e; border-radius: 4px;")
+        layout = QHBoxLayout(bar)
+        layout.setContentsMargins(8, 4, 8, 4)
+        layout.setSpacing(8)
 
-        # ── 🐢 Slow Params ───────────────────────────────────────────────
-        content_layout.addWidget(
-            _section_header("🐢 Slow Params  ·  2 Hz", color="#4ec9b0")
-        )
-        slow_box = _build_slow_section(
-            self._config.floats,
-            self._config.bools,
-            self._config.joysticks,
-            self._on_slow_float_changed,
-            self._on_slow_bool_changed,
-        )
-        slow_frame = QGroupBox()
-        slow_frame.setStyleSheet(
-            "QGroupBox { border: 1px solid #10403a; border-radius: 6px; "
-            "background: #0e1e1c; padding: 6px; }"
-        )
-        slow_frame_layout = QVBoxLayout(slow_frame)
-        slow_frame_layout.setContentsMargins(4, 4, 4, 4)
-        slow_frame_layout.addWidget(slow_box)
-        content_layout.addWidget(slow_frame)
+        lbl = QLabel("Gruppe:")
+        lbl.setStyleSheet("font-weight: bold; color: #9cdcfe; font-size: 10pt;")
+        layout.addWidget(lbl)
 
-        content_layout.addStretch(1)
-        scroll.setWidget(content)
-        root.addWidget(scroll, stretch=1)
+        self._group_pages = _build_group_pages(
+            self._config,
+            on_change_fast_float=self._on_fast_float_changed,
+            on_change_slow_float=self._on_slow_float_changed,
+            on_change_bool=self._on_slow_bool_changed,
+        )
+
+        self._group_combo = QComboBox()
+        self._group_combo.setStyleSheet(
+            "QComboBox { background: #2d2d30; color: #d4d4d4; border: 1px solid #444;"
+            " border-radius: 3px; padding: 4px 8px; font-weight: bold; min-width: 220px; }"
+            "QComboBox::drop-down { border: none; }"
+            "QComboBox QAbstractItemView { background: #1e1e1e; selection-background-color: #007acc; }"
+        )
+        for name, _widget in self._group_pages:
+            self._group_combo.addItem(name)
+        self._group_combo.currentIndexChanged.connect(self._on_group_selected)
+        layout.addWidget(self._group_combo, stretch=1)
+        return bar
+
+    def _on_group_selected(self, index: int) -> None:
+        if hasattr(self, "_pages_stack") and index >= 0:
+            self._pages_stack.setCurrentIndex(index)
 
     def _build_toolbar(self) -> QWidget:
         bar = QFrame()
