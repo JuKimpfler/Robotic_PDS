@@ -7,11 +7,10 @@
 #    2. Systempakete + Python-Abhängigkeiten
 #    3. Anwendungsdateien installieren
 #    4. WLAN Access Point konfigurieren (PowerDebugAP)
-#    5. USB-C Gadget Mode aktivieren (g_ether)
-#    6. Launcher-Skript erstellen
-#    7. Autostart für Desktop (XDG / LXDE / labwc)
-#    8. Autologin konfigurieren
-#    9. Zusammenfassung
+#    5. Launcher-Skript erstellen
+#    6. Autostart für Desktop (XDG / LXDE / labwc)
+#    7. Autologin konfigurieren
+#    8. Zusammenfassung
 #
 #  Aufruf:  sudo bash setup_rpi5.sh [INSTALL_DIR]
 #           Standard-Installationsverzeichnis: /opt/power_debug_monitor
@@ -98,7 +97,7 @@ ok "Hostname: ${TARGET_HOSTNAME}"
 # ════════════════════════════════════════════════════════════════════════════════
 #  SCHRITT 2 — Systempakete
 # ════════════════════════════════════════════════════════════════════════════════
-step "2/9  Systempakete installieren"
+step "2/8  Systempakete installieren"
 apt-get update -y -q 2>&1 | tail -1
 apt-get install -y -q \
     python3 python3-pip python3-venv git curl \
@@ -112,7 +111,7 @@ ok "Systempakete installiert."
 # ════════════════════════════════════════════════════════════════════════════════
 #  SCHRITT 3 — Python-Abhängigkeiten
 # ════════════════════════════════════════════════════════════════════════════════
-step "3/9  Python-Pakete installieren"
+step "3/8  Python-Pakete installieren"
 REQ_FILE="${SCRIPT_DIR}/requirements.txt"
 if [[ -f "$REQ_FILE" ]]; then
     pip3 install --break-system-packages -r "$REQ_FILE"
@@ -130,7 +129,7 @@ ok "Python-Abhängigkeiten bereit."
 # ════════════════════════════════════════════════════════════════════════════════
 #  SCHRITT 4 — Anwendungsdateien installieren
 # ════════════════════════════════════════════════════════════════════════════════
-step "4/9  Anwendungsdateien → ${INSTALL_DIR}"
+step "4/8  Anwendungsdateien → ${INSTALL_DIR}"
 
 mkdir -p "${INSTALL_DIR}/gui"
 
@@ -170,7 +169,7 @@ ok "Dateien nach ${INSTALL_DIR} installiert."
 # ════════════════════════════════════════════════════════════════════════════════
 #  SCHRITT 5 — WLAN Access Point
 # ════════════════════════════════════════════════════════════════════════════════
-step "5/9  WLAN Access Point konfigurieren (${AP_SSID})"
+step "5/8  WLAN Access Point konfigurieren (${AP_SSID})"
 
 # Sicherstellen dass NetworkManager läuft
 systemctl enable --now NetworkManager 2>/dev/null || true
@@ -202,48 +201,9 @@ nmcli connection up "PowerDebugAP" 2>/dev/null \
 
 
 # ════════════════════════════════════════════════════════════════════════════════
-#  SCHRITT 6 — USB-C Gadget Mode (g_ether)
+#  SCHRITT 6 — Launcher-Skript
 # ════════════════════════════════════════════════════════════════════════════════
-step "6/9  USB-C Gadget Mode (PC ↔ RPi 5)"
-
-# /boot/firmware/config.txt anpassen
-if ! grep -q "dtoverlay=dwc2" "$BOOT_CONFIG"; then
-    {
-        echo ""
-        echo "# ─── Power Debug Monitor: USB OTG Gadget Mode ───"
-        echo "dtoverlay=dwc2,dr_mode=peripheral"
-    } >> "$BOOT_CONFIG"
-    ok "config.txt: dtoverlay=dwc2 hinzugefügt."
-else
-    warn "dtoverlay=dwc2 bereits in ${BOOT_CONFIG} — übersprungen."
-fi
-
-# /boot/firmware/cmdline.txt anpassen
-if ! grep -q "modules-load=dwc2" "$BOOT_CMDLINE"; then
-    # Modul-Ladung hinter rootwait einfügen (alles eine Zeile!)
-    sed -i 's/\(rootwait\)/\1 modules-load=dwc2,g_ether/' "$BOOT_CMDLINE"
-    ok "cmdline.txt: modules-load=dwc2,g_ether hinzugefügt."
-else
-    warn "modules-load=dwc2 bereits in ${BOOT_CMDLINE} — übersprungen."
-fi
-
-# usb0-Netzwerkverbindung konfigurieren (aktiv nach erstem Neustart)
-nmcli connection delete "usb-gadget" 2>/dev/null || true
-nmcli connection add \
-    type        ethernet \
-    con-name    "usb-gadget" \
-    ifname      usb0 \
-    ipv4.addresses "${USB_IP}/24" \
-    ipv4.method    manual \
-    connection.autoconnect yes 2>/dev/null \
-    && ok "usb-gadget Verbindung angelegt (${USB_IP})." \
-    || warn "usb0 noch nicht vorhanden — wird nach Neustart konfiguriert."
-
-
-# ════════════════════════════════════════════════════════════════════════════════
-#  SCHRITT 7 — Launcher-Skript
-# ════════════════════════════════════════════════════════════════════════════════
-step "7/9  Launcher-Skript erstellen"
+step "6/8  Launcher-Skript erstellen"
 
 cat > /usr/local/bin/power-debug-monitor << LAUNCHER_SCRIPT
 #!/usr/bin/env bash
@@ -276,9 +236,9 @@ ok "Launcher: /usr/local/bin/power-debug-monitor"
 
 
 # ════════════════════════════════════════════════════════════════════════════════
-#  SCHRITT 8 — Autostart konfigurieren
+#  SCHRITT 7 — Autostart konfigurieren
 # ════════════════════════════════════════════════════════════════════════════════
-step "8/9  Autostart für Desktop konfigurieren"
+step "7/8  Autostart für Desktop konfigurieren"
 
 # ── A: XDG-Autostart (universell, funktioniert bei LXDE, GNOME, labwc) ───────
 mkdir -p /etc/xdg/autostart
@@ -348,9 +308,9 @@ info "               su ${SERVICE_USER} -c 'systemctl --user enable power-debug-
 
 
 # ════════════════════════════════════════════════════════════════════════════════
-#  SCHRITT 9 — Autologin aktivieren
+#  SCHRITT 8 — Autologin aktivieren
 # ════════════════════════════════════════════════════════════════════════════════
-step "9/9  Desktop-Autologin"
+step "8/8  Desktop-Autologin"
 
 AUTOLOGIN_SET=false
 
@@ -382,13 +342,11 @@ echo -e "${GREEN}╔════════════════════
 echo -e "${GREEN}║  ✅  Raspberry Pi 5 Setup ERFOLGREICH ABGESCHLOSSEN!         ║${NC}"
 echo -e "${GREEN}╠══════════════════════════════════════════════════════════════╣${NC}"
 printf "${GREEN}║  %-62s║${NC}\n" "WLAN-Hotspot  : ${AP_SSID} → ${AP_IP}"
-printf "${GREEN}║  %-62s║${NC}\n" "USB-Gadget    : ${USB_IP} (nach Neustart)"
 printf "${GREEN}║  %-62s║${NC}\n" "Anwendung     : ${INSTALL_DIR}"
 printf "${GREEN}║  %-62s║${NC}\n" "Manuell Start : power-debug-monitor"
 printf "${GREEN}║  %-62s║${NC}\n" "Simulate-Mode : power-debug-monitor --simulate"
 echo -e "${GREEN}╠══════════════════════════════════════════════════════════════╣${NC}"
 echo -e "${GREEN}║  ⚠  NEUSTART ERFORDERLICH für:                               ║${NC}"
-echo -e "${GREEN}║     • USB-C Gadget Mode (g_ether)                            ║${NC}"
 echo -e "${GREEN}║     • Hostname-Änderung                                      ║${NC}"
 echo -e "${GREEN}║  → sudo reboot                                               ║${NC}"
 echo -e "${GREEN}╚══════════════════════════════════════════════════════════════╝${NC}"

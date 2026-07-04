@@ -18,28 +18,18 @@ from pathlib import Path
 import numpy as np
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QTabWidget, QLabel, QPushButton, QRadioButton,
-    QButtonGroup, QCheckBox, QGroupBox, QFileDialog,
-    QStatusBar, QFrame,
+    QTabWidget, QLabel, QRadioButton, QButtonGroup,
+    QGroupBox, QStatusBar, QFrame,
 )
-from PyQt6.QtCore import QTimer, Qt, pyqtSignal, QObject
+from PyQt6.QtCore import QTimer, Qt
 from PyQt6.QtGui import QFont
 
 from config import GUI_TIMER_MS, NODE1_IP, NODE2_IP
-from network_worker import NetworkManager, flash_nodes
+from network_worker import NetworkManager
 from gui.tab_table   import TelemetryTableWidget
 from gui.tab_plotter import LivePlotterWidget
 from gui.tab_visuals import SystemVisualsWidget
 from gui.tab_params  import ParamEditorWidget
-
-
-class _FlashSignalBridge(QObject):
-    """
-    Brücke zwischen Flash-Threads und GUI-Hauptthread.
-    Qt-Signals sind thread-sicher: emit() darf aus jedem Thread gerufen werden,
-    der verbundene Slot wird immer im GUI-Thread ausgeführt.
-    """
-    result = pyqtSignal(int, bool, str)   # node_id, success, message
 
 
 class MainWindow(QMainWindow):
@@ -48,9 +38,6 @@ class MainWindow(QMainWindow):
         super().__init__()
         self._nm          = network_manager
         self._active_node = 1
-
-        self._flash_bridge = _FlashSignalBridge()
-        self._flash_bridge.result.connect(self._on_flash_result)
 
         # Zähler für Pakete/Sekunde
         self._pkt_count   = 0
@@ -95,8 +82,8 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(10)
 
-        # ── Node-Selektor ─────────────────────────────────────────────────────
-        node_box = QGroupBox("Aktiver Debug-Knoten")
+        # ── Node-Selektor & Verbindung ────────────────────────────────────────
+        node_box = QGroupBox("Aktiver Debug-Knoten / Verbindungsstatus")
         nb_layout = QHBoxLayout(node_box)
         nb_layout.setSpacing(16)
 
@@ -108,47 +95,18 @@ class MainWindow(QMainWindow):
             self._node_btn_grp.addButton(rb, nid)
             nb_layout.addWidget(rb)
 
-        self._node_btn_grp.idToggled.connect(self._on_node_toggled)
-        layout.addWidget(node_box)
+        nb_layout.addWidget(_vsep())
 
-        # ── Flash-Zone ────────────────────────────────────────────────────────
-        flash_box = QGroupBox("Flash-Management")
-        fl_layout = QHBoxLayout(flash_box)
-        fl_layout.setSpacing(12)
-
-        # LEDs
+        # LEDs für Verbindungsstatus
         self._led1 = QLabel("⬤ Node 1")
         self._led2 = QLabel("⬤ Node 2")
         self._set_led(self._led1, connected=False)
         self._set_led(self._led2, connected=False)
-        fl_layout.addWidget(self._led1)
-        fl_layout.addWidget(self._led2)
+        nb_layout.addWidget(self._led1)
+        nb_layout.addWidget(self._led2)
 
-        fl_layout.addWidget(_vsep())
-
-        # Ziel-Auswahl
-        fl_layout.addWidget(QLabel("Ziel:"))
-        self._chk_n1 = QCheckBox("Node 1")
-        self._chk_n2 = QCheckBox("Node 2")
-        self._chk_n1.setChecked(True)
-        fl_layout.addWidget(self._chk_n1)
-        fl_layout.addWidget(self._chk_n2)
-
-        fl_layout.addWidget(_vsep())
-
-        # Flash-Button
-        self._btn_flash = QPushButton("⚡  Firmware flashen…")
-        self._btn_flash.setMinimumWidth(190)
-        self._btn_flash.setStyleSheet(
-            "QPushButton { background: #264f78; color: white; "
-            "border-radius: 4px; padding: 5px 10px; }"
-            "QPushButton:hover { background: #3278a8; }"
-            "QPushButton:disabled { background: #444; color: #888; }"
-        )
-        self._btn_flash.clicked.connect(self._on_flash_clicked)
-        fl_layout.addWidget(self._btn_flash)
-
-        layout.addWidget(flash_box)
+        self._node_btn_grp.idToggled.connect(self._on_node_toggled)
+        layout.addWidget(node_box)
         return bar
 
     def _build_tabs(self) -> QTabWidget:
@@ -247,51 +205,6 @@ class MainWindow(QMainWindow):
         self._tab_params.set_active_node(btn_id)
         self._sb.showMessage(f"Node {btn_id} aktiviert.", 2000)
 
-    def _on_flash_clicked(self) -> None:
-        n1 = self._chk_n1.isChecked()
-        n2 = self._chk_n2.isChecked()
-
-        if not (n1 or n2):
-            self._sb.showMessage("⚠  Kein Flash-Ziel ausgewählt!", 3000)
-            return
-
-        hex_path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Firmware-Datei wählen",
-            str(Path.home()),
-            "Intel Hex (*.hex);;Alle Dateien (*)",
-        )
-        if not hex_path:
-            return
-
-        self._btn_flash.setEnabled(False)
-        self._btn_flash.setText("⏳  Wird geflasht…")
-
-        targets = [f"Node {i}" for i, f in ((1, n1), (2, n2)) if f]
-        self._sb.showMessage(f"Flashe {' + '.join(targets)}…")
-
-        # Get dynamically tracked IPs, fallback to default config
-        if not hasattr(self, '_node_ips'):
-            self._node_ips = {1: "192.168.42.11", 2: "192.168.42.12"}
-
-        flash_nodes(
-            hex_path,
-            node1=n1,
-            node2=n2,
-            ip_node1=self._node_ips.get(1, "192.168.42.11"),
-            ip_node2=self._node_ips.get(2, "192.168.42.12"),
-            result_cb=lambda nid, ok, msg: (
-                self._flash_bridge.result.emit(nid, ok, msg)
-            ),
-        )
-
-    def _on_flash_result(self, node_id: int, success: bool, message: str) -> None:
-        icon = "✅" if success else "❌"
-        self._sb.showMessage(
-            f"{icon}  Node {node_id} Flash: {message}", 6000
-        )
-        self._btn_flash.setEnabled(True)
-        self._btn_flash.setText("⚡  Firmware flashen…")
 
     # ══════════════════════════════════════════════════════════════════════════
     #  Hilfsmethoden

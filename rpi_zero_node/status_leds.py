@@ -12,9 +12,8 @@ log = logging.getLogger(__name__)
 PIN_HEARTBEAT = 27   
 PIN_NETWORK   = 22   
 PIN_DATA      = 24   
-PIN_FLASH     = 25   
 
-_ALL_PINS = (PIN_HEARTBEAT, PIN_NETWORK, PIN_DATA, PIN_FLASH)
+_ALL_PINS = (PIN_HEARTBEAT, PIN_NETWORK, PIN_DATA)
 
 _GPIO_OK = False
 
@@ -111,12 +110,4 @@ class StatusLEDs:
         if now - self._last_data_blink >= 0.5:
             self._last_data_blink = now
             self._blink_async(PIN_DATA, on_ms=40, count=1)
-
-    def set_flash_active(self, active: bool) -> None:
-        self._set(PIN_FLASH, active)
-
-    def flash_success(self) -> None:
-        self._blink_async(PIN_FLASH, on_ms=400, off_ms=200, count=3)
-
-    def flash_error(self) -> None:
-        self._blink_async(PIN_FLASH, on_ms=80, off_ms=80, count=10)
+

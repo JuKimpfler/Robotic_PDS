@@ -18,8 +18,6 @@ echo.
 echo Configuring Windows Firewall...
 netsh advfirewall firewall add rule name="RoboDebug UDP Port 5001" dir=in action=allow protocol=UDP localport=5001 >nul
 netsh advfirewall firewall add rule name="RoboDebug UDP Port 5002" dir=in action=allow protocol=UDP localport=5002 >nul
-netsh advfirewall firewall add rule name="RoboDebug TCP Port 5001" dir=in action=allow protocol=TCP localport=5001 >nul
-netsh advfirewall firewall add rule name="RoboDebug TCP Port 5002" dir=in action=allow protocol=TCP localport=5002 >nul
 echo Firewall rules added successfully.
 
 :: Python Dependencies

@@ -18,14 +18,12 @@ This folder contains everything needed to run the Power Debug Monitor GUI on a W
    - Set SSID and key (default: `RoboDebug` / `robodebug123`).
    - Start the hotspot.
 3. **Configure Windows Firewall**
-   The script automatically adds inbound rules for the UDP/TCP ports used by the system (`5001`, `5002`).
+   The script automatically adds inbound rules for the UDP telemetry ports used by the system (`5001`, `5002`).
 4. **Run the GUI**
    ```cmd
    python ..\rpi5_monitor\main.py
    ```
    The GUI will detect the Windows platform, use the hotspot created above and connect to the Raspberry Pi Zero.
-5. **Sending firmware updates**
-   The GUI can now send a compiled `.hex` file to the Pi Zero over TCP. The Pi Zero will flash the Teensy using its local loader CLI.
 
 ## Customisation
 - Edit `setup_windows.bat` to change the SSID, password, or ports.

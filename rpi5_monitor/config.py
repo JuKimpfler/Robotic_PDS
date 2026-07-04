@@ -24,8 +24,6 @@ else:
 # Die Ports können gleich bleiben
 UDP_PORT_NODE1      = 5001
 UDP_PORT_NODE2      = 5002
-TCP_FLASH_PORT_NODE1 = 6001
-TCP_FLASH_PORT_NODE2 = 6002
 # TCP_PARAM_PORT = 7001  # ersetzt durch PARAM_SLOW/FAST-Konstanten (UDP statt TCP,
 #                         # siehe Param-Feature-Plan v2 Abschnitt 2.1 — fire-and-forget
 #                         # passt besser zu UDP als zu TCP)

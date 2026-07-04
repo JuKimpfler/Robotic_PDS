@@ -21,19 +21,15 @@
 #    2. UART freischalten (PL011 auf GPIO14/15, Bluetooth deaktivieren)
 #    3. SPI deaktivieren (nicht genutzt)
 #    4. WLAN zum RPi 5 konfigurieren (DHCP — IP kommt vom RPi-5-Hotspot)
-#    5. USB-Gadget-Modus (RNDIS) für direkten PC-Zugriff einrichten
-#    6. Projektdateien installieren (/opt/power_debug_node/)
-#    7. Systemdienste anlegen (uart-receiver, flash-daemon)
-#    8. Dienste aktivieren (starten automatisch bei jedem Boot)
+#    5. Projektdateien installieren (/opt/power_debug_node/)
+#    6. Systemdienst anlegen (uart-receiver)
+#    7. Dienst aktivieren (startet automatisch bei jedem Boot)
 #
 #  WLAN-Zugang:
 #    SSID:     RoboDebug          ← muss mit RPi 5 AP übereinstimmen
 #    Passwort: robodebug123       ← muss mit RPi 5 AP übereinstimmen
 #    IP:       per DHCP (vergeben vom RPi 5 Hotspot)
 #
-#  USB-Gadget (PC-Verbindung):
-#    Node-IP:  192.168.7.2        ← statisch auf dem Node
-#    PC-IP:    192.168.7.x        ← per DHCP (oder manuell)
 #
 #  NACH DEM SKRIPT:
 #    → sudo reboot
@@ -95,7 +91,6 @@ AP_SSID="RoboDebug"                # SSID des RPi 5 Access Points
 AP_PASS="robodebug123"             # Passwort des RPi 5 Access Points
 INSTALL_DIR="/opt/power_debug_node"
 SERVICE_RECV="uart-receiver"
-SERVICE_FLASH="flash-daemon"
 PROJECT_SRC="$(dirname "$(realpath "$0")")"
 
 # ── Root-Check ────────────────────────────────────────────────────────────────
@@ -249,47 +244,9 @@ info "Bluetooth-Dienste deaktivieren..."
 systemctl disable hciuart.service bluetooth.service 2>/dev/null || true
 ok "Bluetooth-Dienste deaktiviert"
 
-# ══════════════════════════════════════════════════════════════════════════════
-step "3 | USB-Gadget-Modus (RNDIS) für PC-Verbindung"
-# ══════════════════════════════════════════════════════════════════════════════
-#
-#  Pi Zero 2 W unterstützt denselben dwc2 USB-OTG-Gadget-Modus wie Pi Zero W.
-#  Der Micro-USB-Datenport (nicht der PWR-Port!) wird als virtuelle Netzwerkkarte
-#  am PC sichtbar.
-#
-#  Node-Seite: statische IP 192.168.7.2
-#  PC-Seite:   beliebige IP im Bereich 192.168.7.x (DHCP oder manuell)
-#
-info "Prüfe USB-Gadget-Einträge in $CONFIG ..."
-if ! grep -q "dtoverlay=dwc2" "$CONFIG"; then
-    echo "" >> "$CONFIG"
-    echo "# USB-Gadget (RNDIS für PC-Zugriff per USB-C/Micro-USB)" >> "$CONFIG"
-    echo "dtoverlay=dwc2,dr_mode=peripheral" >> "$CONFIG"
-    ok "USB-Gadget-Overlay eingetragen"
-else
-    ok "USB-Gadget-Overlay bereits vorhanden"
-fi
-
-if ! grep -q "dwc2" "$CMDLINE"; then
-    sed -i 's/rootwait/rootwait modules-load=dwc2,g_ether/' "$CMDLINE"
-    ok "dwc2/g_ether in cmdline eingetragen"
-else
-    ok "dwc2 bereits in cmdline"
-fi
-
-info "USB-Gadget-Interface (usb0) mit statischer IP konfigurieren..."
-nmcli connection delete id "USB-Gadget" 2>/dev/null || true
-nmcli connection add \
-    type ethernet \
-    con-name "USB-Gadget" \
-    ifname usb0 \
-    ipv4.method manual \
-    ipv4.addresses "192.168.7.2/24" \
-    connection.autoconnect yes
-ok "USB-Gadget konfiguriert (Node-IP: 192.168.7.2)"
 
 # ══════════════════════════════════════════════════════════════════════════════
-step "4 | WLAN zum RPi 5 konfigurieren (DHCP)"
+step "3 | WLAN zum RPi 5 konfigurieren (DHCP)"
 # ══════════════════════════════════════════════════════════════════════════════
 #
 #  Der Node verbindet sich mit dem WLAN-Hotspot des RPi 5.
@@ -327,7 +284,7 @@ sed -i "s/127\.0\.1\.1.*/127.0.1.1\t$HOSTNAME/" /etc/hosts 2>/dev/null || \
 ok "Hostname gesetzt: $HOSTNAME"
 
 # ══════════════════════════════════════════════════════════════════════════════
-step "5 | Projektdateien installieren nach $INSTALL_DIR"
+step "4 | Projektdateien installieren nach $INSTALL_DIR"
 # ══════════════════════════════════════════════════════════════════════════════
 
 mkdir -p "$INSTALL_DIR"
@@ -354,19 +311,12 @@ else
     warn "uart_receiver.py / spi_receiver.py nicht gefunden!"
 fi
 
-# Flash-Daemon
-if [[ -f "$PROJECT_SRC/flash_daemon.py" ]]; then
-    cp "$PROJECT_SRC/flash_daemon.py" "$INSTALL_DIR/flash_daemon.py"
-    ok "flash_daemon.py installiert"
-else
-    warn "flash_daemon.py nicht gefunden — Flash-Funktion nicht verfügbar"
-fi
 
 chmod +x "$INSTALL_DIR/"*.py 2>/dev/null || true
 ok "Projektdateien installiert"
 
 # ══════════════════════════════════════════════════════════════════════════════
-step "6 | Systemdienst: uart-receiver"
+step "5 | Systemdienst: uart-receiver"
 # ══════════════════════════════════════════════════════════════════════════════
 
 cat > /etc/systemd/system/${SERVICE_RECV}.service << SVCEOF
@@ -398,54 +348,17 @@ SVCEOF
 ok "uart-receiver.service erstellt"
 
 # ══════════════════════════════════════════════════════════════════════════════
-step "7 | Systemdienst: flash-daemon"
-# ══════════════════════════════════════════════════════════════════════════════
-
-if [[ -f "$INSTALL_DIR/flash_daemon.py" ]]; then
-    cat > /etc/systemd/system/${SERVICE_FLASH}.service << SVCEOF
-[Unit]
-Description=Power Debug Flash Daemon (Node ${NODE_ID}) — RPi Zero 2 W
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=root
-WorkingDirectory=${INSTALL_DIR}
-Environment="NODE_ID=${NODE_ID}"
-Environment="PYTHONUNBUFFERED=1"
-ExecStart=/usr/bin/python3 ${INSTALL_DIR}/flash_daemon.py
-Restart=on-failure
-RestartSec=10s
-StandardOutput=journal
-StandardError=journal
-SyslogIdentifier=flash-daemon
-
-[Install]
-WantedBy=multi-user.target
-SVCEOF
-    ok "flash-daemon.service erstellt"
-else
-    warn "flash_daemon.py fehlt — flash-daemon.service übersprungen"
-fi
-
-# ══════════════════════════════════════════════════════════════════════════════
-step "8 | Dienste aktivieren"
+step "6 | Dienst aktivieren"
 # ══════════════════════════════════════════════════════════════════════════════
 
 systemctl daemon-reload
 systemctl enable ${SERVICE_RECV}.service
 ok "uart-receiver aktiviert"
 
-if [[ -f /etc/systemd/system/${SERVICE_FLASH}.service ]]; then
-    systemctl enable ${SERVICE_FLASH}.service
-    ok "flash-daemon aktiviert"
-fi
-
-warn "Dienste starten erst nach 'sudo reboot' (UART-Konfiguration braucht Neustart)"
+warn "Dienst startet erst nach 'sudo reboot' (UART-Konfiguration braucht Neustart)"
 
 # ══════════════════════════════════════════════════════════════════════════════
-step "9 | Verifizierung"
+step "7 | Verifizierung"
 # ══════════════════════════════════════════════════════════════════════════════
 
 echo ""
@@ -458,13 +371,8 @@ info "──── $CMDLINE ────"
 echo "   $(cat "$CMDLINE")"
 
 echo ""
-info "──── Aktivierte Dienste ────"
 systemctl is-enabled ${SERVICE_RECV}.service 2>/dev/null && \
     echo "   ✅ uart-receiver: enabled" || echo "   ❌ uart-receiver: NOT enabled"
-[[ -f /etc/systemd/system/${SERVICE_FLASH}.service ]] && {
-    systemctl is-enabled ${SERVICE_FLASH}.service 2>/dev/null && \
-        echo "   ✅ flash-daemon:  enabled" || echo "   ❌ flash-daemon:  NOT enabled"
-}
 
 echo ""
 info "──── Python-Pakete ────"
