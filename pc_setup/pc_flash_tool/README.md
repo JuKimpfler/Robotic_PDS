@@ -41,6 +41,23 @@ verbindet sich `bt_flash_sender.py` per bekannter MAC-Adresse jederzeit neu.
 
 ## Benutzung
 
+### Option A: Grafische Oberfläche (empfohlen für den schnellen Einsatz)
+
+```cmd
+python bt_flash_sender_gui.py
+```
+
+- **1. Firmware-Datei (.hex)**: über "Durchsuchen ..." auswählen.
+- **2. Empfänger auswählen**: Checkboxen für `node1` / `node2` (Namen und
+  MAC-Adressen werden automatisch aus `bt_targets.json` geladen) — beliebig
+  einzeln oder zusammen anhaken.
+- **Flashen**-Button startet den Vorgang im Hintergrund; Fortschrittsbalken
+  je Node und ein Log-Fenster zeigen den Verlauf live an.
+- Existiert `bt_targets.json` noch nicht, legt die GUI beim ersten Start
+  automatisch eine Vorlage an und weist darauf hin, die Werte einzutragen.
+
+### Option B: Kommandozeile
+
 ```cmd
 :: Beide Nodes nacheinander flashen
 python bt_flash_sender.py C:\Pfad\zu\firmware.hex --target both

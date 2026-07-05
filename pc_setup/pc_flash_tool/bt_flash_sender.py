@@ -72,11 +72,26 @@ def load_targets(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def flash_one(node_name: str, cfg: dict, hex_path: Path) -> bool:
+def flash_one(
+    node_name: str,
+    cfg: dict,
+    hex_path: Path,
+    log_cb=None,
+    progress_cb=None,
+) -> bool:
+    """Verbindet sich mit einem Node und flasht die Datei.
+
+    log_cb(str)                                    -- Textzeile fürs Log
+    progress_cb(pct:int, sent:int, size:int, kbs:float) -- Fortschritt je Chunk
+
+    Wenn keine Callbacks übergeben werden, wird auf print() (mit \\r-Fortschritt
+    für die Konsole) zurückgefallen — Verhalten der CLI bleibt unverändert.
+    """
+    log = log_cb or print
     mac = cfg["mac"]
     channel = int(cfg["channel"])
     token = cfg["token"]
-    print(f"\n=== {node_name} ({mac}, Kanal {channel}) ===")
+    log(f"=== {node_name} ({mac}, Kanal {channel}) ===")
 
     data = hex_path.read_bytes()
     size = len(data)
@@ -85,7 +100,7 @@ def flash_one(node_name: str, cfg: dict, hex_path: Path) -> bool:
     sock = socket.socket(socket.AF_BLUETOOTH, socket.SOCK_STREAM, socket.BTPROTO_RFCOMM)
     try:
         sock.settimeout(CONNECT_TIMEOUT)
-        print("Verbinde ...")
+        log("Verbinde ...")
         sock.connect((mac, channel))
 
         # --- Handshake / Auth ---------------------------------------------
@@ -94,9 +109,9 @@ def flash_one(node_name: str, cfg: dict, hex_path: Path) -> bool:
         cmd, payload = recv_frame(sock)
         ack = json.loads(payload.decode("utf-8"))
         if cmd != Cmd.HELLO_ACK or not ack.get("ok"):
-            print(f"[FEHLER] Auth/Handshake fehlgeschlagen: {ack.get('msg', payload)}")
+            log(f"[FEHLER] Auth/Handshake fehlgeschlagen: {ack.get('msg', payload)}")
             return False
-        print(f"Verbunden mit Node {ack.get('node_id', '?')}")
+        log(f"Verbunden mit Node {ack.get('node_id', '?')}")
 
         # --- Flash-Start ankündigen -----------------------------------------
         meta = {"filename": hex_path.name, "size": size, "sha256": sha256}
@@ -104,9 +119,9 @@ def flash_one(node_name: str, cfg: dict, hex_path: Path) -> bool:
         cmd, payload = recv_frame(sock)
         start_ack = json.loads(payload.decode("utf-8"))
         if cmd != Cmd.FLASH_START_ACK or not start_ack.get("ok"):
-            print(f"[FEHLER] {start_ack.get('msg', 'FLASH_START wurde abgelehnt')}")
+            log(f"[FEHLER] {start_ack.get('msg', 'FLASH_START wurde abgelehnt')}")
             return False
-        print(f"Node bereit: {start_ack.get('msg', '')}")
+        log(f"Node bereit: {start_ack.get('msg', '')}")
 
         # --- Datei in Chunks senden (Stop-and-Wait) --------------------------
         sock.settimeout(CHUNK_TIMEOUT)
@@ -118,15 +133,19 @@ def flash_one(node_name: str, cfg: dict, hex_path: Path) -> bool:
             cmd, payload = recv_frame(sock)
             ack = json.loads(payload.decode("utf-8"))
             if cmd != Cmd.DATA_CHUNK_ACK or not ack.get("ok"):
-                print(f"\n[FEHLER] Chunk nicht bestätigt: {ack}")
+                log(f"[FEHLER] Chunk nicht bestätigt: {ack}")
                 return False
             sent += len(chunk)
             pct = sent * 100 // size
             elapsed = max(time.monotonic() - t0, 0.001)
             speed_kbs = (sent / 1024) / elapsed
-            print(f"\r  Übertrage: {pct:3d}% ({sent}/{size} Bytes, {speed_kbs:.1f} KB/s)",
-                  end="", flush=True)
-        print()
+            if progress_cb:
+                progress_cb(pct, sent, size, speed_kbs)
+            else:
+                print(f"\r  Übertrage: {pct:3d}% ({sent}/{size} Bytes, {speed_kbs:.1f} KB/s)",
+                      end="", flush=True)
+        if not progress_cb:
+            print()
 
         # --- Abschluss + Flash-Ergebnis abwarten -----------------------------
         send_frame(sock, Cmd.FLASH_END)
@@ -134,16 +153,16 @@ def flash_one(node_name: str, cfg: dict, hex_path: Path) -> bool:
         cmd, payload = recv_frame(sock)
         result = json.loads(payload.decode("utf-8"))
         if cmd == Cmd.FLASH_RESULT and result.get("ok"):
-            print(f"[OK] Flash erfolgreich auf {node_name}.")
+            log(f"[OK] Flash erfolgreich auf {node_name}.")
             return True
 
-        print(f"[FEHLER] Flash fehlgeschlagen (Exit-Code {result.get('returncode')}):")
-        print(result.get("output", "(keine Ausgabe)"))
+        log(f"[FEHLER] Flash fehlgeschlagen (Exit-Code {result.get('returncode')}):")
+        log(result.get("output", "(keine Ausgabe)"))
         return False
 
     except (OSError, socket.timeout, ProtocolError) as exc:
-        print(f"[FEHLER] Verbindung zu {node_name} ({mac}) fehlgeschlagen: {exc}")
-        print("         Ist der Node gepaart, eingeschaltet und in Reichweite?")
+        log(f"[FEHLER] Verbindung zu {node_name} ({mac}) fehlgeschlagen: {exc}")
+        log("         Ist der Node gepaart, eingeschaltet und in Reichweite?")
         return False
     finally:
         sock.close()
