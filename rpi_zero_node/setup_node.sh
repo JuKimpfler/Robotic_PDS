@@ -33,6 +33,17 @@
 #    RFCOMM-Kanal aus — diese Werte in
 #    pc_setup/pc_flash_tool/bt_targets.json auf dem Windows-PC eintragen.
 #
+#    Seit der Ergänzung um trigger_bootloader_mode() in bt_flash_receiver.py
+#    versetzt der Node den Teensy 4.0 VOR jedem Flash-Vorgang per Software in
+#    den HalfKay-Bootloader (Öffnen des USB-CDC-Ports mit Baudrate 134) — der
+#    Bootloader-Taster muss dafür in aller Regel NICHT mehr gedrückt werden.
+#    Voraussetzungen dafür (pyserial + Root-Rechte für /dev/ttyACM*) werden
+#    von diesem Skript bereits mitgebracht — siehe Schritt 1 und 5b unten.
+#    Funktioniert nur, wenn die aktuell auf dem Teensy laufende Firmware den
+#    USB-Typ "Serial" (oder eine Kombination mit Serial) nutzt; andernfalls
+#    bleibt der manuelle Knopfdruck als Fallback nötig (siehe Fehlermeldung
+#    von bt_flash_receiver.py / check_teensy_present()).
+#
 #  WLAN-Zugang:
 #    SSID:     RoboDebug          ← muss mit RPi 5 AP übereinstimmen
 #    Passwort: robodebug123       ← muss mit RPi 5 AP übereinstimmen
@@ -168,6 +179,18 @@ pip3 install --break-system-packages \
     pyserial
 
 ok "Pakete installiert"
+
+# ── pyserial: serial.tools.list_ports wird vom Software-Bootloader-Trigger ──
+# in bt_flash_receiver.py benötigt (trigger_bootloader_mode() sucht darüber
+# den Teensy-CDC-Port anhand von VID/PID). python3-serial (apt) UND pyserial
+# (pip, s.o.) bringen dieses Submodul standardmäßig mit — hier nur zur
+# Absicherung nochmal explizit geprüft.
+if python3 -c "import serial.tools.list_ports" 2>/dev/null; then
+    ok "serial.tools.list_ports verfügbar (Software-Bootloader-Trigger einsatzbereit)"
+else
+    warn "serial.tools.list_ports NICHT verfügbar — Software-Bootloader-Trigger"
+    warn "für den Teensy-Flash faellt auf manuellen Knopfdruck zurueck."
+fi
 
 # ── Paketversionen zur Diagnose ausgeben ──────────────────────────────────────
 python3 -c "import serial; print(f'   pyserial:  {serial.VERSION}')" 2>/dev/null || true
@@ -411,6 +434,15 @@ step "5b | Systemdienst: bt-flash-receiver (Wireless-Flash-Feature)"
 SERVICE_BT="bt-flash-receiver"
 BT_CHANNEL="${BT_FLASH_CHANNEL:-4}"
 
+# Hinweis Software-Bootloader-Trigger (trigger_bootloader_mode() in
+# bt_flash_receiver.py): Der Dienst läuft unten bewusst als User=root, damit
+# er ohne zusätzliche udev-Regeln/Gruppenmitgliedschaft sowohl auf den
+# Teensy-CDC-Serial-Port (/dev/ttyACM*, für das Setzen der Baudrate 134) als
+# auch auf den HalfKay-Bootloader (raw USB, für teensy_loader_cli) zugreifen
+# kann. Bei einem spaeteren Wechsel auf einen unprivilegierten Service-User
+# muesste dieser zusaetzlich der Gruppe `dialout` hinzugefuegt werden
+# (sudo usermod -aG dialout <user>) und ggf. eine udev-Regel fuer den
+# HalfKay-Bootloader (16c0:0478) angelegt werden.
 if [[ -f "$INSTALL_DIR/rpi_zero_node/bt_flash_receiver.py" ]]; then
 cat > /etc/systemd/system/${SERVICE_BT}.service << SVCEOF
 [Unit]
@@ -508,6 +540,20 @@ echo "   -> Diese drei Werte (MAC, Token, Kanal) in bt_targets.json auf dem"
 echo "      Windows-PC eintragen (pc_setup/pc_flash_tool/bt_targets.json)."
 
 echo ""
+info "──── Software-Bootloader-Trigger (kein Knopfdruck mehr nötig) ────"
+python3 -c "import serial.tools.list_ports; print('   ✅ serial.tools.list_ports verfügbar')" 2>/dev/null || \
+    echo "   ❌ serial.tools.list_ports fehlt — Trigger faellt auf manuellen Knopfdruck zurueck"
+if command -v lsusb &>/dev/null; then
+    if lsusb 2>/dev/null | grep -qi "16c0:04"; then
+        echo "   ℹ️  Teensy aktuell am USB erkannt: $(lsusb | grep -i '16c0:04')"
+    else
+        echo "   ℹ️  Aktuell kein Teensy am USB erkannt (ok, falls gerade nicht angeschlossen)"
+    fi
+else
+    echo "   ⚠️  lsusb (usbutils) nicht gefunden"
+fi
+
+echo ""
 info "──── Verdrahtung (Teensy ↔ RPi Zero 2 W) ────"
 echo "   ACHTUNG: main.cpp nutzt Serial3 (nicht Serial1)!"
 echo "   Teensy Pin 14 (TX3) → RPi GPIO15 (Pin 10, UART RX)"
@@ -538,6 +584,11 @@ echo "║     journalctl -u bt-flash-receiver -f                   ║"
 echo "║     ls -la /dev/ttyAMA0                                  ║"
 echo "║     ip addr show wlan0                                   ║"
 echo "║     bluetoothctl show                                    ║"
+echo "║                                                          ║"
+echo "║   Wireless-Flash ohne Knopfdruck:                        ║"
+echo "║     Teensy wird vor dem Flashen per Software in den      ║"
+echo "║     Bootloader versetzt (siehe bt_flash_receiver.py).    ║"
+echo "║     Klappt nur bei Sketches mit USB-Typ 'Serial'.        ║"
 echo "║                                                          ║"
 echo "║   Hinweis Verdrahtung:                                   ║"
 echo "║     Teensy nutzt Serial3 (Pin 14/15), nicht Serial1!     ║"

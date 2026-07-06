@@ -42,6 +42,46 @@ Kompatibilitätshinweis Python 3.9 (Standard auf Bullseye): dieses Modul nutzt
 (z. B. `tuple[bool, str]`) nicht zur Laufzeit ausgewertet werden — das ist
 auf 3.9 sonst ein `TypeError` (PEP 604 `X | Y` gibt es erst ab 3.10).
 ────────────────────────────────────────────────────────────────────────────
+
+SOFTWARE-BOOTLOADER-TRIGGER (kein manueller Knopfdruck mehr nötig)
+────────────────────────────────────────────────────────────────────────────
+Vorher musste vor jedem Flash-Vorgang der physische Bootloader-Taster am
+Teensy 4.0 gedrückt werden, weil `check_teensy_present()` nur per `lsusb`
+prüfte, ob der Teensy *bereits* im HalfKay-Bootloader (16c0:0478) oder im
+USB-CDC-Serial-Modus (16c0:0483) sichtbar ist — ohne aktiv etwas zu
+unternehmen, wenn das nicht der Fall war.
+
+Der Teensy 4.0 unterstützt (wie Teensy 3.x) einen Software-Reboot in den
+Bootloader: Öffnet man den USB-CDC-Serial-Port, den der laufende Sketch
+über den Teensyduino-USB-Typ "Serial" bereitstellt, mit der "magischen"
+Baudrate 134, interpretiert die Teensyduino-USB-Stack-Firmware das als
+SET_LINE_CODING-Request mit dwDTERate=134 und löst daraufhin selbst einen
+Sprung in den HalfKay-Bootloader aus. Das ist exakt dieselbe Technik, die
+`teensy_loader_cli -s` (soft_reboot(), siehe dessen Quellcode) und die
+Arduino-IDE/Teensyduino beim automatischen Hochladen ohne Knopfdruck
+verwenden — hier wird sie eigenständig vor dem eigentlichen Aufruf von
+`teensy_loader_cli` durchgeführt (`trigger_bootloader_mode()`), damit
+`check_teensy_present()` den Teensy zuverlässig findet, *bevor* überhaupt
+FLASH_START bestätigt wird.
+
+Voraussetzungen auf dem Pi:
+  - Paket `pyserial` (z. B. `pip3 install pyserial` oder
+    `apt install python3-serial`) — wird nur für den Öffnen-mit-Baudrate-134-
+    Trick gebraucht, ist aber kein Hard-Requirement: ist es nicht
+    installiert, fällt der Code auf das alte Verhalten (nur lsusb-Check,
+    ggf. manueller Knopfdruck nötig) zurück.
+  - Der Systembenutzer, unter dem `bt-flash-receiver.service` läuft, muss
+    Lese-/Schreibzugriff auf `/dev/ttyACM*` haben (i. d. R. Mitgliedschaft
+    in der Gruppe `dialout`: `sudo usermod -aG dialout <user>`).
+  - Funktioniert nur, wenn die *aktuell auf dem Teensy laufende* Firmware
+    den USB-Typ "Serial" (oder eine Kombination mit Serial, z. B.
+    "Serial + MIDI") verwendet und dadurch einen CDC-ACM-Port (16c0:0483)
+    öffnet. Nutzt der Sketch einen anderen USB-Typ (z. B. reines
+    "Keyboard+Mouse+Joystick" ohne Serial) oder ist der Teensy abgestürzt/
+    hängt, kann der Software-Trigger den Port nicht finden — dann bleibt
+    der manuelle Knopfdruck als Fallback nötig, was `check_teensy_present()`
+    in der Fehlermeldung entsprechend kommuniziert.
+────────────────────────────────────────────────────────────────────────────
 """
 from __future__ import annotations
 
@@ -60,6 +100,13 @@ import dbus
 import dbus.mainloop.glib
 import dbus.service
 from gi.repository import GLib
+
+try:
+    import serial  # pyserial - fuer Software-Bootloader-Trigger (siehe Docstring oben)
+    import serial.tools.list_ports as serial_list_ports
+except ImportError:  # pragma: no cover - pyserial optional, siehe Docstring
+    serial = None
+    serial_list_ports = None
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "shared"))
 try:
@@ -81,6 +128,13 @@ SPP_UUID = "00001101-0000-1000-8000-00805f9b34fb"
 PROFILE_DBUS_PATH = "/pds/bt_flash_profile"
 AGENT_DBUS_PATH = "/pds/bt_flash_agent"
 TEENSY_USB_IDS = ("16c0:0483", "16c0:0478")  # HalfKay-Bootloader / Teensy CDC-Serial
+TEENSY_VID = 0x16C0
+TEENSY_SERIAL_PID = 0x0483    # normaler Betrieb: USB-CDC-Serial (Teensyduino USB-Typ "Serial")
+TEENSY_BOOTLOADER_PID = 0x0478  # HalfKay-Bootloader
+TEENSY_BOOTLOADER_USB_ID = f"{TEENSY_VID:04x}:{TEENSY_BOOTLOADER_PID:04x}"
+REBOOT_MAGIC_BAUDRATE = 134   # von Teensyduino als "SET_LINE_CODING -> Reboot in Bootloader" erkannt
+BOOTLOADER_WAIT_TIMEOUT_S = 6.0
+BOOTLOADER_POLL_INTERVAL_S = 0.25
 FLASH_TIMEOUT_S = 20
 KEEP_OLD_HEX_FILES = 5
 
@@ -306,14 +360,107 @@ def handle_client(raw_fd: int, peer_path: str) -> None:
             pass
 
 
-def check_teensy_present() -> tuple[bool, str]:
+def _lsusb_output() -> str | None:
     try:
-        out = subprocess.run(["lsusb"], capture_output=True, text=True, timeout=5).stdout
+        return subprocess.run(["lsusb"], capture_output=True, text=True, timeout=5).stdout
     except (OSError, subprocess.TimeoutExpired) as exc:
-        return False, f"lsusb fehlgeschlagen: {exc}"
+        log.warning("lsusb fehlgeschlagen: %s", exc)
+        return None
+
+
+def _usb_id_present(vid_pid: str) -> bool:
+    out = _lsusb_output()
+    return bool(out) and vid_pid in out
+
+
+def _find_teensy_serial_port() -> str | None:
+    """Sucht den /dev/ttyACM*-Port des Teensy im normalen CDC-Serial-Betrieb
+    (VID/PID 16c0:0483) über pyserial. Liefert None, wenn pyserial fehlt oder
+    kein passender Port gefunden wurde."""
+    if serial_list_ports is None:
+        return None
+    try:
+        for port in serial_list_ports.comports():
+            if port.vid == TEENSY_VID and port.pid == TEENSY_SERIAL_PID:
+                return port.device
+    except OSError as exc:
+        log.warning("Fehler beim Auflisten der seriellen Ports: %s", exc)
+    return None
+
+
+def trigger_bootloader_mode() -> tuple[bool, str]:
+    """Versetzt den Teensy 4.0 per Software in den HalfKay-Bootloader, ohne
+    dass der Bootloader-Taster gedrückt werden muss.
+
+    Technik: Der laufende Sketch stellt (sofern er den Teensyduino-USB-Typ
+    "Serial" nutzt) einen USB-CDC-ACM-Port bereit (VID:PID 16c0:0483). Öffnet
+    man diesen Port mit der "magischen" Baudrate 134, interpretiert die
+    Teensyduino-USB-Stack-Firmware das SET_LINE_CODING-Kommando als Befehl,
+    in den Bootloader zu springen — dieselbe Technik, die intern auch
+    `teensy_loader_cli -s` (soft_reboot()) und die Arduino-IDE beim
+    automatischen Hochladen verwenden.
+
+    Rückgabe: (ok, meldung). ok=True bedeutet, der Teensy ist (jetzt) im
+    Bootloader-Modus (16c0:0478) und `teensy_loader_cli` kann ihn ansprechen.
+    """
+    if _usb_id_present(TEENSY_BOOTLOADER_USB_ID):
+        return True, "Teensy ist bereits im Bootloader-Modus"
+
+    if serial is None:
+        return False, (
+            "pyserial nicht installiert - Software-Reboot in den Bootloader "
+            "nicht möglich (Abhilfe: 'pip3 install pyserial' auf dem Node, "
+            "siehe README)"
+        )
+
+    port = _find_teensy_serial_port()
+    if not port:
+        return False, (
+            "Kein Teensy-CDC-Serial-Port gefunden - entweder ist der Teensy "
+            "nicht angeschlossen, oder die aktuell laufende Firmware nutzt "
+            "keinen USB-Typ mit 'Serial'"
+        )
+
+    try:
+        log.info("Löse Software-Reboot in Bootloader über %s aus (Baudrate=%d) ...",
+                  port, REBOOT_MAGIC_BAUDRATE)
+        ser = serial.Serial()
+        ser.port = port
+        ser.baudrate = REBOOT_MAGIC_BAUDRATE
+        ser.open()
+        time.sleep(0.1)
+        ser.close()
+    except (OSError, serial.SerialException) as exc:
+        return False, f"Fehler beim Software-Reboot über {port}: {exc}"
+
+    deadline = time.monotonic() + BOOTLOADER_WAIT_TIMEOUT_S
+    while time.monotonic() < deadline:
+        if _usb_id_present(TEENSY_BOOTLOADER_USB_ID):
+            log.info("Teensy erfolgreich per Software in den Bootloader versetzt")
+            return True, "Teensy per Software erfolgreich in Bootloader-Modus versetzt"
+        time.sleep(BOOTLOADER_POLL_INTERVAL_S)
+
+    return False, (
+        f"Software-Reboot über {port} ausgelöst, aber Bootloader-Modus "
+        f"({TEENSY_BOOTLOADER_USB_ID}) nicht innerhalb von "
+        f"{BOOTLOADER_WAIT_TIMEOUT_S:.0f}s erkannt"
+    )
+
+
+def check_teensy_present() -> tuple[bool, str]:
+    ok, msg = trigger_bootloader_mode()
+    if ok:
+        return True, msg
+
+    # Fallback: falls trigger_bootloader_mode() aus anderen Gründen (z. B.
+    # pyserial fehlt) nichts tun konnte, aber der Bootloader-Taster bereits
+    # manuell gedrückt wurde, ist der Teensy evtl. trotzdem schon bereit.
+    out = _lsusb_output()
+    if out is None:
+        return False, f"lsusb fehlgeschlagen ({msg})"
     if any(vid_pid in out for vid_pid in TEENSY_USB_IDS):
         return True, "Teensy per USB gefunden"
-    return False, "Kein Teensy per USB gefunden (Bootloader/CDC-Serial-VID/PID nicht in lsusb)"
+    return False, f"Kein Teensy per USB gefunden ({msg})"
 
 
 def flash_teensy(hex_path: Path) -> tuple[bool, int, str]:

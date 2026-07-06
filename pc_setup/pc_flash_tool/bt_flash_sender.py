@@ -72,6 +72,30 @@ def load_targets(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+WINERROR_HINTS = {
+    10051: (
+        "Netzwerk nicht erreichbar (WSAENETUNREACH). Haeufigste Ursachen:\n"
+        "         1) Node war beim Koppeln in Windows noch nicht mit laufendem\n"
+        "            bt-flash-receiver.service erreichbar -> in Windows-Einstellungen\n"
+        "            unter Bluetooth & Geraete den Node ENTFERNEN und NEU koppeln,\n"
+        "            waehrend der Dienst auf dem Pi bereits laeuft.\n"
+        "         2) Der PC nutzt einen herstellereigenen Bluetooth-Treiber (Intel/\n"
+        "            Realtek/Broadcom) statt des Microsoft-Standardtreibers - rohe\n"
+        "            RFCOMM-Sockets funktionieren nur mit Letzterem. Pruefen unter\n"
+        "            Geraete-Manager > Bluetooth > Eigenschaften > Treiber."
+    ),
+    10060: "Zeitueberschreitung (WSAETIMEDOUT) - Node ausser Reichweite oder Bluetooth-Dienst auf dem Pi nicht aktiv.",
+    10061: "Verbindung abgelehnt (WSAECONNREFUSED) - falscher RFCOMM-Kanal oder Dienst auf dem Pi nicht registriert.",
+    10064: "Zielgeraet nicht erreichbar (WSAEHOSTDOWN) - Node ausgeschaltet oder ausser Reichweite.",
+}
+
+
+def _connect_error_hint(exc: Exception) -> str:
+    """Uebersetzt bekannte Windows-Socket-Fehlercodes (WinError) in Klartext."""
+    winerror = getattr(exc, "winerror", None)
+    return WINERROR_HINTS.get(winerror, "")
+
+
 def flash_one(
     node_name: str,
     cfg: dict,
@@ -162,7 +186,11 @@ def flash_one(
 
     except (OSError, socket.timeout, ProtocolError) as exc:
         log(f"[FEHLER] Verbindung zu {node_name} ({mac}) fehlgeschlagen: {exc}")
-        log("         Ist der Node gepaart, eingeschaltet und in Reichweite?")
+        hint = _connect_error_hint(exc)
+        if hint:
+            log(f"         {hint}")
+        else:
+            log("         Ist der Node gepaart, eingeschaltet und in Reichweite?")
         return False
     finally:
         sock.close()
@@ -179,7 +207,7 @@ def main() -> int:
                          help="Pfad zu bt_targets.json (Default: neben diesem Skript)")
     args = parser.parse_args()
 
-    if not args.hex_file.exists():
+    if not args.hex_file.is_file():
         print(f"[FEHLER] Datei nicht gefunden: {args.hex_file}")
         return 1
     if args.hex_file.suffix.lower() != ".hex":

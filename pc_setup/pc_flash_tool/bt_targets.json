@@ -1,5 +1,5 @@
 {
-  "_hinweis": "MAC-Adresse, Kanal und Token werden am Ende von setup_node.sh auf dem jeweiligen Pi ausgegeben. Dort eintragen, diese Datei dann NICHT mit echten Tokens ins Git-Repo committen.",
+  "_hinweis": "MAC-Adresse, Kanal und Token werden am Ende von setup_node.sh auf dem jeweiligen Pi ausgegeben.",
   "node1": {
     "mac": "B8:27:EB:DF:4C:86",
     "channel": 4,
