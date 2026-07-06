@@ -1,0 +1,30 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "PIO: Build",
+            "type": "shell",
+            "command": "pio run",
+            "group": { "kind": "build", "isDefault": true },
+            "problemMatcher": []
+        },
+        {
+            "label": "PIO: Build + Upload BT Node 1",
+            "type": "shell",
+            "command": "pio run -t upload_bt_node1",
+            "problemMatcher": []
+        },
+        {
+            "label": "PIO: Build + Upload BT Node 2",
+            "type": "shell",
+            "command": "pio run -t upload_bt_node2",
+            "problemMatcher": []
+        },
+        {
+            "label": "PIO: Build + Upload BT Both",
+            "type": "shell",
+            "command": "pio run -t upload_bt_both",
+            "problemMatcher": []
+        }
+    ]
+}
