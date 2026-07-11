@@ -60,11 +60,15 @@ BOOT_CONFIG="${BOOT_DIR}/config.txt"
 BOOT_CMDLINE="${BOOT_DIR}/cmdline.txt"
 
 # Netzwerk-Konfiguration
-AP_SSID="PowerDebugAP"
-AP_PASS="HighSpeedDebug123"
+# WICHTIG: SSID/Passwort MÜSSEN mit rpi_zero_node/setup_node.sh und dem
+# Default in rpi5_monitor/platform_utils.py (setup_hotspot) übereinstimmen,
+# und entsprechen jetzt dem aktuellen PC-Setup (pc_setup/setup_windows.bat).
+AP_SSID="RoboDebug"
+AP_PASS="robodebug123"
 AP_IP="192.168.42.1"
 AP_SUBNET="192.168.42.0/24"
 USB_IP="192.168.7.1"
+WIFI_COUNTRY="DE"   # Regulatory-Domain — ohne diese startet der AP oft nicht
 
 echo ""
 echo -e "${CYAN}╔══════════════════════════════════════════════════════════╗${NC}"
@@ -134,12 +138,20 @@ step "4/8  Anwendungsdateien → ${INSTALL_DIR}"
 mkdir -p "${INSTALL_DIR}/gui"
 
 # RPi-5-Hauptdateien kopieren
+# Hinweis: param_io.py/platform_utils.py liegen bewusst FLACH neben config.py
+# (main.py macht "from param_io import ..." / "from platform_utils import ...").
+# param_config.json, param_defaults.h, visuals_overlays.json und bild/ werden
+# von config.py bzw. gui/tab_visuals.py relativ zu __file__ gesucht — müssen
+# also ebenfalls direkt in INSTALL_DIR liegen (nicht in gui/).
 RPi5_SRC="${SCRIPT_DIR}/rpi5_monitor"
 if [[ -d "$RPi5_SRC" ]]; then
-    # Verzeichnisstruktur wie im README
-    for f in main.py network_worker.py config.py; do
+    for f in main.py network_worker.py config.py param_io.py platform_utils.py \
+             param_config.json param_defaults.h visuals_overlays.json; do
         [[ -f "${RPi5_SRC}/${f}" ]] && cp "${RPi5_SRC}/${f}" "${INSTALL_DIR}/" && info "  ✓ ${f}"
     done
+    if [[ -d "${RPi5_SRC}/bild" ]]; then
+        cp -r "${RPi5_SRC}/bild" "${INSTALL_DIR}/" && info "  ✓ bild/ (Hintergrundbilder)"
+    fi
     GUI_SRC="${RPi5_SRC}/gui"
     if [[ -d "$GUI_SRC" ]]; then
         for f in main_window.py tab_table.py tab_plotter.py tab_visuals.py tab_params.py; do
@@ -150,9 +162,11 @@ if [[ -d "$RPi5_SRC" ]]; then
 else
     # Flache Struktur (alle Dateien im Skriptverzeichnis)
     warn "rpi5_monitor/ nicht gefunden — suche Dateien in ${SCRIPT_DIR}"
-    for f in main.py network_worker.py config.py; do
+    for f in main.py network_worker.py config.py param_io.py platform_utils.py \
+             param_config.json param_defaults.h visuals_overlays.json; do
         [[ -f "${SCRIPT_DIR}/${f}" ]] && cp "${SCRIPT_DIR}/${f}" "${INSTALL_DIR}/" && info "  ✓ ${f}"
     done
+    [[ -d "${SCRIPT_DIR}/bild" ]] && cp -r "${SCRIPT_DIR}/bild" "${INSTALL_DIR}/" && info "  ✓ bild/"
     for f in main_window.py tab_table.py tab_plotter.py tab_visuals.py tab_params.py; do
         [[ -f "${SCRIPT_DIR}/${f}" ]] && cp "${SCRIPT_DIR}/${f}" "${INSTALL_DIR}/gui/" && info "  ✓ gui/${f}"
     done
@@ -174,16 +188,28 @@ step "5/8  WLAN Access Point konfigurieren (${AP_SSID})"
 # Sicherstellen dass NetworkManager läuft
 systemctl enable --now NetworkManager 2>/dev/null || true
 
-# Bestehende AP-Verbindungen bereinigen
-for CON in "PowerDebugAP" "Hotspot" "WiFi-AP"; do
+# Regulatory-Domain setzen — ohne gesetztes WLAN-Land verweigert der Kernel
+# auf dem Pi 5 (Bookworm) häufig den AP-Modus (0 dBm / kein Broadcast).
+if command -v raspi-config &>/dev/null; then
+    raspi-config nonint do_wifi_country "$WIFI_COUNTRY" \
+        && ok "WLAN-Land gesetzt: ${WIFI_COUNTRY}" \
+        || warn "WLAN-Land konnte nicht per raspi-config gesetzt werden."
+else
+    rfkill unblock wifi 2>/dev/null || true
+fi
+
+# Bestehende/alte AP-Verbindungen bereinigen (inkl. altem Namen "PowerDebugAP")
+for CON in "PowerDebugAP" "RoboDebug" "Hotspot" "WiFi-AP"; do
     nmcli connection delete "$CON" 2>/dev/null && info "  Alt-Verbindung '${CON}' entfernt." || true
 done
 
-# Neuen Hotspot anlegen
+# Neuen Hotspot anlegen — SSID/Passwort identisch zu setup_node.sh und
+# platform_utils.setup_hotspot(), damit Zero-Nodes und PC-Testbetrieb
+# ohne Anpassung zusammenpassen.
 nmcli connection add \
     type            wifi \
     ifname          wlan0 \
-    con-name        "PowerDebugAP" \
+    con-name        "$AP_SSID" \
     autoconnect     yes \
     ssid            "$AP_SSID" \
     mode            ap \
@@ -195,7 +221,7 @@ nmcli connection add \
     wifi.channel    6
 
 # Direkt starten (falls möglich)
-nmcli connection up "PowerDebugAP" 2>/dev/null \
+nmcli connection up "$AP_SSID" 2>/dev/null \
     && ok "AP gestartet: SSID=${AP_SSID}  IP=${AP_IP}" \
     || warn "AP wird nach Neustart aktiv."
 

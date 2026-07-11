@@ -53,6 +53,9 @@ class MainWindow(QMainWindow):
     def _setup_ui(self) -> None:
         self.setWindowTitle("Power Debug Monitor  —  RPi 5")
         self.setMinimumSize(1120, 780)
+        # Startet im Vollbild (Kiosk-Betrieb auf dem Waveshare-Display) —
+        # ESC schaltet zwischen Vollbild und normalem Fenster um (siehe keyPressEvent).
+        self.showFullScreen()
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -118,10 +121,12 @@ class MainWindow(QMainWindow):
         self._tab_visuals = SystemVisualsWidget()
         self._tab_params  = ParamEditorWidget(get_node_ip=self.get_active_node_ip)
 
-        tabs.addTab(self._tab_table,   "📊  Live-Tabelle")
-        tabs.addTab(self._tab_plotter, "📈  Live-Plotter")
-        tabs.addTab(self._tab_visuals, "🤖  Systemansicht")
-        tabs.addTab(self._tab_params,  "⚙️  Parameter")
+        # Reine Text-Labels (keine Emoji/Symbol-Icons) — Segoe-UI-Emojis
+        # werden unter Linux/RPi ohne passende Fontfallbacks nicht dargestellt.
+        tabs.addTab(self._tab_table,   "Live-Tabelle")
+        tabs.addTab(self._tab_plotter, "Live-Plotter")
+        tabs.addTab(self._tab_visuals, "Systemansicht")
+        tabs.addTab(self._tab_params,  "Parameter")
 
         return tabs
 
@@ -237,6 +242,15 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event) -> None:
         self._nm.stop()
         event.accept()
+
+    def keyPressEvent(self, event) -> None:
+        if event.key() == Qt.Key.Key_Escape:
+            if self.isFullScreen():
+                self.showNormal()
+            else:
+                self.showFullScreen()
+        else:
+            super().keyPressEvent(event)
 
 
 # ── Kleine Hilfsfunktion ──────────────────────────────────────────────────────

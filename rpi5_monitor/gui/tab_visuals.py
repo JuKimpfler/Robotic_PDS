@@ -42,6 +42,15 @@ log = logging.getLogger("tab_visuals")
 _BILD_DIR    = Path(__file__).resolve().parent.parent / "bild"
 _CONFIG_FILE = Path(__file__).resolve().parent.parent / "visuals_overlays.json"
 
+# ── Bild-Skalierung ───────────────────────────────────────────────────────────
+# Waveshare 13,3" (1920×1080) & Co.: das 1:1-Bild war bisher fest auf 750 px
+# begrenzt und wirkte auf großen Breitbild-Displays winzig. Über diesen
+# Faktor lässt sich die maximale Darstellungsgröße zentral anpassen, ohne
+# im Code suchen zu müssen. 1.0 = alter Wert (750 px), >1.0 = größer.
+IMAGE_SCALE_FACTOR = 1.4
+_IMAGE_BASE_SIZE_PX = 750
+IMAGE_MAX_SIZE_PX = int(_IMAGE_BASE_SIZE_PX * IMAGE_SCALE_FACTOR)
+
 # ── Farb-Palette ──────────────────────────────────────────────────────────────
 _PALETTE = [
     "#4ec9b0", "#f0c060", "#f48771", "#9cdcfe",
@@ -1300,7 +1309,7 @@ class SystemVisualsWidget(QWidget):
         btn_reload.clicked.connect(self._reload_config)
         top_layout.addWidget(btn_reload)
 
-        top_layout.addStretch()
+        top_layout.addSpacing(24)
 
         # Collapse Button
         self._btn_toggle_config = QPushButton("▶  Konfiguration einklappen")
@@ -1311,6 +1320,7 @@ class SystemVisualsWidget(QWidget):
         )
         self._btn_toggle_config.clicked.connect(self._toggle_config_panel)
         top_layout.addWidget(self._btn_toggle_config)
+        top_layout.addStretch()
 
         root.addWidget(top_bar)
 
@@ -1334,8 +1344,8 @@ class SystemVisualsWidget(QWidget):
         self._img_frame.setStyleSheet(
             "QFrame { border: 1px solid #2d2d30; border-radius: 6px; background: #1a1a1a; }"
         )
-        self._img_frame.setMaximumWidth(750)
-        self._img_frame.setMaximumHeight(750)
+        self._img_frame.setMaximumWidth(IMAGE_MAX_SIZE_PX)
+        self._img_frame.setMaximumHeight(IMAGE_MAX_SIZE_PX)
         img_frame_layout = QVBoxLayout(self._img_frame)
         img_frame_layout.setContentsMargins(4, 4, 4, 4)
         img_frame_layout.setSpacing(4)
@@ -1417,7 +1427,7 @@ class SystemVisualsWidget(QWidget):
 
         self._splitter.addWidget(self._right_panel)
 
-        self._splitter.setSizes([750, 450])
+        self._splitter.setSizes([IMAGE_MAX_SIZE_PX, 450])
         root.addWidget(self._splitter)
 
         self._load_active_group()

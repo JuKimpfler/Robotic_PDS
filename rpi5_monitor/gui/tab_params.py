@@ -205,6 +205,49 @@ class JoystickWidget(QWidget):
 #  Widget-Factory: Slider, Toggle/Switch, Button (momentary), Text, Number
 # ══════════════════════════════════════════════════════════════════════════
 
+class TouchSlider(QSlider):
+    """QSlider mit groß dimensioniertem Griff für Finger-Bedienung.
+
+    Der Standard-QSlider-Griff ist auf einem Touchscreen kaum präzise zu
+    treffen. Zusätzlich ignoriert dieses Widget Mausrad-Events, damit ein
+    versehentliches Scrollen über dem Slider (z. B. beim Scrollen der Seite
+    per Touch) den Wert nicht verändert.
+    """
+
+    _STYLE = """
+    QSlider::groove:horizontal {
+        height: 14px; background: #2a2a2a; border-radius: 7px;
+    }
+    QSlider::sub-page:horizontal {
+        background: #2ecc71; border-radius: 7px;
+    }
+    QSlider::add-page:horizontal {
+        background: #2a2a2a; border-radius: 7px;
+    }
+    QSlider::handle:horizontal {
+        width: 44px; height: 44px; margin: -16px 0;
+        border-radius: 22px; background: #4ec9b0; border: 2px solid #2a2a2a;
+    }
+    QSlider::handle:horizontal:pressed { background: #6fe0c8; }
+    """
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.setStyleSheet(self._STYLE)
+        self.setMinimumHeight(48)
+
+    def wheelEvent(self, event) -> None:
+        event.ignore()
+
+
+class TouchDoubleSpinBox(QDoubleSpinBox):
+    """QDoubleSpinBox, die Mausrad-Events ignoriert (verhindert versehentliches
+    Verstellen beim Scrollen mit dem Finger über dem Widget)."""
+
+    def wheelEvent(self, event) -> None:
+        event.ignore()
+
+
 _SWITCH_STYLE = """
 QPushButton {
     min-width: 140px; min-height: 56px;
@@ -231,7 +274,24 @@ QPushButton:checked  { background: #2ecc71; border-color: #2ecc71; }
 
 
 def make_slider_widget(entry: ParamEntry, on_change: Callable[[float], None]) -> QWidget:
-    SCALE = 10   # 1 Nachkommastelle Aufloesung (QSlider arbeitet nur mit int)
+    # SCALE bestimmt die Slider-Auflösung (QSlider arbeitet nur mit int).
+    # Bisher war SCALE fest = 10 (immer 0.1 Schritte), egal wie groß der
+    # Wertebereich war (z.B. bei Range 0..1 viel zu grob). Jetzt richtet sich
+    # SCALE nach entry.step aus param_config.json:
+    #   SCALE = 1 / step  ->  jeder Slider-Tick entspricht genau "step".
+    # Fallback (step nicht gesetzt/ungültig): Bereich in 200 Schritte teilen.
+    span = max(entry.max - entry.min, 1e-9)
+    if entry.step and entry.step > 0:
+        SCALE = max(1, round(1.0 / entry.step))
+        step_val = entry.step
+    else:
+        SCALE = max(1, round(200.0 / span))
+        step_val = 1.0 / SCALE
+
+    decimals = 0
+    while decimals < 6 and round(step_val, decimals) != step_val:
+        decimals += 1
+    decimals = max(1, decimals)
 
     box = QWidget()
     layout = QHBoxLayout(box)
@@ -240,19 +300,18 @@ def make_slider_widget(entry: ParamEntry, on_change: Callable[[float], None]) ->
     name_lbl = QLabel(entry.name)
     name_lbl.setMinimumWidth(160)
 
-    slider = QSlider(Qt.Orientation.Horizontal)
-    slider.setMinimumHeight(32)
-    slider.setMinimum(int(entry.min * SCALE))
-    slider.setMaximum(int(entry.max * SCALE))
-    slider.setValue(int(entry.default * SCALE))
+    slider = TouchSlider(Qt.Orientation.Horizontal)
+    slider.setMinimum(int(round(entry.min * SCALE)))
+    slider.setMaximum(int(round(entry.max * SCALE)))
+    slider.setValue(int(round(entry.default * SCALE)))
 
-    value_lbl = QLabel(f"{entry.default:+.1f}")
-    value_lbl.setMinimumWidth(56)
+    value_lbl = QLabel(f"{entry.default:+.{decimals}f}")
+    value_lbl.setMinimumWidth(64)
     value_lbl.setStyleSheet("font-family: monospace;")
 
     def _on_changed(raw_int: int) -> None:
         val = raw_int / SCALE
-        value_lbl.setText(f"{val:+.1f}")
+        value_lbl.setText(f"{val:+.{decimals}f}")
         on_change(val)
 
     slider.valueChanged.connect(_on_changed)
@@ -271,10 +330,11 @@ def make_number_widget(entry: ParamEntry, on_change: Callable[[float], None]) ->
     name_lbl = QLabel(entry.name)
     name_lbl.setMinimumWidth(160)
 
-    spin = QDoubleSpinBox()
-    spin.setMinimumHeight(32)
+    spin = TouchDoubleSpinBox()
+    spin.setMinimumHeight(44)
+    spin.setStyleSheet("font-size: 12pt; padding: 2px 6px;")
     spin.setRange(entry.min, entry.max)
-    spin.setSingleStep(entry.step)
+    spin.setSingleStep(entry.step if entry.step > 0 else 0.1)
     spin.setDecimals(3)
     spin.setValue(entry.default)
     spin.valueChanged.connect(on_change)
@@ -326,8 +386,13 @@ def make_text_widget(entry: ParamEntry, on_change: Callable[[float], None]) -> Q
     name_lbl.setMinimumWidth(160)
 
     edit = QLineEdit(f"{entry.default:.3f}")
-    edit.setMinimumHeight(32)
-    edit.setMaximumWidth(100)
+    edit.setMinimumHeight(44)
+    edit.setMinimumWidth(120)
+    edit.setMaximumWidth(140)
+    edit.setStyleSheet("font-size: 12pt; padding: 2px 6px;")
+    edit.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    # Erlaubt ausschließlich Ziffern, ein optionales führendes "-" und ein ".";
+    # kein Scroll-Verhalten wie bei einer Spinbox — reine Tastatur-/Touch-Eingabe.
     validator = QDoubleValidator(entry.min, entry.max, 4)
     validator.setNotation(QDoubleValidator.Notation.StandardNotation)
     edit.setValidator(validator)
