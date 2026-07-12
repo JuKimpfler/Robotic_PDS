@@ -12,6 +12,10 @@
 #    7. Autologin konfigurieren
 #    8. Zusammenfassung
 #
+#  Installiert/startet die neue PyQt6 + Qt Quick/QML-Oberfläche
+#  (rpi5_monitor/New_PyQT_QML/main_qml.py) statt der alten
+#  Widgets-GUI (Old_PySide/main.py).
+#
 #  Aufruf:  sudo bash setup_rpi5.sh [INSTALL_DIR]
 #           Standard-Installationsverzeichnis: /opt/power_debug_monitor
 #
@@ -87,7 +91,7 @@ read -r
 # ════════════════════════════════════════════════════════════════════════════════
 #  SCHRITT 1 — Hostname
 # ════════════════════════════════════════════════════════════════════════════════
-step "1/9  Hostname konfigurieren"
+step "1/8  Hostname konfigurieren"
 TARGET_HOSTNAME="power-debug-monitor"
 echo "$TARGET_HOSTNAME" > /etc/hostname
 if grep -q "127\.0\.1\.1" /etc/hosts; then
@@ -103,11 +107,15 @@ ok "Hostname: ${TARGET_HOSTNAME}"
 # ════════════════════════════════════════════════════════════════════════════════
 step "2/8  Systempakete installieren"
 apt-get update -y -q 2>&1 | tail -1
+# libxcb-cursor0: von der Qt6-XCB-Plattform (PyQt6/Qt Quick) benötigt —
+# ohne dieses Paket startet main_qml.py auf schlanken Bookworm-Images
+# gar nicht ("could not load the Qt platform plugin xcb").
 apt-get install -y -q \
     python3 python3-pip python3-venv git curl \
     network-manager \
     libxcb-xinerama0 libxcb-icccm4 libxcb-image0 \
     libxcb-keysyms1 libxcb-render-util0 libxcb-xkb1 \
+    libxcb-cursor0 \
     xorg lightdm
 ok "Systempakete installiert."
 
@@ -135,45 +143,36 @@ ok "Python-Abhängigkeiten bereit."
 # ════════════════════════════════════════════════════════════════════════════════
 step "4/8  Anwendungsdateien → ${INSTALL_DIR}"
 
-mkdir -p "${INSTALL_DIR}/gui"
+# Quelle: rpi5_monitor/New_PyQT_QML/ (die PyQt6 + Qt Quick/QML-Oberfläche).
+# main_qml.py erwartet config.py/network_worker.py/param_io.py, die
+# *_config.json-/*.h-Dateien, visuals_overlays.json und bild/ FLACH im
+# selben Verzeichnis (relativ zu __file__ gesucht), sowie die Ordner
+# qml/ (inkl. qml/components/) und bridge/ direkt daneben — deshalb wird
+# hier bewusst der komplette Ordner 1:1 gespiegelt statt einzelne
+# Dateien aufzulisten (bei einer festen Liste wären z.B. qml/UiState.qml
+# oder qml/components/BodiesField.qml bei künftigen Erweiterungen sonst
+# stillschweigend nicht mit installiert worden).
+QML_SRC="${SCRIPT_DIR}/rpi5_monitor/New_PyQT_QML"
+[[ -d "$QML_SRC" ]] || QML_SRC="${SCRIPT_DIR}/New_PyQT_QML"   # Fallback: flache Struktur
 
-# RPi-5-Hauptdateien kopieren
-# Hinweis: param_io.py/platform_utils.py liegen bewusst FLACH neben config.py
-# (main.py macht "from param_io import ..." / "from platform_utils import ...").
-# param_config.json, param_defaults.h, visuals_overlays.json und bild/ werden
-# von config.py bzw. gui/tab_visuals.py relativ zu __file__ gesucht — müssen
-# also ebenfalls direkt in INSTALL_DIR liegen (nicht in gui/).
-RPi5_SRC="${SCRIPT_DIR}/rpi5_monitor"
-if [[ -d "$RPi5_SRC" ]]; then
-    for f in main.py network_worker.py config.py param_io.py platform_utils.py \
-             param_config.json param_defaults.h visuals_overlays.json; do
-        [[ -f "${RPi5_SRC}/${f}" ]] && cp "${RPi5_SRC}/${f}" "${INSTALL_DIR}/" && info "  ✓ ${f}"
-    done
-    if [[ -d "${RPi5_SRC}/bild" ]]; then
-        cp -r "${RPi5_SRC}/bild" "${INSTALL_DIR}/" && info "  ✓ bild/ (Hintergrundbilder)"
-    fi
-    GUI_SRC="${RPi5_SRC}/gui"
-    if [[ -d "$GUI_SRC" ]]; then
-        for f in main_window.py tab_table.py tab_plotter.py tab_visuals.py tab_params.py; do
-            [[ -f "${GUI_SRC}/${f}" ]] && cp "${GUI_SRC}/${f}" "${INSTALL_DIR}/gui/" && info "  ✓ gui/${f}"
-        done
-        [[ -f "${GUI_SRC}/__init__.py" ]] && cp "${GUI_SRC}/__init__.py" "${INSTALL_DIR}/gui/"
-    fi
+if [[ -d "$QML_SRC" ]]; then
+    mkdir -p "$INSTALL_DIR"
+    cp -r "${QML_SRC}/." "$INSTALL_DIR/"
+    # Unnötigen/Windows-/Cache-Ballast wieder entfernen
+    find "$INSTALL_DIR" -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
+    rm -f "${INSTALL_DIR}/starter.bat"
+    ok "qml/, qml/components/, bridge/ und alle Kerndateien nach ${INSTALL_DIR} kopiert."
 else
-    # Flache Struktur (alle Dateien im Skriptverzeichnis)
-    warn "rpi5_monitor/ nicht gefunden — suche Dateien in ${SCRIPT_DIR}"
-    for f in main.py network_worker.py config.py param_io.py platform_utils.py \
-             param_config.json param_defaults.h visuals_overlays.json; do
-        [[ -f "${SCRIPT_DIR}/${f}" ]] && cp "${SCRIPT_DIR}/${f}" "${INSTALL_DIR}/" && info "  ✓ ${f}"
-    done
-    [[ -d "${SCRIPT_DIR}/bild" ]] && cp -r "${SCRIPT_DIR}/bild" "${INSTALL_DIR}/" && info "  ✓ bild/"
-    for f in main_window.py tab_table.py tab_plotter.py tab_visuals.py tab_params.py; do
-        [[ -f "${SCRIPT_DIR}/${f}" ]] && cp "${SCRIPT_DIR}/${f}" "${INSTALL_DIR}/gui/" && info "  ✓ gui/${f}"
-    done
+    err "Quellverzeichnis nicht gefunden: erwartet rpi5_monitor/New_PyQT_QML/ neben diesem Skript."
+    exit 1
 fi
 
-# __init__.py sicherstellen
-touch "${INSTALL_DIR}/gui/__init__.py"
+# main_qml.py auf Vorhandensein prüfen — ohne diese Datei läuft der
+# Launcher (Schritt 6) später ins Leere.
+if [[ ! -f "${INSTALL_DIR}/main_qml.py" ]]; then
+    err "main_qml.py fehlt in ${INSTALL_DIR} — Installation unvollständig."
+    exit 1
+fi
 
 # Berechtigungen setzen
 chown -R "${SERVICE_USER}:${SERVICE_USER}" "${INSTALL_DIR}"
@@ -234,7 +233,8 @@ step "6/8  Launcher-Skript erstellen"
 cat > /usr/local/bin/power-debug-monitor << LAUNCHER_SCRIPT
 #!/usr/bin/env bash
 # Power Debug Monitor — Launcher-Wrapper
-# Startet die PyQt6-GUI mit korrekten Umgebungsvariablen
+# Startet die PyQt6 + Qt Quick/QML-GUI (main_qml.py) mit korrekten
+# Umgebungsvariablen.
 
 # Warte kurz auf Display-Server (wichtig beim Autostart)
 sleep 3
@@ -254,7 +254,7 @@ export QT_LOGGING_RULES="qt.qpa.*=false;qt.network.*=false"
 INSTALL_DIR="${INSTALL_DIR}"
 
 cd "\$INSTALL_DIR" || exit 1
-exec python3 main.py "\$@"
+exec python3 main_qml.py "\$@"
 LAUNCHER_SCRIPT
 
 chmod +x /usr/local/bin/power-debug-monitor

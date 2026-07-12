@@ -1,6 +1,0 @@
-# Power Debug Monitor — RPi 5 Abhängigkeiten
-# Installation: pip install -r requirements.txt
-
-PyQt6>=6.4.0
-pyqtgraph>=0.13.3
-numpy>=1.24.0
