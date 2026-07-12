@@ -266,7 +266,15 @@ ok "Launcher: /usr/local/bin/power-debug-monitor"
 # ════════════════════════════════════════════════════════════════════════════════
 step "7/8  Autostart für Desktop konfigurieren"
 
-# ── A: XDG-Autostart (universell, funktioniert bei LXDE, GNOME, labwc) ───────
+# ── A: XDG-Autostart (einziger aktiver Mechanismus) ───────────────────────
+# Wird von so gut wie jeder Desktop-Session verarbeitet — auf Raspberry Pi
+# OS Bookworm auch vom Standard-Wayland-Compositor (labwc/wayfire), UND
+# von klassischem LXDE/X11. Vorher wurde die GUI hier ZUSÄTZLICH noch
+# separat in ~/.config/lxsession/LXDE-pi/autostart UND
+# ~/.config/labwc/autostart eingetragen — auf Bookworm verarbeitet die
+# Desktop-Session i.d.R. aber BEIDES (das XDG-Verzeichnis UND ihre eigene
+# autostart-Datei), wodurch power-debug-monitor zweimal gestartet wurde
+# ("Doppel-Start"). Jetzt gibt es nur noch diesen einen Eintrag.
 mkdir -p /etc/xdg/autostart
 cat > /etc/xdg/autostart/power-debug-monitor.desktop << DESKTOP_FILE
 [Desktop Entry]
@@ -284,26 +292,29 @@ X-LXSession-Autostart-enabled=true
 DESKTOP_FILE
 ok "XDG-Autostart: /etc/xdg/autostart/power-debug-monitor.desktop"
 
-# ── B: LXDE-Autostart (RPi OS Bullseye/Bookworm mit LXDE-Desktop) ────────────
-LXDE_DIR="${HOME_DIR}/.config/lxsession/LXDE-pi"
-mkdir -p "$LXDE_DIR"
-LXDE_AUTOSTART="${LXDE_DIR}/autostart"
-if ! grep -q "power-debug-monitor" "$LXDE_AUTOSTART" 2>/dev/null; then
-    echo "@/usr/local/bin/power-debug-monitor" >> "$LXDE_AUTOSTART"
-    ok "LXDE-Autostart konfiguriert."
+# ── Aufräumen: Einträge früherer Skript-Läufe entfernen ───────────────────
+# Falls dieses Skript vorher schon einmal (mit der alten, doppelten
+# Autostart-Logik) auf diesem Gerät lief, stehen dort noch die
+# überflüssigen Zusatz-Einträge — die entfernen wir jetzt, sonst bliebe
+# der Doppel-Start trotz des Fixes oben bestehen.
+LXDE_AUTOSTART="${HOME_DIR}/.config/lxsession/LXDE-pi/autostart"
+if [[ -f "$LXDE_AUTOSTART" ]] && grep -q "power-debug-monitor" "$LXDE_AUTOSTART" 2>/dev/null; then
+    sed -i '/power-debug-monitor/d' "$LXDE_AUTOSTART"
+    info "  Alten LXDE-Autostart-Eintrag entfernt."
 fi
-chown -R "${SERVICE_USER}:${SERVICE_USER}" "${HOME_DIR}/.config"
-
-# ── C: labwc-Autostart (Bookworm Standard-Desktop seit 2023) ─────────────────
-LABWC_DIR="${HOME_DIR}/.config/labwc"
-mkdir -p "$LABWC_DIR"
-if ! grep -q "power-debug-monitor" "${LABWC_DIR}/autostart" 2>/dev/null; then
-    echo "/usr/local/bin/power-debug-monitor &" >> "${LABWC_DIR}/autostart"
-    ok "labwc-Autostart konfiguriert."
+LABWC_AUTOSTART="${HOME_DIR}/.config/labwc/autostart"
+if [[ -f "$LABWC_AUTOSTART" ]] && grep -q "power-debug-monitor" "$LABWC_AUTOSTART" 2>/dev/null; then
+    sed -i '/power-debug-monitor/d' "$LABWC_AUTOSTART"
+    info "  Alten labwc-Autostart-Eintrag entfernt."
 fi
-chown -R "${SERVICE_USER}:${SERVICE_USER}" "$LABWC_DIR"
+chown -R "${SERVICE_USER}:${SERVICE_USER}" "${HOME_DIR}/.config" 2>/dev/null || true
+ok "Nur noch EIN Autostart-Mechanismus aktiv (verhindert Doppel-Start)."
 
-# ── D: systemd User-Service (alternative Startvariante) ──────────────────────
+# ── B: systemd User-Service (ALTERNATIVE, nicht standardmäßig aktiv) ─────
+# Wird nur als Datei angelegt, aber NICHT aktiviert — bewusst eine
+# Alternative zu Mechanismus A, keine Ergänzung. Nur verwenden, wenn A
+# (XDG-Autostart) stattdessen deaktiviert wird, sonst startet die GUI
+# wieder doppelt.
 SYSTEMD_USER_DIR="${HOME_DIR}/.config/systemd/user"
 mkdir -p "$SYSTEMD_USER_DIR"
 cat > "${SYSTEMD_USER_DIR}/power-debug-monitor.service" << SVCFILE
@@ -328,9 +339,11 @@ SVCFILE
 SUID=$(id -u "$SERVICE_USER")
 sed -i "s|%(UID)s|${SUID}|g" "${SYSTEMD_USER_DIR}/power-debug-monitor.service"
 chown -R "${SERVICE_USER}:${SERVICE_USER}" "${HOME_DIR}/.config/systemd"
-ok "systemd User-Service: ${SYSTEMD_USER_DIR}/power-debug-monitor.service"
-info "  Aktivierung: loginctl enable-linger ${SERVICE_USER}"
-info "               su ${SERVICE_USER} -c 'systemctl --user enable power-debug-monitor'"
+ok "systemd User-Service (optional, deaktiviert): ${SYSTEMD_USER_DIR}/power-debug-monitor.service"
+info "  NUR als Ersatz für den XDG-Autostart verwenden, nicht zusätzlich:"
+info "    sudo rm /etc/xdg/autostart/power-debug-monitor.desktop"
+info "    loginctl enable-linger ${SERVICE_USER}"
+info "    su ${SERVICE_USER} -c 'systemctl --user enable --now power-debug-monitor'"
 
 
 # ════════════════════════════════════════════════════════════════════════════════

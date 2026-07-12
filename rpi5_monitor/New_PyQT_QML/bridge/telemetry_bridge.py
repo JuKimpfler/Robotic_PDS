@@ -124,6 +124,7 @@ class TelemetryTableModel(QAbstractTableModel):
                  self.DeltaRole, self.ColorRole],
             )
 
+    @pyqtSlot()
     def clear_stats(self) -> None:
         self._current[:] = 0.0
         self._min[:] = np.inf
@@ -169,5 +170,6 @@ class TelemetryBridge(QObject):
         self._latest = [float(v) for v in values]
         self.valuesChanged.emit()
 
+    @pyqtSlot()
     def clear_stats(self) -> None:
         self.table_model.clear_stats()

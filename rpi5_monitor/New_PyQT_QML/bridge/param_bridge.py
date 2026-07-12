@@ -129,7 +129,7 @@ def _build_groups(config: ParamConfig) -> list[dict]:
     }
     pages.append({
         "kind": "fast",
-        "title": "⚡ Fast Params · 100 Hz",
+        "title": "Fast Params - 100 Hz",
         "floats": [_entry_to_dict(e) for e in config.fast_floats if e.index not in fast_joy_idx],
         "joysticks": [_joystick_to_dict(js) for js in config.joysticks if js.source == "fast"],
         "bools": [],
@@ -140,7 +140,7 @@ def _build_groups(config: ParamConfig) -> list[dict]:
     if slow_joysticks:
         pages.append({
             "kind": "joysticks",
-            "title": "🎮 Joysticks · 2 Hz",
+            "title": "Joysticks - 2 Hz",
             "floats": [], "bools": [],
             "joysticks": [_joystick_to_dict(js) for js in slow_joysticks],
         })
@@ -158,7 +158,7 @@ def _build_groups(config: ParamConfig) -> list[dict]:
     for grp_name, parts in combined.items():
         pages.append({
             "kind": "group",
-            "title": f"🐢 {grp_name}",
+            "title": grp_name,
             "floats": [_entry_to_dict(e) for e in parts["floats"]],
             "bools": [_entry_to_dict(e) for e in parts["bools"]],
             "joysticks": [],
@@ -274,7 +274,7 @@ class ParamBridge(QObject):
                 PARAM_DEFAULTS_H_PATH,
                 self._store.floats, self._store.bools, self._store.fast_floats,
             )
-            self._status = f"💾 Gespeichert: {PARAM_DEFAULTS_H_PATH.name}"
+            self._status = f"Gespeichert: {PARAM_DEFAULTS_H_PATH.name}"
             self.statusChanged.emit()
             log.info("Param-Defaults gespeichert nach %s", PARAM_DEFAULTS_H_PATH)
         except OSError as exc:
@@ -316,10 +316,10 @@ class ParamBridge(QObject):
 
     def _refresh_status(self) -> None:
         ip = self._get_node_ip(self._active_node)
-        state = "▶" if self._enabled else "⏸"
+        state = "aktiv" if self._enabled else "pausiert"
         self._status = (
-            f"{state} → Node {self._active_node} ({ip}) · "
-            f"Slow: {PARAM_SLOW_SEND_HZ:.1f} Hz ({self._pkt_sent_slow} Pkt) · "
+            f"{state} -> Node {self._active_node} ({ip}) - "
+            f"Slow: {PARAM_SLOW_SEND_HZ:.1f} Hz ({self._pkt_sent_slow} Pkt) - "
             f"Fast: {PARAM_FAST_SEND_HZ:.0f} Hz ({self._pkt_sent_fast} Pkt)"
         )
         self.statusChanged.emit()

@@ -1,4 +1,5 @@
 import QtQuick
+import QtQuick.Window
 import QtQuick.Controls
 import QtQuick.Controls.Material
 import App
@@ -13,12 +14,27 @@ ApplicationWindow {
     width: 1280
     height: 800
     title: "Power Debug Monitor"
+    // 13"-Touchscreen-Kiosk-Betrieb: startet direkt im Vollbild statt in
+    // einem verschiebbaren Fenster.
+    visibility: Window.FullScreen
 
     Material.theme: Material.Dark
     Material.accent: Theme.highlight
     Material.background: Theme.bg
     Material.foreground: Theme.text
     color: Theme.bg
+
+    // ESC beendet die Anwendung, Strg+S fährt den Raspberry Pi herunter
+    // (appBridge.systemShutdown(), siehe bridge/app_bridge.py — auf
+    // Nicht-Linux-Systemen beim Testen nur eine Log-Warnung).
+    Shortcut {
+        sequence: "Esc"
+        onActivated: Qt.quit()
+    }
+    Shortcut {
+        sequence: "Ctrl+S"
+        onActivated: appBridge.systemShutdown()
+    }
 
     header: Column {
         width: window.width
@@ -52,10 +68,10 @@ ApplicationWindow {
                     currentIndex: swipeView.currentIndex
                     Material.background: "transparent"
 
-                    TabButton { text: "📋 Tabelle" }
-                    TabButton { text: "📈 Plotter" }
-                    TabButton { text: "🖥 Systemansicht" }
-                    TabButton { text: "🎮 Parameter" }
+                    TabButton { text: "Tabelle" }
+                    TabButton { text: "Plotter" }
+                    TabButton { text: "Systemansicht" }
+                    TabButton { text: "Parameter" }
                 }
             }
         }

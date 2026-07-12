@@ -9,7 +9,7 @@ Item {
     id: root
     readonly property int _cols: channels.length > 12 ? 3 : 2
     readonly property int _cellW: 128
-    readonly property int _cellH: 40
+    readonly property int _cellH: 44
     implicitWidth: _cols * _cellW + (_cols - 1) * Theme.spacingXs + Theme.spacingS * 2
     implicitHeight: titleRow.height + Theme.spacingXs +
                      Math.ceil(channels.length / _cols) * (_cellH + Theme.spacingXs) +
@@ -73,14 +73,14 @@ Item {
                             text: "Var_" + String(cell.modelData).padStart(3, "0")
                             color: Theme.textDim
                             font.family: Theme.fontMono
-                            font.pixelSize: 10
+                            font.pixelSize: Theme.fontSizeSmall-2
                         }
                         Text {
                             text: cell._has ? cell._val.toFixed(2) : "—"
                             color: Theme.accentGreen
                             font.family: Theme.fontMono
                             font.bold: true
-                            font.pixelSize: 12
+                            font.pixelSize: Theme.fontSizeSmall
                         }
                     }
                 }

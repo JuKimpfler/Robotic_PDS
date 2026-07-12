@@ -17,7 +17,7 @@ Rectangle {
         spacing: Theme.spacingL
 
         Text {
-            text: "📡 " + root.pps + " Pakete/s"
+            text: root.pps + " Pakete/s"
             color: Theme.accentGreen
             font.family: Theme.fontMono
             font.pixelSize: Theme.fontSizeSmall

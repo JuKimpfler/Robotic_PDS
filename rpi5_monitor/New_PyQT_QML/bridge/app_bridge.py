@@ -9,6 +9,8 @@ sondern Qt-Properties/-Signale, an die QML sich bindet.
 from __future__ import annotations
 
 import logging
+import subprocess
+import sys
 
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal, pyqtProperty, pyqtSlot
 
@@ -152,3 +154,27 @@ class AppBridge(QObject):
     @pyqtSlot()
     def shutdown(self) -> None:
         self._nm.stop()
+
+    # ── Strg+S in der GUI (siehe Shortcut in qml/Main.qml) ────────────────
+    @pyqtSlot()
+    def systemShutdown(self) -> None:
+        """Fährt den Raspberry Pi kontrolliert herunter. Unter Windows
+        (Entwicklungs-/Testbetrieb) wird der Aufruf nur geloggt, damit ein
+        Test auf dem PC nicht versehentlich das Entwickler-System
+        herunterfährt."""
+        log.warning("Shutdown angefordert (Strg+S).")
+        if not sys.platform.startswith("linux"):
+            log.warning(
+                "systemShutdown() übersprungen (kein Linux-System, aktuell: %s).",
+                sys.platform,
+            )
+            return
+        try:
+            subprocess.Popen(["systemctl", "poweroff"])
+        except FileNotFoundError:
+            try:
+                subprocess.Popen(["sudo", "shutdown", "-h", "now"])
+            except Exception as exc:
+                log.error("Shutdown fehlgeschlagen: %s", exc)
+        except Exception as exc:
+            log.error("Shutdown fehlgeschlagen: %s", exc)

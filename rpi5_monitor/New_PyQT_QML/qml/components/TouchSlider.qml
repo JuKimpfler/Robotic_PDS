@@ -5,6 +5,10 @@ import App
 
 // Ersatz für gui/tab_params.py::make_slider_widget. QSlider-Handle war
 // 16px (kaum touch-tauglich) — hier min. 32px Durchmesser (Theme-Metrik).
+// Zusätzlich bekommt der Slider selbst jetzt explizit die volle Zeilen-
+// höhe als Touch-Trefferfläche (vorher übernahm er nur seine eigene,
+// deutlich kleinere implizite Höhe -> ein Großteil der 56px hohen Zeile
+// reagierte gar nicht auf Berührung).
 Item {
     id: root
     property string label: ""
@@ -14,7 +18,7 @@ Item {
     property int decimals: 1
     signal moved(real value)
 
-    height: 56
+    height: 64
 
     Row {
         anchors.fill: parent
@@ -32,6 +36,7 @@ Item {
         Slider {
             id: slider
             width: root.width - 150 - 80 - Theme.spacingS * 2
+            height: root.height
             anchors.verticalCenter: parent.verticalCenter
             from: root.from
             to: root.to
@@ -40,18 +45,19 @@ Item {
             handle: Rectangle {
                 x: slider.leftPadding + slider.visualPosition * (slider.availableWidth - width)
                 y: slider.topPadding + slider.availableHeight / 2 - height / 2
-                width: 32; height: 32; radius: 16
+                width: 40; height: 40; radius: 20
                 color: slider.pressed ? Theme.highlight : Qt.lighter(Theme.highlight, 1.2)
                 border.color: Theme.highlight
+                border.width: 2
             }
             background: Rectangle {
                 x: slider.leftPadding
                 y: slider.topPadding + slider.availableHeight / 2 - height / 2
-                width: slider.availableWidth; height: 6; radius: 3
+                width: slider.availableWidth; height: 10; radius: 5
                 color: Theme.bgInput
                 Rectangle {
                     width: slider.visualPosition * parent.width
-                    height: parent.height; radius: 3
+                    height: parent.height; radius: 5
                     color: Theme.highlight
                 }
             }

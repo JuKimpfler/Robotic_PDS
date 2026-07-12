@@ -45,8 +45,8 @@ Item {
             ctx.strokeStyle = "#e0e0e0"
             ctx.lineWidth = 2
             ctx.beginPath()
-            ctx.moveTo(cx, cy)
-            ctx.lineTo(cx + Math.cos(ang) * (r - 14), cy + Math.sin(ang) * (r - 14))
+            ctx.moveTo(cx + Math.cos(ang) * (r - 40), cy + Math.sin(ang) * (r - 40))
+            ctx.lineTo(cx + Math.cos(ang) * (r - 10), cy + Math.sin(ang) * (r - 10))
             ctx.stroke()
         }
         Component.onCompleted: requestPaint()

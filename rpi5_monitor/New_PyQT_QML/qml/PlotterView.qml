@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import App
+import "components"
 
 // Migrationsplan Abschnitt 4.4 — Option C: eigenes QQuickPaintedItem
 // (PlotCanvas, siehe bridge/plot_bridge.py) statt PyQtGraph.
@@ -40,18 +41,16 @@ Item {
                 onValueModified: plotter.setPointsCount(value)
             }
 
-            Button {
+            AppButton {
                 id: freezeBtn
-                text: plotter.frozen ? "▶ Weiter" : "⏸ Einfrieren"
-                height: Theme.touchTargetMin
+                text: plotter.frozen ? "Weiter" : "Einfrieren"
                 checkable: true
                 checked: plotter.frozen
-                onToggled: plotter.setFrozen(checked)
+                onClicked: plotter.setFrozen(checked)
             }
 
-            Button {
-                text: "🗑 Löschen"
-                height: Theme.touchTargetMin
+            AppButton {
+                text: "Löschen"
                 onClicked: plotter.clearBuffer()
             }
         }
@@ -90,7 +89,7 @@ Item {
                 Text {
                     id: frozenLbl
                     anchors.centerIn: parent
-                    text: "⏸ EINGEFROREN — Live-Queue läuft weiter."
+                    text: "EINGEFROREN — Live-Queue läuft weiter."
                     color: Theme.accentAmber
                     font.bold: true
                 }

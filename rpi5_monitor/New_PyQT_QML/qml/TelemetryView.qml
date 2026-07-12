@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import App
+import "components"
 
 // Migrationsplan Abschnitt 4.3. TableView statt QTableView, gespeist
 // vom (kaum geänderten) TelemetryTableModel — inkl. Suchfeld, das im
@@ -30,10 +31,9 @@ Item {
                 }
             }
 
-            Button {
+            AppButton {
                 id: resetBtn
-                text: "↺ Min/Max"
-                height: Theme.touchTargetMin
+                text: "Min/Max zurücksetzen"
                 onClicked: telemetryModel.clear_stats()
             }
         }
@@ -65,22 +65,26 @@ Item {
                 required property string valueColor
 
                 implicitWidth: table.width
-                implicitHeight: 44
+                implicitHeight: 40
                 visible: filterField.text.length === 0 ||
                          varName.toLowerCase().indexOf(filterField.text.toLowerCase()) !== -1
                 color: Theme.bg
+                radius: Theme.radiusS
+                border.color: Theme.border
+                border.width: 2
 
                 Row {
                     anchors.fill: parent
                     anchors.margins: 8
-                    spacing: 14
+                    spacing: 60
 
                     Text {
                         text: varName
-                        color: Theme.text
+                        color: Theme.textjulius
                         font.family: Theme.fontMono
                         width: 120
                         elide: Text.ElideRight
+                        font.pixelSize: Theme.fontSizeBase
                         anchors.verticalCenter: parent.verticalCenter
                     }
                     Text {
@@ -89,6 +93,7 @@ Item {
                         font.family: Theme.fontMono
                         font.bold: true
                         width: 90
+                        font.pixelSize: Theme.fontSizeBase
                         anchors.verticalCenter: parent.verticalCenter
                     }
                     Text {

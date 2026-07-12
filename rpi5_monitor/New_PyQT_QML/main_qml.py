@@ -130,7 +130,7 @@ def main() -> None:
 
     sim_proc = None
     if args.simulate:
-        log.info("⚡ Simulator-Modus aktiv")
+        log.info("Simulator-Modus aktiv")
         sim_proc = mp.Process(
             target=_udp_simulator_process,
             args=(nm._stop_event,),

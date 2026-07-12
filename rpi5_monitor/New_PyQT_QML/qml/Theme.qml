@@ -10,6 +10,7 @@ QtObject {
     readonly property color bgAlt:       "#37393a"
     readonly property color bgInput:     "#3c3f41"
     readonly property color text:        "#d4d4d4"
+    readonly property color textjulius:  "#a5dc6e"
     readonly property color textDim:     "#969696"
     readonly property color highlight:   "#0078d7"
     readonly property color accentBlue:  "#9cdcfe"
@@ -31,9 +32,10 @@ QtObject {
     readonly property int radiusM: 8
     readonly property int radiusL: 14
 
-    readonly property int fontSizeSmall: 12
+    readonly property int fontSizeSmall: 13
+    readonly property int fontSizeTabell: 16
     readonly property int fontSizeBase:  15
-    readonly property int fontSizeLarge: 19
+    readonly property int fontSizeLarge: 20
     readonly property int fontSizeXLarge: 24
 
     readonly property string fontMono: "monospace"

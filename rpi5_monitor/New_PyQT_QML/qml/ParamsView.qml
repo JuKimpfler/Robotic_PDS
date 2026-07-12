@@ -41,16 +41,15 @@ Item {
                     elide: Text.ElideRight
                 }
 
-                Switch {
+                AppSwitch {
                     text: "Übertragung aktiv"
                     checked: params.enabled
                     anchors.verticalCenter: parent.verticalCenter
                     onToggled: params.setEnabled(checked)
                 }
 
-                Button {
-                    text: "💾 Als Default speichern"
-                    height: Theme.touchTargetMin
+                AppButton {
+                    text: "Als Default speichern"
                     anchors.verticalCenter: parent.verticalCenter
                     onClicked: params.saveDefaults()
                 }
@@ -104,7 +103,7 @@ Item {
             wrapMode: Text.WordWrap
             color: "#e74c3c"
             font.family: Theme.fontMono
-            text: "⚠ param_config.json ist ungültig — Parameter-Tab deaktiviert.\n\n" +
+            text: "ACHTUNG: param_config.json ist ungültig — Parameter-Tab deaktiviert.\n\n" +
                   params.configError +
                   "\n\nBitte param_config.json korrigieren und die GUI neu starten."
         }
@@ -243,14 +242,40 @@ Item {
                         delegate: Item {
                             required property var modelData
                             width: leftCol.width
-                            height: 56
-                            Switch {
+                            height: 64
+
+                            // "toggle": normaler Ein/Aus-Schalter, Zustand bleibt bis
+                            // zum nächsten Antippen erhalten.
+                            AppSwitch {
                                 anchors.verticalCenter: parent.verticalCenter
+                                visible: modelData.widget !== "button"
                                 text: modelData.name
                                 checked: modelData.default
-                                onToggled: {
-                                    if (modelData.momentary) return
-                                    pageCol._sendBool(modelData.index, checked)
+                                onToggled: pageCol._sendBool(modelData.index, checked)
+                            }
+
+                            // "button": Taster — bei momentary:true wird der Wert NUR
+                            // gesendet solange gedrückt gehalten wird (true bei Press,
+                            // false bei Release), bei momentary:false verhält er sich
+                            // wie ein klickbarer Umschalt-Button. Vorher landete JEDER
+                            // Bool-Eintrag im generischen Switch, der momentary-Fall
+                            // wurde dort explizit ignoriert -> Taster taten nichts.
+                            AppButton {
+                                anchors.verticalCenter: parent.verticalCenter
+                                visible: modelData.widget === "button"
+                                danger: true
+                                checkable: !modelData.momentary
+                                checked: modelData.default
+                                text: modelData.name
+                                onPressedChanged: {
+                                    if (modelData.momentary) {
+                                        pageCol._sendBool(modelData.index, pressed)
+                                    }
+                                }
+                                onClicked: {
+                                    if (!modelData.momentary) {
+                                        pageCol._sendBool(modelData.index, checked)
+                                    }
                                 }
                             }
                         }
