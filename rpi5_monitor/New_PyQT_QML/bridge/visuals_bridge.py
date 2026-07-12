@@ -77,7 +77,15 @@ def _load_groups() -> list[dict]:
                     "max": float(gr.get("max", 1.0)),
                 })
             elif gtype == "rotation":
-                entry.update({"channel": gr.get("channel", 0)})
+                entry.update({
+                    "channel": gr.get("channel", 0),
+                    # Max erwartete Drehrate für die Pfeillängen-Skalierung.
+                    # Kein eigener JSON-Key bisher vorgesehen -> optionaler
+                    # "max_val", sonst Fallback auf den gleichen Bereich wie
+                    # die Motor-Gauges (-5..5), da "Rad FL/FR/RL/RR" i.d.R.
+                    # dieselbe Größenordnung wie die Motor-Speed-Kanäle hat.
+                    "maxVal": float(gr.get("max_val", 5.0)),
+                })
             elif gtype == "vector":
                 entry.update({
                     "channelAngle": gr.get("channel_angle", 0),
@@ -88,6 +96,23 @@ def _load_groups() -> list[dict]:
                 entry.update({
                     "title": gr.get("title", ""),
                     "channels": parse_channels(gr.get("channels", [])),
+                })
+            elif gtype == "bodies":
+                def _body(b: dict) -> dict:
+                    return {
+                        "label": b.get("label", ""),
+                        "color": b.get("color", "#4ec9b0"),
+                        "diameter": float(b.get("diameter", 0.3)),
+                        "channelX": int(b.get("channel_x", -1)),
+                        "channelY": int(b.get("channel_y", -1)),
+                        "channelAngle": int(b.get("channel_angle", -1)),
+                        "channelDiameter": int(b.get("channel_diameter", -1)),
+                    }
+                entry.update({
+                    "fieldWidth": float(gr.get("field_width", 2.0)),
+                    "fieldHeight": float(gr.get("field_height", 1.5)),
+                    "body1": _body(gr.get("body1", {})),
+                    "body2": _body(gr.get("body2", {})),
                 })
             graphics.append(entry)
 

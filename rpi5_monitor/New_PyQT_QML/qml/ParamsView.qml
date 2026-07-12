@@ -76,6 +76,9 @@ Item {
             height: parent.height - 56 - Theme.touchTargetMin - Theme.spacingS * 3
             clip: true
             contentHeight: pageLoader.item ? pageLoader.item.implicitHeight : 0
+            // Während der Joystick bedient wird, soll diese Seite nicht
+            // gleichzeitig mitscrollen (siehe UiState.qml).
+            interactive: !UiState.navigationLocked
             ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
             Loader {
@@ -154,7 +157,7 @@ Item {
                                 id: numberComp
                                 Row {
                                     width: leftCol.width
-                                    height: 48
+                                    height: Theme.touchTargetMin
                                     spacing: Theme.spacingS
                                     Label {
                                         text: modelData.name
@@ -164,15 +167,71 @@ Item {
                                         elide: Text.ElideRight
                                     }
                                     SpinBox {
-                                        height: 40
+                                        id: spin
+                                        height: Theme.touchTargetMin
+                                        width: 190
+                                        // editable:true = Eingabe per (USB-)Tastatur möglich,
+                                        // zusätzlich zu den +/- Tasten unten. Vorher fehlte
+                                        // dieses Flag -> nur die Tasten funktionierten.
+                                        editable: true
+                                        inputMethodHints: Qt.ImhFormattedNumbersOnly
                                         from: Math.round(modelData.min * 1000)
                                         to: Math.round(modelData.max * 1000)
                                         stepSize: Math.max(1, Math.round(modelData.step * 1000))
                                         value: Math.round(modelData.default * 1000)
-                                        property real realValue: value / 1000
                                         textFromValue: (v) => (v / 1000).toFixed(3)
                                         valueFromText: (t) => Math.round(parseFloat(t.replace(",", ".")) * 1000)
                                         onValueModified: pageCol._sendFloat(modelData.index, value / 1000)
+
+                                        // Große, gut treffbare +/- Tasten für Touch, statt der
+                                        // sehr kleinen Standard-Pfeilsymbole.
+                                        up.indicator: Rectangle {
+                                            x: spin.width - width
+                                            height: spin.height
+                                            width: Theme.touchTargetMin
+                                            color: spin.up.pressed ? Theme.highlight : Theme.bgInput
+                                            border.color: Theme.border
+                                            Text {
+                                                anchors.centerIn: parent
+                                                text: "+"
+                                                font.pixelSize: Theme.fontSizeLarge
+                                                font.bold: true
+                                                color: Theme.text
+                                            }
+                                        }
+                                        down.indicator: Rectangle {
+                                            x: 0
+                                            height: spin.height
+                                            width: Theme.touchTargetMin
+                                            color: spin.down.pressed ? Theme.highlight : Theme.bgInput
+                                            border.color: Theme.border
+                                            Text {
+                                                anchors.centerIn: parent
+                                                text: "−"
+                                                font.pixelSize: Theme.fontSizeLarge
+                                                font.bold: true
+                                                color: Theme.text
+                                            }
+                                        }
+                                        contentItem: TextInput {
+                                            text: spin.textFromValue(spin.value, spin.locale)
+                                            font: spin.font
+                                            color: Theme.accentGreen
+                                            selectionColor: Theme.highlight
+                                            horizontalAlignment: Qt.AlignHCenter
+                                            verticalAlignment: Qt.AlignVCenter
+                                            readOnly: !spin.editable
+                                            validator: spin.validator
+                                            inputMethodHints: spin.inputMethodHints
+                                            leftPadding: Theme.touchTargetMin
+                                            rightPadding: Theme.touchTargetMin
+                                            selectByMouse: true
+                                        }
+                                        background: Rectangle {
+                                            color: Theme.bg
+                                            border.color: spin.activeFocus ? Theme.highlight : Theme.border
+                                            radius: Theme.radiusS
+                                        }
                                     }
                                 }
                             }

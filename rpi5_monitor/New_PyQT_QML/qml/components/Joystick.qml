@@ -58,8 +58,20 @@ Item {
     PointHandler {
         id: pointHandler
         target: null
+        // Exklusiven Grab erzwingen, damit die umgebende Flickable/
+        // SwipeView den Drag nicht mehr für Scroll/Swipe "stiehlt".
+        grabPermissions: PointerHandler.CanTakeOverFromItems | PointerHandler.CanTakeOverFromHandlersOfDifferentType
         onActiveChanged: {
             root._dragging = active
+            // UiState.navigationLocked sperrt SwipeView.interactive und die
+            // Flickables der Tab-Seiten für die Dauer der Bedienung —
+            // sonst gewinnt beim Wischen/Scrollen oft die Seite statt des
+            // Joysticks (Problem: "Joystick lässt sich nicht gut bedienen").
+            if (active) {
+                UiState.pushLock()
+            } else {
+                UiState.popLock()
+            }
             if (!active && root.returnToCenter) {
                 root._knobX = 0
                 root._knobY = 0

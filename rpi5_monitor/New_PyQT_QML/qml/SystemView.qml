@@ -13,6 +13,33 @@ Item {
     property var visuals: appBridge.visuals
     property var values: appBridge.telemetry.latestValues
 
+    // "bodies"-Grafik der aktiven Gruppe, falls vorhanden (Feldansicht mit
+    // 2 Objekten). In diesem Modus ersetzt die Feldansicht die normale
+    // Bild+Overlay / Grafik-Flow-Aufteilung komplett (analog zur alten
+    // TwoBodiesWidget-Logik in tab_visuals.py).
+    readonly property var bodiesGraphic: {
+        var g = root.visuals.activeGroup.graphics
+        for (var i = 0; i < g.length; i++) {
+            if (g[i].type === "bodies") return g[i]
+        }
+        return null
+    }
+
+    function _chan(idx, fallback) {
+        return (idx >= 0 && idx < root.values.length) ? root.values[idx] : fallback
+    }
+
+    function _bodyState(b) {
+        return {
+            label: b.label,
+            color: b.color,
+            diameter: root._chan(b.channelDiameter, b.diameter),
+            x: root._chan(b.channelX, 0),
+            y: root._chan(b.channelY, 0),
+            angleDeg: root._chan(b.channelAngle, 0)
+        }
+    }
+
     Column {
         anchors.fill: parent
         anchors.margins: Theme.spacingS
@@ -31,10 +58,25 @@ Item {
             }
         }
 
+        // ── Feldansicht mit 2 Objekten (Position/Größe/Drehung) ───────────
+        BodiesField {
+            width: parent.width
+            height: parent.height - Theme.touchTargetMin - Theme.spacingS
+            visible: root.bodiesGraphic !== null
+            label: root.bodiesGraphic ? root.bodiesGraphic.label : ""
+            imageUrl: root.visuals.activeGroup.imageUrl
+            fieldWidth: root.bodiesGraphic ? root.bodiesGraphic.fieldWidth : 2.0
+            fieldHeight: root.bodiesGraphic ? root.bodiesGraphic.fieldHeight : 1.5
+            readonly property var _emptyBody: ({ label: "", color: "#4ec9b0", diameter: 0.3, x: 0, y: 0, angleDeg: 0 })
+            body1: root.bodiesGraphic ? root._bodyState(root.bodiesGraphic.body1) : _emptyBody
+            body2: root.bodiesGraphic ? root._bodyState(root.bodiesGraphic.body2) : _emptyBody
+        }
+
         Row {
             width: parent.width
             height: parent.height - Theme.touchTargetMin - Theme.spacingS
             spacing: Theme.spacingM
+            visible: root.bodiesGraphic === null
 
             // ── Links: Bild mit Text-Overlays ────────────────────────────
             Item {
@@ -52,20 +94,46 @@ Item {
 
                 Repeater {
                     model: root.visuals.activeGroup.overlays
-                    delegate: Text {
+                    delegate: Item {
+                        id: ovDelegate
                         required property var modelData
                         readonly property real imgX: bgImage.x + (bgImage.width - bgImage.paintedWidth) / 2
                         readonly property real imgY: bgImage.y + (bgImage.height - bgImage.paintedHeight) / 2
-                        x: imgX + bgImage.paintedWidth * modelData.xPct / 100
-                        y: imgY + bgImage.paintedHeight * modelData.yPct / 100
-                        text: modelData.label + ": " +
+                        readonly property string ovText: modelData.label + ": " +
                               (modelData.channel < root.values.length
                                    ? root.values[modelData.channel].toFixed(2) : "—")
-                        color: modelData.color
-                        font.pixelSize: 13
-                        font.bold: true
-                        style: Text.Outline
-                        styleColor: "#000000"
+                        x: imgX + bgImage.paintedWidth * modelData.xPct / 100
+                        y: imgY + bgImage.paintedHeight * modelData.yPct / 100
+                        width: ovLabel.implicitWidth + 12
+                        height: ovLabel.implicitHeight + 6
+
+                        // Schwarz hinterlegter Hintergrund, damit der Text
+                        // auf jedem Bild lesbar bleibt (statt reinem
+                        // Textumriss zuvor).
+                        Rectangle {
+                            anchors.fill: parent
+                            color: "#0a0a0f"
+                            opacity: 0.85
+                            radius: 3
+                            border.color: Qt.darker(modelData.color, 1.4)
+                            border.width: 1
+                        }
+                        Rectangle {
+                            anchors.left: parent.left
+                            anchors.top: parent.top
+                            anchors.bottom: parent.bottom
+                            width: 3
+                            color: modelData.color
+                        }
+
+                        Text {
+                            id: ovLabel
+                            anchors.centerIn: parent
+                            text: ovDelegate.ovText
+                            color: modelData.color
+                            font.pixelSize: 13
+                            font.bold: true
+                        }
                     }
                 }
             }
@@ -87,6 +155,7 @@ Item {
                         model: root.visuals.activeGroup.graphics
                         delegate: Loader {
                             required property var modelData
+                            active: modelData.type !== "bodies"
                             sourceComponent: {
                                 switch (modelData.type) {
                                     case "gauge":    return gaugeComp
@@ -110,8 +179,9 @@ Item {
                                 id: rotationComp
                                 RotationIndicator {
                                     label: modelData.label
-                                    angleDeg: modelData.channel < root.values.length
-                                              ? root.values[modelData.channel] : 0
+                                    value: modelData.channel < root.values.length
+                                           ? root.values[modelData.channel] : 0
+                                    maxVal: modelData.maxVal
                                 }
                             }
                             Component {

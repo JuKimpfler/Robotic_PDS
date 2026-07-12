@@ -70,6 +70,10 @@ ApplicationWindow {
         id: swipeView
         anchors.fill: parent
         currentIndex: tabBar.currentIndex
+        // Während ein Touch-Widget wie der Joystick exklusiv einen Drag
+        // braucht (siehe UiState.qml / Joystick.qml), darf das Wischen
+        // zwischen den Tabs nicht mitlaufen.
+        interactive: !UiState.navigationLocked
 
         TelemetryView {}
         PlotterView {}

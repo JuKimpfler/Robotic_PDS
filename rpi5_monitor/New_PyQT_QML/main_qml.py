@@ -116,6 +116,14 @@ def main() -> None:
         QUrl.fromLocalFile(str(_QML_DIR / "Theme.qml")), "App", 1, 0, "Theme"
     )
 
+    # UiState.qml genauso registrieren wie Theme.qml (siehe dortiger
+    # Kommentar) — wird u.a. vom Joystick benutzt, um während einer
+    # Touch-Bedienung das Wischen/Scrollen der umgebenden SwipeView /
+    # Flickables zu unterdrücken (Migrationsplan-Nachtrag: Bedienbarkeit).
+    qmlRegisterSingletonType(
+        QUrl.fromLocalFile(str(_QML_DIR / "UiState.qml")), "App", 1, 0, "UiState"
+    )
+
     # ── Backend wie gehabt starten ────────────────────────────────────────
     nm = NetworkManager()
     nm.start()

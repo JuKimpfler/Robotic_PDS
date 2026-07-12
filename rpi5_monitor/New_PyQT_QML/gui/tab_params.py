@@ -231,7 +231,7 @@ QPushButton:checked  { background: #2ecc71; border-color: #2ecc71; }
 
 
 def make_slider_widget(entry: ParamEntry, on_change: Callable[[float], None]) -> QWidget:
-    SCALE = 10   # 1 Nachkommastelle Aufloesung (QSlider arbeitet nur mit int)
+    SCALE = 100   # 1 Nachkommastelle Aufloesung (QSlider arbeitet nur mit int)
 
     box = QWidget()
     layout = QHBoxLayout(box)
@@ -246,13 +246,13 @@ def make_slider_widget(entry: ParamEntry, on_change: Callable[[float], None]) ->
     slider.setMaximum(int(entry.max * SCALE))
     slider.setValue(int(entry.default * SCALE))
 
-    value_lbl = QLabel(f"{entry.default:+.1f}")
-    value_lbl.setMinimumWidth(56)
+    value_lbl = QLabel(f"{entry.default:+.2f}")
+    value_lbl.setMinimumWidth(86)
     value_lbl.setStyleSheet("font-family: monospace;")
 
     def _on_changed(raw_int: int) -> None:
         val = raw_int / SCALE
-        value_lbl.setText(f"{val:+.1f}")
+        value_lbl.setText(f"{val:+.2f}")
         on_change(val)
 
     slider.valueChanged.connect(_on_changed)
