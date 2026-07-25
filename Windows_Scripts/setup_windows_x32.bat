@@ -2,21 +2,20 @@
 setlocal EnableDelayedExpansion
 
 :: ======================================================================
-::   Power Debug Monitor - Windows 10 Schnell-Setup (Debug-PC / Acer One 10)
+::   Power Debug Monitor - Windows 10 Schnell-Setup (32-bit, PyQt5)
 :: ======================================================================
-::  Fuer den Neuaufsatz nach frischer Windows 10 (64-bit) Installation.
-::  Erledigt in einem Durchgang:
-::    1. Python automatisch finden (kein hartcodierter Pfad mehr)
-::    2. Firewall-Regeln
-::    3. Python-Abhaengigkeiten (PyQt6 etc.)
-::    4. Performance-Optimierungen fuer schwache Hardware (Atom/2GB RAM)
-::    5. Autologin einrichten
-::    6. Autostart-Verknuepfung (Kiosk, kein Konsolenfenster)
-::    7. WLAN-Hotspot Hinweis
-::    8. GUI zum Test starten
+::  Reihenfolge beim Booten, die dieses Skript einrichtet:
+::    1. Systemstart (vor Login)  -> Task "RoboDebug_Hotspot" (SYSTEM)
+::       startet den WLAN-Hotspot ueber start_hotspot.ps1
+::    2. Login (Autologin)        -> Task "RoboDebug_GUI" startet die
+::       Python-GUI im Vollbild, mit Verzoegerung, damit der Hotspot
+::       bereits steht
 ::
-::  Aufruf: als Administrator ausfuehren, im Ordner pc_setup\ liegend
-::  (erwartet ..\requirements.txt und ..\rpi5_monitor\ eine Ebene hoeher)
+::  Erwartete Ordnerstruktur:
+::    ...\pc_setup\setup_windows.bat   <- dieses Skript
+::    ...\pc_setup\start_hotspot.ps1   <- muss danebenliegen
+::    ...\requirements.txt
+::    ...\rpi5_monitor\...             <- GUI-Code
 :: ======================================================================
 
 :: --- Admin-Pruefung ---
@@ -32,7 +31,16 @@ echo =======================================================
 echo     Power Debug Monitor - Windows 10 PC Setup
 echo =======================================================
 
+set "SETUP_DIR=%~dp0"
 set "APP_DIR=%~dp0.."
+set "HOTSPOT_PS1=%SETUP_DIR%start_hotspot.ps1"
+
+if not exist "%HOTSPOT_PS1%" (
+    echo   FEHLER: start_hotspot.ps1 wurde nicht neben diesem Skript gefunden.
+    echo   Erwarteter Pfad: %HOTSPOT_PS1%
+    pause
+    exit /b 1
+)
 
 :: ======================================================================
 ::  SCHRITT 1 - Python automatisch finden
@@ -51,28 +59,13 @@ if not defined PYTHON_EXE (
 )
 if not defined PYTHON_EXE (
     echo   Python wurde nicht gefunden.
-    echo   Bitte zuerst Python 3.x ^(64-bit^) installieren:
-    echo   https://www.python.org/downloads/
+    echo   Bitte zuerst Python 3.x installieren: https://www.python.org/downloads/
     echo   ^(Haekchen "Add python.exe to PATH" beim Installer nicht vergessen^)
     pause
     exit /b 1
 )
-
-:: pythonw.exe liegt im selben Ordner wie python.exe (kein Konsolenfenster)
 set "PYTHONW_EXE=%PYTHON_EXE:python.exe=pythonw.exe%"
 echo   Gefunden: %PYTHON_EXE%
-
-:: 64-bit pruefen: PyQt6-Wheels gibt es auf PyPI nur fuer win_amd64 -
-:: unter 32-bit Python schlaegt "pip install PyQt6" fehl.
-"%PYTHON_EXE%" -c "import struct,sys; sys.exit(0 if struct.calcsize('P')*8==64 else 1)"
-if errorlevel 1 (
-    echo.
-    echo   WARNUNG: Es wurde eine 32-bit Python-Installation gefunden.
-    echo   PyQt6 stellt auf PyPI keine 32-bit-Wheels mehr bereit -
-    echo   die Installation der Abhaengigkeiten wird fehlschlagen.
-    echo   Bitte 64-bit Python ^(und ggf. 64-bit Windows^) installieren.
-    pause
-)
 
 :: ======================================================================
 ::  SCHRITT 2 - Firewall-Regeln
@@ -90,7 +83,7 @@ if errorlevel 1 (
 echo   Firewall-Regeln gesetzt.
 
 :: ======================================================================
-::  SCHRITT 3 - Python-Abhaengigkeiten
+::  SCHRITT 3 - Python-Abhaengigkeiten (PyQt5)
 :: ======================================================================
 echo.
 echo [3/8] Python-Abhaengigkeiten installieren ...
@@ -99,7 +92,7 @@ if exist "%APP_DIR%\requirements.txt" (
     "%PYTHON_EXE%" -m pip install -r "%APP_DIR%\requirements.txt"
 ) else (
     echo   requirements.txt nicht gefunden - installiere Basispakete direkt.
-    "%PYTHON_EXE%" -m pip install "PyQt5" "pyqtgraph" "numpy"
+    "%PYTHON_EXE%" -m pip install "PyQt5>=5.15.0" "pyqtgraph>=0.13.3" "numpy>=1.24.0"
 )
 echo   Abhaengigkeiten bereit.
 
@@ -108,28 +101,17 @@ echo   Abhaengigkeiten bereit.
 :: ======================================================================
 echo.
 echo [4/8] Performance-Optimierungen anwenden ...
-
-:: Hoechstleistungs-Energieplan aktivieren
 powercfg -setactive SCHEME_MIN >nul 2>&1
-
-:: Bildschirm/Standby/Ruhezustand nie automatisch abschalten (Kiosk-Betrieb)
 powercfg -change -monitor-timeout-ac 0 >nul 2>&1
 powercfg -change -standby-timeout-ac 0 >nul 2>&1
 powercfg -change -hibernate-timeout-ac 0 >nul 2>&1
 powercfg -change -disk-timeout-ac 0 >nul 2>&1
-
-:: SysMain (Superfetch) und Windows Search deaktivieren - spart RAM/IO
 sc config "SysMain" start= disabled >nul 2>&1
 sc stop "SysMain" >nul 2>&1
 sc config "WSearch" start= disabled >nul 2>&1
 sc stop "WSearch" >nul 2>&1
-
-:: Visuelle Effekte auf "Beste Leistung"
 reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects" /v VisualFXSetting /t REG_DWORD /d 2 /f >nul 2>&1
-
-:: Windows Update automatische Neustarts unterbinden (kein ungewollter Reboot im Feldbetrieb)
 reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU" /v NoAutoRebootWithLoggedOnUsers /t REG_DWORD /d 1 /f >nul 2>&1
-
 echo   Energieplan, Hintergrunddienste und Effekte angepasst.
 
 :: ======================================================================
@@ -138,12 +120,14 @@ echo   Energieplan, Hintergrunddienste und Effekte angepasst.
 echo.
 echo [5/8] Autologin einrichten
 echo   ^(Passwort wird im Klartext in der Registry gespeichert - Standard-
-echo    verfahren von Windows, siehe auch "netplwiz". Nur auf einem
-echo    physisch abgesicherten Debug-Geraet verwenden.^)
+echo    verfahren von Windows ^(wie "netplwiz"^). Nur auf einem physisch
+echo    abgesicherten Debug-Geraet verwenden.^)
 echo.
+set "WINUSER=%USERNAME%"
 set /p SETUP_AUTOLOGIN="Autologin jetzt einrichten? [j/N] "
 if /i "%SETUP_AUTOLOGIN%"=="j" (
-    set /p WINUSER="  Windows-Benutzername: "
+    set /p WINUSER="  Windows-Benutzername [%USERNAME%]: "
+    if "!WINUSER!"=="" set "WINUSER=%USERNAME%"
     set /p WINPASS="  Windows-Passwort: "
     reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" /v AutoAdminLogon /t REG_SZ /d 1 /f >nul
     reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" /v DefaultUserName /t REG_SZ /d "!WINUSER!" /f >nul
@@ -151,17 +135,31 @@ if /i "%SETUP_AUTOLOGIN%"=="j" (
     reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" /v DefaultDomainName /t REG_SZ /d "%COMPUTERNAME%" /f >nul
     echo   Autologin fuer "!WINUSER!" eingerichtet.
 ) else (
-    echo   Autologin uebersprungen - kann spaeter per "netplwiz" nachgeholt werden.
+    echo   Autologin uebersprungen - Task "RoboDebug_GUI" wird trotzdem fuer
+    echo   den Benutzer "!WINUSER!" eingerichtet und startet beim naechsten
+    echo   ^(manuellen^) Login.
 )
 
 :: ======================================================================
-::  SCHRITT 6 - Autostart einrichten (Kiosk, ohne Konsolenfenster)
+::  SCHRITT 6 - Alte Startup-Verknuepfung entfernen (falls vorhanden)
 :: ======================================================================
 echo.
-echo [6/8] Autostart-Verknuepfung erstellen ...
+echo [6/8] Alte Autostart-Methode aufraeumen ...
+set "OLD_SHORTCUT=%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\PowerDebugMonitor.lnk"
+if exist "%OLD_SHORTCUT%" (
+    del /q "%OLD_SHORTCUT%"
+    echo   Alte Verknuepfung entfernt: %OLD_SHORTCUT%
+) else (
+    echo   Keine alte Verknuepfung gefunden - ueberspringe.
+)
 
-:: GUI-Einstiegspunkt automatisch finden: bevorzugt die neue QML-GUI,
-:: Fallback auf die aeltere main.py (Struktur analog setup_rpi5.sh).
+:: ======================================================================
+::  SCHRITT 7 - Task Scheduler: Hotspot (bei Systemstart) + GUI (bei Login)
+:: ======================================================================
+echo.
+echo [7/8] Aufgabenplanung einrichten ...
+
+:: GUI-Einstiegspunkt automatisch finden
 set "GUI_SCRIPT="
 if exist "%APP_DIR%\rpi5_monitor\New_PyQT_QML\main_qml.py" (
     set "GUI_SCRIPT=%APP_DIR%\rpi5_monitor\New_PyQT_QML\main_qml.py"
@@ -171,70 +169,68 @@ if exist "%APP_DIR%\rpi5_monitor\New_PyQT_QML\main_qml.py" (
 
 if not defined GUI_SCRIPT (
     echo   WARNUNG: Kein GUI-Einstiegspunkt gefunden ^(main_qml.py / main.py^).
-    echo   Autostart-Verknuepfung wird uebersprungen - bitte Pfad pruefen.
+    echo   Task "RoboDebug_GUI" wird uebersprungen - bitte Pfad pruefen.
 ) else (
-    set "STARTUP_DIR=%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup"
-    powershell -NoProfile -Command ^
-      "$s = (New-Object -COM WScript.Shell).CreateShortcut('%STARTUP_DIR%\PowerDebugMonitor.lnk');" ^
-      "$s.TargetPath = '%PYTHONW_EXE%';" ^
-      "$s.Arguments = '\"%GUI_SCRIPT%\"';" ^
-      "$s.WorkingDirectory = '%APP_DIR%\rpi5_monitor';" ^
-      "$s.WindowStyle = 1;" ^
-      "$s.Save()"
-    echo   Autostart-Verknuepfung angelegt: %STARTUP_DIR%\PowerDebugMonitor.lnk
-    echo   Startet: %GUI_SCRIPT%
-    echo   Hinweis: showFullScreen^(^) muss in der App selbst beim Start
-    echo   aufgerufen werden, damit sie automatisch im Vollbild oeffnet.
+    :: kleiner Wrapper, der zuerst ins richtige Arbeitsverzeichnis wechselt
+    :: (haeufigste Fehlerursache bei Autostart: falsches Arbeitsverzeichnis
+    :: -> QML-/Ressourcendateien werden nicht gefunden)
+    set "GUI_WRAPPER=%SETUP_DIR%start_gui.bat"
+    (
+        echo @echo off
+        echo cd /d "%APP_DIR%\rpi5_monitor"
+        echo start "" "%PYTHONW_EXE%" "%GUI_SCRIPT%"
+    ) > "!GUI_WRAPPER!"
+    echo   Wrapper erstellt: !GUI_WRAPPER!
+
+    schtasks /create /tn "RoboDebug_GUI" ^
+        /tr "\"!GUI_WRAPPER!\"" ^
+        /sc onlogon /ru "!WINUSER!" /delay 0000:20 /rl highest /f >nul
+    echo   Task "RoboDebug_GUI" angelegt: startet 20s nach Login von "!WINUSER!".
 )
 
-:: ======================================================================
-::  SCHRITT 7 - WLAN Hotspot
-:: ======================================================================
+schtasks /create /tn "RoboDebug_Hotspot" ^
+    /tr "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"%HOTSPOT_PS1%\"" ^
+    /sc onstart /delay 0000:15 /ru SYSTEM /rl highest /f >nul
+echo   Task "RoboDebug_Hotspot" angelegt: startet 15s nach Systemstart als SYSTEM.
+
 echo.
-echo [7/8] WLAN-Hotspot einrichten
-echo =======================================================
-echo                    WICHTIGER HINWEIS
-echo =======================================================
-echo Windows 10 unterstuetzt je nach WLAN-Treiber entweder den
-echo integrierten Mobile Hotspot ODER den alten "hostednetwork"-Modus.
+echo   Hinweis: Falls dein WLAN-Treiber "Hosted Network" NICHT unterstuetzt,
+echo   muss der Mobile Hotspot ^(SSID "RoboDebug"^) einmalig manuell unter
+echo   Einstellungen ^> Netzwerk und Internet ^> Mobiler Hotspot eingerichtet
+echo   werden - das Skript nutzt danach automatisch den Fallback-Weg.
 echo.
-echo Falls der Treiber "hostednetwork" unterstuetzt, kann folgender
-echo Befehl manuell verwendet werden ^(einmalig^):
-echo   netsh wlan set hostednetwork mode=allow ssid=RoboDebug key=robodebug123
-echo   netsh wlan start hostednetwork
-echo.
-echo Ansonsten bitte den integrierten Mobile Hotspot verwenden:
-echo 1. Das Hotspot-Einstellungsfenster oeffnet sich nun.
-echo 2. Aktiviere den Mobile Hotspot.
-echo 3. Bearbeite die Eigenschaften:
-echo    - Netzwerkname: RoboDebug
-echo    - Passwort:     robodebug123
-echo 4. Verbinde den Raspberry Pi Zero mit diesem Hotspot.
-echo =======================================================
-echo.
-start ms-settings:network-mobilehotspot
-pause
+set /p OPEN_HOTSPOT_SETTINGS="Hotspot-Einstellungen jetzt zur Kontrolle oeffnen? [j/N] "
+if /i "%OPEN_HOTSPOT_SETTINGS%"=="j" start ms-settings:network-mobilehotspot
 
 :: ======================================================================
-::  SCHRITT 8 - GUI zum Test starten
+::  SCHRITT 8 - Test
 :: ======================================================================
 echo.
 echo [8/8] Setup abgeschlossen.
 echo.
-set /p START_NOW="GUI jetzt zum Test starten? [j/N] "
-if /i "%START_NOW%"=="j" (
+set /p TEST_NOW="Hotspot-Task und GUI jetzt zum Test manuell ausloesen? [j/N] "
+if /i "%TEST_NOW%"=="j" (
+    echo   Starte Hotspot-Task ...
+    schtasks /run /tn "RoboDebug_Hotspot"
+    timeout /t 5 >nul
+    echo   Pruefe Log: %ProgramData%\RoboDebug\hotspot.log
+    type "%ProgramData%\RoboDebug\hotspot.log" 2>nul
     if defined GUI_SCRIPT (
-        cd /d "%APP_DIR%\rpi5_monitor"
-        "%PYTHON_EXE%" "%GUI_SCRIPT%"
-    ) else (
-        echo   Kein GUI-Script gefunden - Start uebersprungen.
+        echo   Starte GUI-Task ...
+        schtasks /run /tn "RoboDebug_GUI"
     )
 )
 
 echo.
 echo =======================================================
-echo   Setup abgeschlossen. Ab dem naechsten Neustart:
-echo   - Autologin ^(falls eingerichtet^)
-echo   - GUI startet automatisch im Autostart-Ordner
+echo   Fertig. Ab dem naechsten Neustart:
+echo   1. Hotspot startet ~15s nach dem Booten (Task "RoboDebug_Hotspot")
+echo   2. GUI startet ~20s nach dem Login (Task "RoboDebug_GUI")
+echo.
+echo   Zum Debuggen bei Problemen:
+echo   - Task Scheduler ^> Bibliothek ^> RoboDebug_Hotspot / RoboDebug_GUI
+echo     ^(rechte Maustaste ^> Alle Tasks-Verlaeufe aktivieren, dann
+echo     Reiter "Verlauf" pruefen^)
+echo   - Log-Datei: %%ProgramData%%\RoboDebug\hotspot.log
 echo =======================================================
 pause
