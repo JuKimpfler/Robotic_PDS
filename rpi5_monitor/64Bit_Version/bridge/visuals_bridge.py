@@ -30,6 +30,8 @@ from pathlib import Path
 from PyQt6.QtCore import QObject, pyqtSignal, pyqtProperty, pyqtSlot
 
 from bridge.utils import parse_channels
+from config import VARIABLE_NAMES
+from channel_registry import apply_overlay_defaults, ChannelRegistry
 
 log = logging.getLogger("bridge.visuals")
 
@@ -93,9 +95,11 @@ def _load_groups() -> list[dict]:
                     "maxVal": float(gr.get("max_val", 1.0)),
                 })
             elif gtype == "table":
+                chans = parse_channels(gr.get("channels", []))
                 entry.update({
                     "title": gr.get("title", ""),
-                    "channels": parse_channels(gr.get("channels", [])),
+                    "channels": chans,
+                    "channelNames": [VARIABLE_NAMES.get(c, f"Var_{c:03d}") for c in chans],
                 })
             elif gtype == "bodies":
                 def _body(b: dict) -> dict:
@@ -126,6 +130,24 @@ def _load_groups() -> list[dict]:
     return groups
 
 
+def _load_raw_config() -> dict:
+    """Liest visuals_overlays.json im Rohformat (Gruppen-Dicts, unaufbereitet)
+    — dasselbe Format, das gui/tab_visuals.py::load_config()/save_config()
+    verwendet. Bewusst eigenständig (kein Import von gui/tab_visuals.py),
+    damit bridge/ frei von QtWidgets-Abhängigkeiten bleibt."""
+    if not _CONFIG_FILE.exists():
+        return {"groups": []}
+    try:
+        return json.loads(_CONFIG_FILE.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        log.error("visuals_overlays.json ist kein gültiges JSON: %s", exc)
+        return {"groups": []}
+
+
+def _save_raw_config(config: dict) -> None:
+    _CONFIG_FILE.write_text(json.dumps(config, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
 class VisualsBridge(QObject):
     groupsChanged       = pyqtSignal()
     activeGroupChanged  = pyqtSignal()
@@ -134,6 +156,27 @@ class VisualsBridge(QObject):
         super().__init__(parent)
         self._groups = _load_groups()
         self._active_index = 0
+
+    # ── Vom Teensy empfangene Namen/Overlays (siehe app_bridge.py) ─────────
+    def refresh(self) -> None:
+        """Liest visuals_overlays.json neu ein (z. B. nachdem Namen/Overlays
+        aktualisiert wurden). Anders als bei ParamBridge unproblematisch,
+        da SystemView.qml keine editierbaren Regler-Zustände hält — nur
+        reine Anzeige-Widgets, die ohnehin aus telemetry.latestValues
+        neu gezeichnet werden."""
+        self._groups = _load_groups()
+        self.groupsChanged.emit()
+        self.activeGroupChanged.emit()
+
+    def apply_overlay_defaults_from_registry(self, registry: ChannelRegistry) -> None:
+        """Befüllt noch leere Gruppen aus dem vom Teensy empfangenen Overlay-
+        Mapping (siehe channel_registry.apply_overlay_defaults). Bereits
+        lokal editierte Gruppen (z. B. über die Widgets-GUI) bleiben
+        unangetastet."""
+        raw = _load_raw_config()
+        if apply_overlay_defaults(raw, registry):
+            _save_raw_config(raw)
+        self.refresh()   # Namens-Aenderungen (VARIABLE_NAMES) sollen so oder so durch
 
     @pyqtProperty("QVariantList", notify=groupsChanged)
     def groupNames(self):

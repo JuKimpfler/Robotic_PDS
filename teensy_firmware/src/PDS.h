@@ -60,11 +60,18 @@
 #define ACTIVE_CHANNELS 200
 #endif
 
+// Bindungs-Typ eines per bind() registrierten Kanals (Auto-Sampling, siehe update()).
+enum class BoundChannelType : uint8_t { NONE = 0, FLOAT_PTR, BOOL_PTR, INT_PTR };
+
+struct BoundChannel {
+    BoundChannelType type = BoundChannelType::NONE;
+    void*            ptr  = nullptr;
+};
 
 class PowerDebugger{
     private:
         void buildPacket();
-        void pollParamUart();          // liest UART_DBG RX, Zwei-Magic-Byte-Sync
+        void pollParamUart();          // liest UART_DBG RX, Drei-Magic-Byte-Sync (Slow/Fast/Desc-Request)
 
         // Param-Downlink: Slow-Kanal (50 Floats + 50 Bools, 2 Hz)
         float    _paramFloats[PARAM_SLOW_FLOAT_COUNT];
@@ -75,10 +82,36 @@ class PowerDebugger{
         float    _fastFloats[PARAM_FAST_FLOAT_COUNT];
         uint32_t _lastFastRxMs = 0;
 
+        // ── Kanal-Bindung: per bind() registrierte Pointer, jeden update()-
+        //    Zyklus automatisch in debugData[] uebernommen (kein weiterer
+        //    Channel()-Aufruf im Sketch noetig) ────────────────────────────
+        BoundChannel _bound[ACTIVE_CHANNELS];
+        char         _names[ACTIVE_CHANNELS][CHANNEL_NAME_MAXLEN];
+
+        void sampleBoundChannels();
+        void setName(uint8_t chn, const char* name);
+
+        // ── Namens-/Overlay-Deskriptor -> GUI (einmalig beim Boot + auf
+        //    Anfrage, siehe channel_config.h fuer die Nutzdaten) ──────────
+        size_t  _descJsonLen    = 0;
+        uint8_t _descChunkCount = 0;
+        uint8_t _descNextChunk  = 0xFF;   // 0xFF = kein Sendevorgang aktiv
+        bool    _descBuilt      = false;
+
+        void buildDescriptorJson();
+        void startDescriptorSend();
+        void sendNextDescChunk();
+
     public:
         void init();
         void update();
         void Channel(u_int8_t chn , float val);
+        void Channel(u_int8_t chn , float val, const char* name);   // wie Channel(chn,val), registriert zusaetzlich einen Anzeigenamen
+
+        // ── Kanal-Bindung: Pointer + optionaler Name, Auto-Sampling ──────
+        void bind(uint8_t chn, float* ptr, const char* name = nullptr);
+        void bind(uint8_t chn, bool*  ptr, const char* name = nullptr);
+        void bind(uint8_t chn, int*   ptr, const char* name = nullptr);
 
         // ── Param-Downlink: öffentliche Zugriffs-API ────────────────────
         float getParam(uint8_t index) const;        // Slow-Float,  Index 0..49

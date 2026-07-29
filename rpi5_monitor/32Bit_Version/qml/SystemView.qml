@@ -200,6 +200,7 @@ Item {
                                 MiniTable {
                                     title: modelData.title
                                     channels: modelData.channels
+                                    channelNames: modelData.channelNames
                                     values: root.values
                                 }
                             }

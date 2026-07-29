@@ -17,6 +17,8 @@ Item {
 
     property string title: ""
     property var channels: []      // Liste von Kanal-Indizes
+    property var channelNames: []  // parallel zu channels, von der Bridge aufgelöst
+                                    // (VARIABLE_NAMES, ggf. vom Teensy aktualisiert)
     property var values: []        // appBridge.telemetry.latestValues
 
     Rectangle {
@@ -62,6 +64,10 @@ Item {
 
                     readonly property bool _has: modelData < root.values.length
                     readonly property real _val: _has ? root.values[modelData] : 0
+                    readonly property int _nameIdx: index
+                    readonly property string _name: (_nameIdx < root.channelNames.length)
+                                                     ? root.channelNames[_nameIdx]
+                                                     : ("Var_" + String(cell.modelData).padStart(3, "0"))
 
                     Column {
                         anchors.left: parent.left
@@ -70,7 +76,7 @@ Item {
                         anchors.margins: 6
                         spacing: 1
                         Text {
-                            text: "Var_" + String(cell.modelData).padStart(3, "0")
+                            text: cell._name
                             color: Theme.textDim
                             font.family: Theme.fontMono
                             font.pixelSize: Theme.fontSizeSmall-2

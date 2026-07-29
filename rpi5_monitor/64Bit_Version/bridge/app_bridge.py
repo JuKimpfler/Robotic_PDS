@@ -14,8 +14,12 @@ import sys
 
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal, pyqtProperty, pyqtSlot
 
-from config import GUI_TIMER_MS, NODE1_IP, NODE2_IP
+from config import (
+    GUI_TIMER_MS, NODE1_IP, NODE2_IP, VARIABLE_NAMES,
+    UDP_CHANNEL_DESC_REQUEST_PORT_NODE1, UDP_CHANNEL_DESC_REQUEST_PORT_NODE2,
+)
 from network_worker import NetworkManager
+from channel_registry import ChannelRegistry, send_descriptor_request
 from bridge.telemetry_bridge import TelemetryBridge
 from bridge.plot_bridge import PlotBridge
 from bridge.param_bridge import ParamBridge
@@ -144,6 +148,48 @@ class AppBridge(QObject):
 
         self._node_connected[self._active_node] = True
         self.ledChanged.emit()
+
+        # Namens-/Overlay-Deskriptor vom Teensy (einmalig beim Boot + auf Anfrage)
+        self._poll_descriptor()
+
+    def _poll_descriptor(self) -> None:
+        q = self._nm.get_desc_queue(self._active_node)
+        data = None
+        try:
+            while True:
+                data = q.get_nowait()   # nur das neueste Paket interessiert
+        except Exception:
+            pass   # Queue leer
+
+        if data is None:
+            return
+
+        registry = ChannelRegistry.from_json_dict(data)
+
+        VARIABLE_NAMES.update(registry.channel_names)
+        self._telemetry.set_names(registry.channel_names)
+        self._params.apply_names(
+            registry.param_slow_float_names,
+            registry.param_slow_bool_names,
+            registry.param_fast_float_names,
+        )
+        self._visuals.apply_overlay_defaults_from_registry(registry)
+
+        log.info(
+            "Namens-/Overlay-Deskriptor empfangen (Node %d): %d Kanalnamen, %d Overlay-Einträge.",
+            self._active_node, len(registry.channel_names), len(registry.overlays),
+        )
+
+    @pyqtSlot()
+    def requestChannelNames(self) -> None:
+        """Von QML aufrufbar (siehe StatusBar.qml/Main.qml) — fordert eine
+        Neuübertragung des Namens-/Overlay-Deskriptors an, da der Teensy ihn
+        sonst nur einmalig beim Boot sendet."""
+        ip = self.get_active_node_ip(self._active_node)
+        port = (UDP_CHANNEL_DESC_REQUEST_PORT_NODE1 if self._active_node == 1
+                else UDP_CHANNEL_DESC_REQUEST_PORT_NODE2)
+        send_descriptor_request(ip, port)
+        self.statusMessage.emit(f"Kanalnamen von Node {self._active_node} ({ip}) angefordert.")
 
     def _update_pps(self) -> None:
         self._pps = self._pkt_count

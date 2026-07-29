@@ -99,10 +99,16 @@ class ParamStore:
 #  Konfiguration → QML-taugliche verschachtelte Struktur
 # ══════════════════════════════════════════════════════════════════════════
 
-def _entry_to_dict(e: ParamEntry) -> dict:
+def _entry_to_dict(e: ParamEntry, current: float | bool | None = None) -> dict:
+    """current: falls gesetzt (Namens-Refresh, siehe ParamBridge.apply_names),
+    wird der LIVE-Wert aus dem ParamStore statt des statischen JSON-Defaults
+    als 'default' an QML gereicht -- sonst wuerde ein Neuaufbau der Gruppen
+    (Repeater-Model-Austausch) jeden bereits vom Nutzer veraenderten Regler
+    optisch auf seinen Ursprungswert zuruecksetzen."""
     return {
         "index": e.index, "name": e.name, "widget": e.widget,
-        "default": e.default, "min": e.min, "max": e.max,
+        "default": current if current is not None else e.default,
+        "min": e.min, "max": e.max,
         "step": e.step, "momentary": e.momentary,
     }
 
@@ -116,9 +122,13 @@ def _joystick_to_dict(js: JoystickEntry) -> dict:
     }
 
 
-def _build_groups(config: ParamConfig) -> list[dict]:
+def _build_groups(config: ParamConfig, store: "ParamStore | None" = None) -> list[dict]:
     """Baut die Seiten-Struktur analog zu gui/tab_params.py::_build_group_pages:
-    1) Fast Params, 2) Slow-Joysticks, 3) je 'group'-Feld eine Seite."""
+    1) Fast Params, 2) Slow-Joysticks, 3) je 'group'-Feld eine Seite.
+
+    store: nur bei einem Namens-Refresh (siehe ParamBridge.apply_names) gesetzt,
+    damit die neu aufgebauten Gruppen die aktuellen Live-Werte statt der
+    JSON-Defaults als Anzeige-Startwert bekommen (siehe _entry_to_dict)."""
     from collections import OrderedDict
 
     pages: list[dict] = []
@@ -130,7 +140,10 @@ def _build_groups(config: ParamConfig) -> list[dict]:
     pages.append({
         "kind": "fast",
         "title": "Fast Params - 100 Hz",
-        "floats": [_entry_to_dict(e) for e in config.fast_floats if e.index not in fast_joy_idx],
+        "floats": [
+            _entry_to_dict(e, float(store.fast_floats[e.index]) if store is not None else None)
+            for e in config.fast_floats if e.index not in fast_joy_idx
+        ],
         "joysticks": [_joystick_to_dict(js) for js in config.joysticks if js.source == "fast"],
         "bools": [],
     })
@@ -159,8 +172,14 @@ def _build_groups(config: ParamConfig) -> list[dict]:
         pages.append({
             "kind": "group",
             "title": grp_name,
-            "floats": [_entry_to_dict(e) for e in parts["floats"]],
-            "bools": [_entry_to_dict(e) for e in parts["bools"]],
+            "floats": [
+                _entry_to_dict(e, float(store.floats[e.index]) if store is not None else None)
+                for e in parts["floats"]
+            ],
+            "bools": [
+                _entry_to_dict(e, bool(store.bools[e.index]) if store is not None else None)
+                for e in parts["bools"]
+            ],
             "joysticks": [],
         })
 
@@ -284,6 +303,38 @@ class ParamBridge(QObject):
     def set_active_node(self, node_id: int) -> None:
         self._active_node = node_id
         self._refresh_status()
+
+    def apply_names(
+        self,
+        slow_float_names: dict[int, str],
+        slow_bool_names: dict[int, str],
+        fast_float_names: dict[int, str],
+    ) -> None:
+        """Übernimmt vom Teensy empfangene Anzeigenamen. Baut 'groups' neu auf
+        (QML kennt keine granulare Modell-Aktualisierung für eine einzelne
+        Property), gibt dabei aber bewusst die aktuellen Live-Werte aus
+        self._store als 'default' mit (siehe _build_groups) — sonst würde der
+        Repeater-Neuaufbau in QML jeden bereits verstellten Regler auf seinen
+        JSON-Ursprungswert zurücksetzen."""
+        if self._error is not None:
+            return
+        changed = False
+        for e in self._config.floats:
+            if e.index in slow_float_names:
+                e.name = slow_float_names[e.index]
+                changed = True
+        for e in self._config.bools:
+            if e.index in slow_bool_names:
+                e.name = slow_bool_names[e.index]
+                changed = True
+        for e in self._config.fast_floats:
+            if e.index in fast_float_names:
+                e.name = fast_float_names[e.index]
+                changed = True
+        if not changed:
+            return
+        self._groups = _build_groups(self._config, self._store)
+        self.groupsChanged.emit()
 
     # ── Senden ────────────────────────────────────────────────────────────
     def _current_target(self, fast: bool) -> tuple[str, int]:

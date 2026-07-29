@@ -260,6 +260,12 @@ def make_slider_widget(entry: ParamEntry, on_change: Callable[[float], None]) ->
     layout.addWidget(name_lbl)
     layout.addWidget(slider, stretch=1)
     layout.addWidget(value_lbl)
+
+    def _set_name(new_name: str) -> None:
+        entry.name = new_name
+        name_lbl.setText(new_name)
+
+    box._name_setter = _set_name   # type: ignore[attr-defined]
     return box
 
 
@@ -281,6 +287,12 @@ def make_number_widget(entry: ParamEntry, on_change: Callable[[float], None]) ->
 
     layout.addWidget(name_lbl)
     layout.addWidget(spin, stretch=1)
+
+    def _set_name(new_name: str) -> None:
+        entry.name = new_name
+        name_lbl.setText(new_name)
+
+    box._name_setter = _set_name   # type: ignore[attr-defined]
     return box
 
 
@@ -296,6 +308,12 @@ def make_toggle_widget(entry: ParamEntry, on_change: Callable[[bool], None]) -> 
 
     btn.toggled.connect(lambda checked: (_refresh_text(checked), on_change(checked)))
     _refresh_text(bool(entry.default))
+
+    def _set_name(new_name: str) -> None:
+        entry.name = new_name
+        _refresh_text(btn.isChecked())   # nur Beschriftung, Zustand bleibt unangetastet
+
+    btn._name_setter = _set_name   # type: ignore[attr-defined]
     return btn
 
 
@@ -314,6 +332,11 @@ def make_button_widget(entry: ParamEntry, on_change: Callable[[bool], None]) -> 
         btn.setChecked(bool(entry.default))
         btn.toggled.connect(on_change)
 
+    def _set_name(new_name: str) -> None:
+        entry.name = new_name
+        btn.setText(new_name)   # nur Beschriftung, Zustand bleibt unangetastet
+
+    btn._name_setter = _set_name   # type: ignore[attr-defined]
     return btn
 
 
@@ -346,6 +369,12 @@ def make_text_widget(entry: ParamEntry, on_change: Callable[[float], None]) -> Q
 
     layout.addWidget(name_lbl)
     layout.addWidget(edit)
+
+    def _set_name(new_name: str) -> None:
+        entry.name = new_name
+        name_lbl.setText(new_name)
+
+    box._name_setter = _set_name   # type: ignore[attr-defined]
     return box
 
 
@@ -412,6 +441,7 @@ def _build_flat_entries(
     on_change_float: Callable[[int, float], None] | None,
     on_change_bool: Callable[[int, bool], None] | None,
     layout: QVBoxLayout,
+    name_widgets: dict[int, QWidget] | None = None,
 ) -> None:
     """Rendert alle entries (ohne Joystick-Indizes) als flache Widget-Liste."""
     for e in entries:
@@ -423,13 +453,17 @@ def _build_flat_entries(
             cb = (lambda v, i=e.index: on_change_bool(i, v))  # type: ignore[arg-type]
         else:
             cb = (lambda v, i=e.index: on_change_float(i, v))  # type: ignore[arg-type]
-        layout.addWidget(factory(e, cb))
+        w = factory(e, cb)
+        layout.addWidget(w)
+        if name_widgets is not None:
+            name_widgets[e.index] = w
 
 
 def _build_fast_section(
     entries: list[ParamEntry],
     joysticks: list[JoystickEntry],
     on_change_float: Callable[[int, float], None],
+    name_widgets: dict[int, QWidget] | None = None,
 ) -> QWidget:
     """Baut den ⚡ Fast-Param-Bereich.
 
@@ -452,7 +486,7 @@ def _build_fast_section(
     left_layout = QVBoxLayout(left)
     left_layout.setContentsMargins(0, 0, 0, 0)
     left_layout.setSpacing(6)
-    _build_flat_entries(entries, joystick_indices, on_change_float, None, left_layout)
+    _build_flat_entries(entries, joystick_indices, on_change_float, None, left_layout, name_widgets)
     left_layout.addStretch(1)
 
     # ── Rechts: Joystick(s) ──────────────────────────────────────────────
@@ -494,6 +528,7 @@ def _build_group_pages(
     on_change_fast_float: Callable[[int, float], None],
     on_change_slow_float: Callable[[int, float], None],
     on_change_bool: Callable[[int, bool], None],
+    name_widgets: dict[str, dict[int, QWidget]] | None = None,
 ) -> list[tuple[str, QWidget]]:
     """Baut EINE Seite pro auswählbarer Gruppe (analog zum Gruppen-Dropdown
     im Systemansicht-Tab, tab_visuals.py) statt alle Bereiche gleichzeitig
@@ -511,10 +546,16 @@ def _build_group_pages(
     """
     from collections import OrderedDict
 
+    if name_widgets is None:
+        name_widgets = {"slow_float": {}, "slow_bool": {}, "fast_float": {}}
+
     pages: list[tuple[str, QWidget]] = []
 
     # ── 1) Fast Params ───────────────────────────────────────────────────
-    fast_widget = _build_fast_section(config.fast_floats, config.joysticks, on_change_fast_float)
+    fast_widget = _build_fast_section(
+        config.fast_floats, config.joysticks, on_change_fast_float,
+        name_widgets["fast_float"],
+    )
     pages.append((
         "⚡ Fast Params · 100 Hz",
         _wrap_group_frame(fast_widget, "#4a4010", "#1e1c10"),
@@ -564,7 +605,9 @@ def _build_group_pages(
             for e in parts["floats"]:
                 factory = _WIDGET_FACTORIES[e.widget]
                 cb = (lambda v, i=e.index: on_change_slow_float(i, v))
-                f_layout.addWidget(factory(e, cb))
+                w = factory(e, cb)
+                f_layout.addWidget(w)
+                name_widgets["slow_float"][e.index] = w
             page_layout.addWidget(f_box)
 
         if parts["bools"]:
@@ -574,7 +617,9 @@ def _build_group_pages(
             for e in parts["bools"]:
                 factory = _WIDGET_FACTORIES[e.widget]
                 cb = (lambda v, i=e.index: on_change_bool(i, v))
-                b_layout.addWidget(factory(e, cb))
+                w = factory(e, cb)
+                b_layout.addWidget(w)
+                name_widgets["slow_bool"][e.index] = w
             page_layout.addWidget(b_box)
 
         page_layout.addStretch(1)
@@ -696,11 +741,15 @@ class ParamEditorWidget(QWidget):
         lbl.setStyleSheet("font-weight: bold; color: #9cdcfe; font-size: 10pt;")
         layout.addWidget(lbl)
 
+        self._name_widgets: dict[str, dict[int, QWidget]] = {
+            "slow_float": {}, "slow_bool": {}, "fast_float": {},
+        }
         self._group_pages = _build_group_pages(
             self._config,
             on_change_fast_float=self._on_fast_float_changed,
             on_change_slow_float=self._on_slow_float_changed,
             on_change_bool=self._on_slow_bool_changed,
+            name_widgets=self._name_widgets,
         )
 
         self._group_combo = QComboBox()
@@ -809,6 +858,32 @@ class ParamEditorWidget(QWidget):
     def set_active_node(self, node_id: int) -> None:
         self._active_node = node_id
         self._refresh_status_label()
+
+    def apply_names(
+        self,
+        slow_float_names: dict[int, str],
+        slow_bool_names: dict[int, str],
+        fast_float_names: dict[int, str],
+    ) -> None:
+        """Übernimmt vom Teensy empfangene Anzeigenamen — überschreibt NUR
+        .name (Widget-Typ/Min/Max/Group/aktueller Wert bleiben unverändert)
+        und aktualisiert die bereits gebauten Widget-Beschriftungen direkt,
+        ohne die UI neu aufzubauen (das würde alle Live-Werte auf ihre
+        param_config.json-Defaults zurücksetzen)."""
+        if self._config_error is not None or not hasattr(self, "_name_widgets"):
+            return
+
+        def _apply(names: dict[int, str], kind: str) -> None:
+            widgets = self._name_widgets.get(kind, {})
+            for idx, new_name in names.items():
+                w = widgets.get(idx)
+                setter = getattr(w, "_name_setter", None) if w is not None else None
+                if setter is not None:
+                    setter(new_name)
+
+        _apply(slow_float_names, "slow_float")
+        _apply(slow_bool_names, "slow_bool")
+        _apply(fast_float_names, "fast_float")
 
     # ── Toolbar-Slots ─────────────────────────────────────────────────────
     def _on_enabled_toggled(self, checked: bool) -> None:

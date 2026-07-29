@@ -13,23 +13,31 @@ Layout:
 """
 
 import multiprocessing as mp
+import logging
 from pathlib import Path
 
 import numpy as np
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTabWidget, QLabel, QRadioButton, QButtonGroup,
-    QGroupBox, QStatusBar, QFrame,
+    QGroupBox, QStatusBar, QFrame, QPushButton,
 )
 from PyQt6.QtCore import QTimer, Qt
 from PyQt6.QtGui import QFont
 
-from config import GUI_TIMER_MS, NODE1_IP, NODE2_IP
+from config import (
+    GUI_TIMER_MS, NODE1_IP, NODE2_IP,
+    UDP_CHANNEL_DESC_REQUEST_PORT_NODE1, UDP_CHANNEL_DESC_REQUEST_PORT_NODE2,
+    VARIABLE_NAMES,
+)
 from network_worker import NetworkManager
+from channel_registry import ChannelRegistry, send_descriptor_request
 from gui.tab_table   import TelemetryTableWidget
 from gui.tab_plotter import LivePlotterWidget
 from gui.tab_visuals import SystemVisualsWidget
 from gui.tab_params  import ParamEditorWidget
+
+log = logging.getLogger("main_window")
 
 
 class MainWindow(QMainWindow):
@@ -107,6 +115,15 @@ class MainWindow(QMainWindow):
 
         self._node_btn_grp.idToggled.connect(self._on_node_toggled)
         layout.addWidget(node_box)
+
+        btn_req_names = QPushButton("🏷 Kanalnamen anfordern")
+        btn_req_names.setToolTip(
+            "Fordert die Namens-/Overlay-Tabelle erneut vom Teensy an\n"
+            "(wird sonst nur einmalig beim Boot des Teensy gesendet)."
+        )
+        btn_req_names.clicked.connect(self._request_channel_names)
+        layout.addWidget(btn_req_names)
+
         return bar
 
     def _build_tabs(self) -> QTabWidget:
@@ -184,6 +201,44 @@ class MainWindow(QMainWindow):
         led = self._led1 if self._active_node == 1 else self._led2
         self._set_led(led, connected=True)
 
+        # Namens-/Overlay-Deskriptor vom Teensy (einmalig beim Boot + auf Anfrage)
+        self._poll_descriptor()
+
+    def _poll_descriptor(self) -> None:
+        q = self._nm.get_desc_queue(self._active_node)
+        data = None
+        try:
+            while True:
+                data = q.get_nowait()   # nur das neueste Paket interessiert
+        except Exception:
+            pass   # Queue leer
+
+        if data is None:
+            return
+
+        registry = ChannelRegistry.from_json_dict(data)
+
+        # Live-Namen fuer die 200 Debug-Kanaele: VARIABLE_NAMES IN-PLACE
+        # mutieren (nicht neu zuweisen!), damit bereits importierte
+        # Referenzen ueberall im Code (tab_visuals.py-Fallback-Labels etc.)
+        # die neuen Namen sehen.
+        VARIABLE_NAMES.update(registry.channel_names)
+        self._tab_table.set_names(registry.channel_names)
+
+        self._tab_params.apply_names(
+            registry.param_slow_float_names,
+            registry.param_slow_bool_names,
+            registry.param_fast_float_names,
+        )
+
+        self._tab_visuals.apply_overlay_defaults_from_registry(registry)
+
+        log.info(
+            f"Namens-/Overlay-Deskriptor empfangen (Node {self._active_node}): "
+            f"{len(registry.channel_names)} Kanalnamen, "
+            f"{len(registry.overlays)} Overlay-Einträge."
+        )
+
     def _update_statusbar(self) -> None:
         self._lbl_pps.setText(f"{self._pkt_count} Pkt/s")
         self._pkt_count = 0
@@ -204,6 +259,13 @@ class MainWindow(QMainWindow):
         self._tab_plotter.clear_buffer()
         self._tab_params.set_active_node(btn_id)
         self._sb.showMessage(f"Node {btn_id} aktiviert.", 2000)
+
+    def _request_channel_names(self) -> None:
+        ip = self.get_active_node_ip(self._active_node)
+        port = (UDP_CHANNEL_DESC_REQUEST_PORT_NODE1 if self._active_node == 1
+                else UDP_CHANNEL_DESC_REQUEST_PORT_NODE2)
+        send_descriptor_request(ip, port)
+        self._sb.showMessage(f"Kanalnamen von Node {self._active_node} ({ip}) angefordert.", 3000)
 
 
     # ══════════════════════════════════════════════════════════════════════════

@@ -137,6 +137,22 @@ class TelemetryTableModel(QAbstractTableModel):
                  self.DeltaRole, self.ColorRole],
             )
 
+    def set_names(self, names: dict[int, str]) -> None:
+        """Aktualisiert Kanalnamen live (z. B. nach Empfang des Teensy-
+        Namens-Deskriptors) — Indizes ohne Eintrag behalten ihren bisherigen
+        (Fallback-)Namen."""
+        if not names:
+            return
+        for i, name in names.items():
+            if 0 <= i < len(self._names):
+                self._names[i] = name
+        if self._n_active > 0:
+            self.dataChanged.emit(
+                self.index(0, 0),
+                self.index(self._n_active - 1, 0),
+                [self.NameRole],
+            )
+
 
 # ══════════════════════════════════════════════════════════════════════════
 #  TelemetryBridge — Fassade für Tab 1 + geteilte Live-Werte
@@ -173,3 +189,6 @@ class TelemetryBridge(QObject):
     @pyqtSlot()
     def clear_stats(self) -> None:
         self.table_model.clear_stats()
+
+    def set_names(self, names: dict[int, str]) -> None:
+        self.table_model.set_names(names)

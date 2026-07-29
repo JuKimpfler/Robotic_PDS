@@ -138,6 +138,22 @@ class TelemetryTableModel(QAbstractTableModel):
                 [Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.ForegroundRole],
             )
 
+    def set_names(self, names: dict[int, str]) -> None:
+        """Aktualisiert Kanalnamen live (z. B. nach Empfang des Teensy-
+        Namens-Deskriptors) — Indizes ohne Eintrag behalten ihren bisherigen
+        (Fallback-)Namen."""
+        if not names:
+            return
+        for i, name in names.items():
+            if 0 <= i < len(self._names):
+                self._names[i] = name
+        if self._n_active > 0:
+            self.dataChanged.emit(
+                self.index(0, 0),
+                self.index(self._n_active - 1, 0),
+                [Qt.ItemDataRole.DisplayRole],
+            )
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  Widget
@@ -204,3 +220,6 @@ class TelemetryTableWidget(QWidget):
 
     def clear_stats(self) -> None:
         self._model.clear_stats()
+
+    def set_names(self, names: dict[int, str]) -> None:
+        self._model.set_names(names)

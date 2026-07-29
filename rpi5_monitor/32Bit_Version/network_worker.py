@@ -20,7 +20,9 @@ from config import (
     PACKET_HEADER_MAGIC, HEADER_SIZE,
     PACKET_SIZE_BYTES, DUMMY_VALUE,
     UDP_RECV_BUFFER, DATA_QUEUE_MAXSIZE,
+    UDP_CHANNEL_DESC_PORT_NODE1, UDP_CHANNEL_DESC_PORT_NODE2,
 )
+from channel_registry import descriptor_receiver_process
 
 log = logging.getLogger(__name__)
 
@@ -132,6 +134,11 @@ class NetworkManager:
         self.queue_node1: mp.Queue = mp.Queue(maxsize=DATA_QUEUE_MAXSIZE)
         self.queue_node2: mp.Queue = mp.Queue(maxsize=DATA_QUEUE_MAXSIZE)
 
+        # Namens-/Overlay-Deskriptor: eigene Queues, geringe Frequenz (einmalig
+        # beim Boot + auf Anfrage) -> kein maxsize-Limit noetig.
+        self.queue_desc_node1: mp.Queue = mp.Queue()
+        self.queue_desc_node2: mp.Queue = mp.Queue()
+
         # Empfänger-Prozesse
         self._proc1 = mp.Process(
             target=udp_receiver_process,
@@ -145,13 +152,28 @@ class NetworkManager:
             daemon=True,
             name="UDP-Node2",
         )
+        self._desc_proc1 = mp.Process(
+            target=descriptor_receiver_process,
+            args=(UDP_CHANNEL_DESC_PORT_NODE1, 1, self.queue_desc_node1, self._stop_event),
+            daemon=True,
+            name="Desc-Node1",
+        )
+        self._desc_proc2 = mp.Process(
+            target=descriptor_receiver_process,
+            args=(UDP_CHANNEL_DESC_PORT_NODE2, 2, self.queue_desc_node2, self._stop_event),
+            daemon=True,
+            name="Desc-Node2",
+        )
 
     def start(self) -> None:
         self._proc1.start()
         self._proc2.start()
+        self._desc_proc1.start()
+        self._desc_proc2.start()
         log.info(
             f"[NetworkManager] Gestartet | "
-            f"PID1={self._proc1.pid} | PID2={self._proc2.pid}"
+            f"PID1={self._proc1.pid} | PID2={self._proc2.pid} | "
+            f"Desc-PID1={self._desc_proc1.pid} | Desc-PID2={self._desc_proc2.pid}"
         )
 
     def stop(self) -> None:
@@ -159,11 +181,17 @@ class NetworkManager:
         self._stop_event.set()
         self._proc1.join(timeout=3)
         self._proc2.join(timeout=3)
+        self._desc_proc1.join(timeout=3)
+        self._desc_proc2.join(timeout=3)
         log.info("[NetworkManager] Beendet.")
 
     def get_queue(self, node_id: int) -> mp.Queue:
         """Gibt die Queue für den angegebenen Node zurück."""
         return self.queue_node1 if node_id == 1 else self.queue_node2
+
+    def get_desc_queue(self, node_id: int) -> mp.Queue:
+        """Gibt die Deskriptor-Queue (Namen/Overlays) für den angegebenen Node zurück."""
+        return self.queue_desc_node1 if node_id == 1 else self.queue_desc_node2
 
     @property
     def is_running(self) -> bool:

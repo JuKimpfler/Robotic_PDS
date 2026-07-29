@@ -35,7 +35,27 @@ Parameters can be configured directly in the GUI and sent back to the active nod
 - **RPi Zero Node** listens to these UDP ports and forwards the raw bytes immediately over UART to the Teensy.
 - **Teensy 4.0** parses the incoming packet stream via a synchronized parser in the `PowerDebugger` class, updating the RAM values for the robot logic.
 
-### 3. Wireless Firmware Flashing (Windows PC → Bluetooth → RPi Zero 2 W → USB → Teensy 4.0)
+### 3. Channel-/Param-Name + Overlay Descriptor (Teensy 4.0 → RPi Zero → GUI Monitor)
+The Teensy is the single source of truth for display names and the "which
+channel shows up where" mapping, maintained in one file:
+`teensy_firmware/src/channel_config.h`. At boot (and whenever the GUI
+requests it again) the firmware builds a small JSON descriptor — names for
+the 200 debug channels, the 50+50+5 param channels, and the overlay/widget
+mapping (gauge/rotation/vector/table/body-object/text-overlay) — and streams
+it in small chunks over the same UART path used for telemetry/params:
+- **Descriptor chunks (Teensy → GUI)**: Magic `0xDE5C0001`, forwarded by the
+  node to UDP port `5011`/`5012`.
+- **Resend request (GUI → Teensy)**: Magic `0xDE5C00F0`, sent to UDP port
+  `7021`/`7022`.
+
+The GUI merges received names/overlays into its local `config.py`
+(`VARIABLE_NAMES`) and `visuals_overlays.json` without ever overwriting
+groups you've already customized. See `Doku/Kanalnamen_Implementierung.md`
+for the full protocol, the `channel_config.h` authoring format, and the
+Teensy-library API (`bind()` for pointer-based auto-sampled channels,
+`Channel(chn, val, name)` for named dynamic writes).
+
+### 4. Wireless Firmware Flashing (Windows PC → Bluetooth → RPi Zero 2 W → USB → Teensy 4.0)
 A `.hex` firmware image can be sent wirelessly from any Windows PC to one or both
 RPi Zero 2 W nodes over Bluetooth Classic (RFCOMM/SPP), independent of the
 WLAN/UDP telemetry path above. The node receives the file, verifies its SHA-256
@@ -56,18 +76,20 @@ removed" note in earlier revisions of this README — that note is now outdated.
 
 ## ── Directory Structure ──
 
-- **`rpi5_monitor/`**: The PyQt6 PyQt-based desktop application.
+- **`rpi5_monitor/`**: The PyQt6 PyQt-based desktop application (also has a QML variant, see `64Bit_Version/README_QML.md`, and a PyQt5 port in `32Bit_Version/`).
   - `main.py`: Main entry point for the GUI.
   - `network_worker.py`: UDP receivers and network backend.
   - `config.py`: Port, IP, and packet specifications.
+  - `channel_registry.py`: Receives/parses the channel-/param-name + overlay descriptor from the Teensy (see Architecture Overview, section 3) and merges it into `VARIABLE_NAMES`/`visuals_overlays.json`.
 - **`rpi_zero_node/`**: Python scripts and setup scripts for the RPi Zero 2 W nodes.
   - `setup_node.sh`: Auto-installer script for the Pi Zero.
-  - `spi_receiver.py` (installed as `uart_receiver.py`): Receives serial data from Teensy and sends UDP broadcasts.
+  - `spi_receiver.py` (installed as `uart_receiver.py`): Receives serial data from Teensy and sends UDP broadcasts; also relays the channel/param descriptor both ways.
   - `status_leds.py`: Drives heartbeat, data transmission, and network status LEDs.
   - `bt_flash_receiver.py`: Bluetooth SPP server; receives `.hex` files and flashes the Teensy via `teensy_loader_cli`.
 - **`teensy_firmware/`**: PlatformIO project for the Teensy 4.0 firmware.
   - `src/PDS.h` / `PDS.cpp`: The `PowerDebugger` class.
   - `src/params.h`: Parameter structures and constants.
+  - `src/channel_config.h`: Single source of truth for channel/param display names and the graphic-overlay mapping (see Architecture Overview, section 3).
 - **`shared/`**: Code shared between PC and Pi.
   - `bt_flash_protocol.py`: Frame protocol used by both `bt_flash_sender.py` and `bt_flash_receiver.py`.
 - **`pc_setup/`**: Batch file and documentation to run the GUI on a Windows 11 PC.

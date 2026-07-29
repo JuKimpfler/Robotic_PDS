@@ -61,9 +61,16 @@ ApplicationWindow {
                     onNodeSelected: (nodeId) => appBridge.setActiveNode(nodeId)
                 }
 
+                AppButton {
+                    width: 170
+                    height: parent.height
+                    text: "🏷 Kanalnamen"
+                    onClicked: appBridge.requestChannelNames()
+                }
+
                 TabBar {
                     id: tabBar
-                    width: parent.width - 360 - Theme.spacingM
+                    width: parent.width - 360 - 170 - Theme.spacingM * 2
                     height: parent.height
                     currentIndex: swipeView.currentIndex
                     Material.background: "transparent"

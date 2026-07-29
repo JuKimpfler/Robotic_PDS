@@ -100,6 +100,21 @@ PARAM_FAST_FLOAT_COUNT  = 5
 PARAM_FAST_PACKET_BYTES = HEADER_SIZE + PARAM_FAST_FLOAT_COUNT * 4                            # 28
 UDP_PARAM_FAST_PORT     = 7010 + NODE_ID   # 7011 / 7012
 
+# ── Konfiguration: Namens-/Overlay-Deskriptor ────────────────────────────────
+# Muss exakt mit params.h (Teensy) und config.py (RPi 5) übereinstimmen!
+# Teensy -> GUI: gechunktes JSON (Kanal-/Param-Namen + Overlay-Zuordnung),
+# einmalig beim Boot + auf Anfrage. GUI -> Teensy: 4-Byte Request ohne Payload.
+
+CHANNEL_DESC_MAGIC          = 0xDE5C0001
+CHANNEL_DESC_MAGIC_BYTES    = struct.pack("<I", CHANNEL_DESC_MAGIC)
+CHANNEL_DESC_HEADER_BYTES   = 7    # magic(4) + chunk_idx(1) + chunk_count(1) + payload_len(1)
+UDP_CHANNEL_DESC_PORT       = 5010 + NODE_ID   # 5011 / 5012
+
+CHANNEL_DESC_REQUEST_MAGIC        = 0xDE5C00F0
+CHANNEL_DESC_REQUEST_MAGIC_BYTES  = struct.pack("<I", CHANNEL_DESC_REQUEST_MAGIC)
+CHANNEL_DESC_REQUEST_PACKET_BYTES = 4    # nur Magic, kein Payload
+UDP_CHANNEL_DESC_REQUEST_PORT     = 7020 + NODE_ID   # 7021 / 7022
+
 # ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
@@ -162,6 +177,65 @@ class TelemetryFrameAssembler:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+#  ChunkFrameAssembler — wie TelemetryFrameAssembler, aber variable Laenge
+# ══════════════════════════════════════════════════════════════════════════════
+
+class ChunkFrameAssembler:
+    """
+    Setzt Namens-/Overlay-Deskriptor-Chunks (variable Laenge, siehe
+    channel_config.h/PDS.cpp auf dem Teensy) aus dem UART-Bytestrom zusammen.
+
+    Anders als TelemetryFrameAssembler (feste Paketgroesse) traegt hier der
+    Header selbst die Payload-Laenge (payload_len-Byte an Offset 6), da der
+    letzte Chunk eines Deskriptors fast immer kuerzer ist als die anderen.
+
+    Läuft unabhängig neben TelemetryFrameAssembler auf demselben Rohbyte-Strom
+    (beide bekommen denselben ser.read()-Chunk): Bytes, die nicht zum eigenen
+    Magic gehören, werden als Rauschen verworfen (sync_losses) -- das ist
+    unproblematisch, da Telemetrie-Header (0xDEADBEEF) und Deskriptor-Header
+    (0xDE5C0001, gefolgt von reinem ASCII-JSON) sich nicht überschneiden
+    können.
+    """
+
+    def __init__(self) -> None:
+        self._buf = bytearray()
+        self.sync_losses = 0
+        self.packets_out = 0
+
+    def feed(self, chunk: bytes) -> list[bytes]:
+        if not chunk:
+            return []
+        self._buf.extend(chunk)
+        packets: list[bytes] = []
+
+        while True:
+            idx = self._buf.find(CHANNEL_DESC_MAGIC_BYTES)
+            if idx == -1:
+                if len(self._buf) > 3:
+                    del self._buf[:-3]
+                break
+
+            if idx > 0:
+                self.sync_losses += 1
+                del self._buf[:idx]
+
+            if len(self._buf) < CHANNEL_DESC_HEADER_BYTES:
+                break   # Header noch nicht vollständig da
+
+            payload_len = self._buf[6]
+            total_len = CHANNEL_DESC_HEADER_BYTES + payload_len
+
+            if len(self._buf) < total_len:
+                break   # Chunk noch nicht vollständig angekommen
+
+            packets.append(bytes(self._buf[:total_len]))
+            del self._buf[:total_len]
+            self.packets_out += 1
+
+        return packets
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 #  Netzwerk-Check (jetzt eine einfache Funktion statt eigenem Thread)
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -190,6 +264,10 @@ def main() -> None:
     log.info(
         f"Param-Downlink | Slow: UDP :{UDP_PARAM_SLOW_PORT} -> {PARAM_SLOW_PACKET_BYTES} B | "
         f"Fast: UDP :{UDP_PARAM_FAST_PORT} -> {PARAM_FAST_PACKET_BYTES} B"
+    )
+    log.info(
+        f"Namens-/Overlay-Deskriptor | Chunks: UDP :{UDP_CHANNEL_DESC_PORT} | "
+        f"Request: UDP :{UDP_CHANNEL_DESC_REQUEST_PORT}"
     )
     log.info("v5: einthreadige selectors-Event-Loop (kein GIL-Konkurrenzproblem mehr)")
 
@@ -230,13 +308,20 @@ def main() -> None:
     fast_sock.setblocking(False)
     fast_sock.bind(("0.0.0.0", UDP_PARAM_FAST_PORT))
 
-    # ── Event-Loop: alle vier Quellen (UART, 2× UDP) über EINEN Selector ───────
+    # ── UDP Socket (Deskriptor-Request, empfangend, nicht-blockierend) ─────────
+    desc_request_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    desc_request_sock.setblocking(False)
+    desc_request_sock.bind(("0.0.0.0", UDP_CHANNEL_DESC_REQUEST_PORT))
+
+    # ── Event-Loop: alle fünf Quellen (UART, 4× UDP) über EINEN Selector ───────
     sel = selectors.DefaultSelector()
     sel.register(ser.fileno(), selectors.EVENT_READ, data="uart")
     sel.register(slow_sock, selectors.EVENT_READ, data="param_slow")
     sel.register(fast_sock, selectors.EVENT_READ, data="param_fast")
+    sel.register(desc_request_sock, selectors.EVENT_READ, data="desc_request")
 
     assembler = TelemetryFrameAssembler()
+    desc_assembler = ChunkFrameAssembler()
 
     # ── Statistik ────────────────────────────────────────────────────────────
     pkt_sent      = 0
@@ -245,6 +330,8 @@ def main() -> None:
     fwd_slow_ok   = 0
     fwd_fast_ok   = 0
     fwd_bad       = 0
+    fwd_desc_req  = 0
+    desc_pkt_sent = 0
     last_sync_losses = 0
 
     t_stat_start   = time.monotonic()
@@ -270,6 +357,30 @@ def main() -> None:
                         except OSError as exc:
                             log.warning(f"UDP-Sendefehler: {exc}")
                             send_errors += 1
+
+                    # Deskriptor-Chunks laufen unabhängig über denselben Rohstrom
+                    # (siehe ChunkFrameAssembler-Docstring).
+                    for raw in desc_assembler.feed(chunk):
+                        try:
+                            udp_out.sendto(raw, ("255.255.255.255", UDP_CHANNEL_DESC_PORT))
+                            desc_pkt_sent += 1
+                        except OSError as exc:
+                            log.warning(f"UDP-Sendefehler (Deskriptor): {exc}")
+                            send_errors += 1
+
+                elif key.data == "desc_request":
+                    try:
+                        data, _addr = desc_request_sock.recvfrom(CHANNEL_DESC_REQUEST_PACKET_BYTES + 64)
+                    except (BlockingIOError, OSError):
+                        continue
+                    if len(data) == CHANNEL_DESC_REQUEST_PACKET_BYTES and data == CHANNEL_DESC_REQUEST_MAGIC_BYTES:
+                        try:
+                            ser.write(data)
+                            fwd_desc_req += 1
+                        except serial.SerialException as exc:
+                            log.warning(f"[DescRequest] UART-Schreibfehler: {exc}")
+                    else:
+                        fwd_bad += 1
 
                 elif key.data == "param_slow":
                     try:
@@ -311,10 +422,12 @@ def main() -> None:
                     f"Telemetrie: {pps:.1f} Pkt/s | {kbps:.1f} KB/s | "
                     f"Sync-Verluste: {new_losses} | Sendefehler: {send_errors} || "
                     f"Param-Downlink: Slow={fwd_slow_ok} Fast={fwd_fast_ok} "
-                    f"({fwd_fast_ok / elapsed:.1f} Pkt/s) ungültig={fwd_bad}"
+                    f"({fwd_fast_ok / elapsed:.1f} Pkt/s) ungültig={fwd_bad} || "
+                    f"Deskriptor: Chunks_ok={desc_pkt_sent} Requests_fwd={fwd_desc_req}"
                 )
                 pkt_sent = bytes_sent = send_errors = 0
                 fwd_slow_ok = fwd_fast_ok = fwd_bad = 0
+                desc_pkt_sent = fwd_desc_req = 0
                 last_sync_losses = assembler.sync_losses
                 t_stat_start = now
 
@@ -331,6 +444,7 @@ def main() -> None:
         udp_out.close()
         slow_sock.close()
         fast_sock.close()
+        desc_request_sock.close()
         log.info("Alle Ressourcen freigegeben.")
 
 

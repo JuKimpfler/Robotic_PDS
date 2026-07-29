@@ -54,6 +54,19 @@ UDP_PARAM_FAST_PORT_NODE2 = 7012
 PARAM_FAST_SEND_HZ          = 100.0
 PARAM_FAST_SEND_INTERVAL_MS = int(1000 / PARAM_FAST_SEND_HZ)   # 10
 
+# ── Namens-/Overlay-Deskriptor (Teensy -> GUI, einmalig beim Boot + auf Anfrage) ─
+# Muss exakt mit params.h (Teensy) und rpi_zero_node/spi_receiver.py übereinstimmen!
+CHANNEL_DESC_MAGIC          = 0xDE5C0001
+CHANNEL_DESC_HEADER_BYTES   = 7    # magic(4) + chunk_idx(1) + chunk_count(1) + payload_len(1)
+
+CHANNEL_DESC_REQUEST_MAGIC        = 0xDE5C00F0
+CHANNEL_DESC_REQUEST_PACKET_BYTES = 4
+
+UDP_CHANNEL_DESC_PORT_NODE1         = 5011
+UDP_CHANNEL_DESC_PORT_NODE2         = 5012
+UDP_CHANNEL_DESC_REQUEST_PORT_NODE1 = 7021
+UDP_CHANNEL_DESC_REQUEST_PORT_NODE2 = 7022
+
 # ── Param-Downlink: Konfigurations- & Persistenzdateien ────────────────────────
 from pathlib import Path as _Path
 PARAM_CONFIG_PATH     = _Path(__file__).parent / "param_config.json"

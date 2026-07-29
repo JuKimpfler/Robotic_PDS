@@ -38,6 +38,7 @@ auf echter Hardware vor).
 | Tab 2 — Live-Plotter | `qml/PlotterView.qml`, `bridge/plot_bridge.py` (PlotCanvas, Option C aus dem Plan) | ✅ funktional; Pinch-to-Zoom für Punktezahl |
 | Tab 3 — Systemansicht | `qml/SystemView.qml`, `bridge/visuals_bridge.py`, `qml/components/{Gauge,RotationIndicator,VectorIndicator,MiniTable}.qml` | ✅ Anzeige vollständig (Bild+Overlays+Gauges/Rotation/Vektor/Tabelle); **Editier-Modus (Overlays per Drag verschieben) noch nicht umgesetzt**, siehe TODO |
 | Tab 4 — Parameter | `qml/ParamsView.qml`, `bridge/param_bridge.py`, `qml/components/{Joystick,TouchSlider}.qml` | ✅ vollständig (Slider/Zahl/Text/Toggle/Button/Joystick, Fast+Slow-Downlink, Save-Default) |
+| Kanal-/Param-Namen + Overlay-Defaults vom Teensy | `channel_registry.py` (Modulwurzel), `bridge/app_bridge.py::_poll_descriptor`/`requestChannelNames` | ✅ vollständig — siehe `Doku/Kanalnamen_Implementierung.md`; Namens-Refresh baut `params.groups` neu auf, gibt dabei aber die aktuellen Live-Werte statt der JSON-Defaults mit, damit kein Regler zurückspringt |
 
 ## Bewusste Abweichungen vom Original
 

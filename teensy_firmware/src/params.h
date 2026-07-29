@@ -58,3 +58,35 @@ static constexpr int      PARAM_FAST_PACKET_BYTES =
 //         150 ms ist ein Startwert -- am Feld ggf. nachjustieren.
 static constexpr uint32_t PARAM_SLOW_TIMEOUT_MS = 1000;
 static constexpr uint32_t PARAM_FAST_TIMEOUT_MS = 150;
+
+// ============================================================
+//  Kanal-/Param-Namens- und Overlay-Deskriptor
+//  (Teensy -> RPi Zero -> RPi 5, einmalig beim Boot + auf Anfrage)
+// ============================================================
+//  Der Deskriptor ist ein einziger JSON-Text (siehe channel_config.h
+//  fuer die Nutzdaten), der wegen seiner Groesse in kleine Pakete
+//  ("Chunks") aufgeteilt und ueber dieselbe UART_DBG-Leitung wie
+//  Telemetrie/Param-Downlink gesendet wird -- ein Chunk pro
+//  update()-Zyklus, damit der 100-Hz-Telemetrieversand nie blockiert.
+//
+//   Chunk-Paket (Teensy -> GUI):
+//     [0..3] magic (CHANNEL_DESC_MAGIC)
+//     [4]    chunk_idx    (uint8)
+//     [5]    chunk_count  (uint8)
+//     [6]    payload_len  (uint8, 0..CHANNEL_DESC_CHUNK_PAYLOAD_MAX)
+//     [7..]  payload (UTF-8 JSON-Fragment)
+//
+//   Request-Paket (GUI -> Teensy, kein Payload):
+//     [0..3] magic (CHANNEL_DESC_REQUEST_MAGIC)
+// ============================================================
+static constexpr uint32_t CHANNEL_DESC_MAGIC         = 0xDE5C0001UL;
+static constexpr uint32_t CHANNEL_DESC_REQUEST_MAGIC = 0xDE5C00F0UL;
+
+static constexpr int CHANNEL_DESC_CHUNK_PAYLOAD_MAX = 250;   // Bytes JSON-Text pro Chunk
+static constexpr int CHANNEL_DESC_CHUNK_HEADER_BYTES = 7;    // magic(4) + chunk_idx(1) + chunk_count(1) + payload_len(1)
+static constexpr int CHANNEL_DESC_CHUNK_PACKET_BYTES =
+    CHANNEL_DESC_CHUNK_HEADER_BYTES + CHANNEL_DESC_CHUNK_PAYLOAD_MAX;   // 257
+static constexpr int CHANNEL_DESC_REQUEST_PACKET_BYTES = 4;             // nur Magic
+
+static constexpr size_t CHANNEL_DESC_JSON_BUF_BYTES = 12 * 1024;   // reicht fuer 200+105 Namen + ~30 Overlays
+static constexpr uint8_t CHANNEL_NAME_MAXLEN = 24;                 // inkl. Nullterminator

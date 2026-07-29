@@ -33,6 +33,7 @@ from PyQt6.QtWidgets import (
 )
 
 from config import MAX_FLOATS, VARIABLE_NAMES
+from channel_registry import apply_overlay_defaults, ChannelRegistry
 
 Schwelle_ID = 90
 
@@ -1261,7 +1262,34 @@ class SystemVisualsWidget(QWidget):
         self._graphic_widgets = []
         self._config = load_config()
         self._cols_limit = 2  # dynamic: 2 with config, 3 without
+        self._latest_registry: ChannelRegistry | None = None
         self._setup_ui()
+
+    # ── Vom Teensy empfangene Namen/Overlays (siehe main_window.py) ─────────
+    def apply_overlay_defaults_from_registry(self, registry: ChannelRegistry) -> None:
+        """Befüllt noch leere Gruppen aus dem vom Teensy empfangenen Overlay-
+        Mapping (siehe channel_registry.apply_overlay_defaults). Bereits
+        lokal editierte Gruppen bleiben unangetastet."""
+        self._latest_registry = registry
+        if apply_overlay_defaults(self._config, registry):
+            save_config(self._config)
+            self._load_active_group()
+
+    def _reset_active_group_to_teensy_defaults(self) -> None:
+        """Verwirft Overlays/Grafiken der AKTUELL sichtbaren Gruppe und
+        befüllt sie neu aus den zuletzt vom Teensy empfangenen Daten."""
+        if self._latest_registry is None or not self._latest_registry.overlays:
+            log.warning("Kein Teensy-Overlay-Deskriptor empfangen — Reset übersprungen.")
+            return
+        idx = self._group_combo.currentIndex()
+        groups = self._config.get("groups", [])
+        if idx < 0 or idx >= len(groups):
+            return
+        groups[idx]["overlays"] = []
+        groups[idx]["graphics"] = []
+        apply_overlay_defaults(self._config, self._latest_registry)
+        save_config(self._config)
+        self._load_active_group()
 
     def _setup_ui(self) -> None:
         root = QVBoxLayout(self)
@@ -1299,6 +1327,19 @@ class SystemVisualsWidget(QWidget):
         )
         btn_reload.clicked.connect(self._reload_config)
         top_layout.addWidget(btn_reload)
+
+        btn_teensy_reset = QPushButton("⟲ Auf Teensy-Standard zurücksetzen")
+        btn_teensy_reset.setToolTip(
+            "Verwirft die Overlays/Grafiken der aktuellen Gruppe und baut sie neu\n"
+            "aus dem zuletzt vom Teensy empfangenen Overlay-Mapping auf."
+        )
+        btn_teensy_reset.setStyleSheet(
+            "QPushButton { background: #2d2d30; color: #d4d4d4; border: 1px solid #444;"
+            " border-radius: 3px; padding: 4px 10px; font-weight: bold; }"
+            "QPushButton:hover { background: #3e3e42; color: #ffffff; }"
+        )
+        btn_teensy_reset.clicked.connect(self._reset_active_group_to_teensy_defaults)
+        top_layout.addWidget(btn_teensy_reset)
 
         top_layout.addStretch()
 
