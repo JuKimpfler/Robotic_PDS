@@ -31,7 +31,7 @@ It provides real-time telemetry from Teensy microcontrollers via Raspberry Pi Ze
 ### 2. Parameter Downlink (GUI Monitor → RPi Zero → Teensy 4.0)
 Parameters can be configured directly in the GUI and sent back to the active node via UDP Unicast:
 - **Slow Channel (2 Hz)**: Sends 50 Floats + 50 Bools (Port `7001` or `7002`, Magic `0xCAFEFEED`). Used for robot configuration.
-- **Fast Channel (100 Hz)**: Sends 5 Floats (Port `7011` or `7012`, Magic `0xFA57DA7A`). Used for real-time joystick/motion controls.
+- **Fast Channel (100 Hz)**: Sends 5 Floats (Port `7011` or `7012`, Magic `0xFA57DA7A`). Used for real-time joystick/motion controls. Can be driven either by the touch UI (`ParamsView.qml`) or, if a PS4 controller (DualShock 4) is plugged into the RPi 5 via USB, automatically by the controller instead — the touch widgets lock and mirror the live controller values while it's connected. See `Doku/PS4_Controller_Implementierung.md`.
 - **RPi Zero Node** listens to these UDP ports and forwards the raw bytes immediately over UART to the Teensy.
 - **Teensy 4.0** parses the incoming packet stream via a synchronized parser in the `PowerDebugger` class, updating the RAM values for the robot logic.
 

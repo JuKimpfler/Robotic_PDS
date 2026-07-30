@@ -133,7 +133,8 @@ else
     pip3 install --break-system-packages \
         "PyQt6>=6.4.0" \
         "pyqtgraph>=0.13.3" \
-        "numpy>=1.24.0"
+        "numpy>=1.24.0" \
+        "pygame>=2.5.0"
 fi
 ok "Python-Abhängigkeiten bereit."
 

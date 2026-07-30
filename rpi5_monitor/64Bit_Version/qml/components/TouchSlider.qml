@@ -18,6 +18,13 @@ Item {
     property int decimals: 1
     signal moved(real value)
 
+    // ── Controller-Steuerung ─────────────────────────────────────────────
+    // Solange externalControl true ist, zeigt der Slider externalValue an
+    // und ist für Touch/Maus gesperrt (siehe ParamsView.qml, gebunden an
+    // params.controller.connected + params.controller.values).
+    property bool externalControl: false
+    property real externalValue: 0
+
     height: 64
 
     Row {
@@ -40,8 +47,10 @@ Item {
             anchors.verticalCenter: parent.verticalCenter
             from: root.from
             to: root.to
-            value: root.value
-            Material.accent: Theme.highlight
+            value: root.externalControl ? root.externalValue : root.value
+            enabled: !root.externalControl
+            opacity: root.externalControl ? 0.55 : 1.0
+            Material.accent: root.externalControl ? Theme.accentBlue : Theme.highlight
             handle: Rectangle {
                 x: slider.leftPadding + slider.visualPosition * (slider.availableWidth - width)
                 y: slider.topPadding + slider.availableHeight / 2 - height / 2

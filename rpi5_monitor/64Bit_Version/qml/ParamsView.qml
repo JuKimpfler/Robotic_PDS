@@ -56,6 +56,30 @@ Item {
             }
         }
 
+        // ── Controller-Statusbanner ─────────────────────────────────────────
+        // Nur auf der "Fast Params"-Seite relevant (dort greift der
+        // Controller in den Store ein) — wird trotzdem immer angezeigt,
+        // damit auch bei anderer Gruppen-Auswahl klar ist, dass ein
+        // Controller aktiv ist.
+        Rectangle {
+            width: parent.width
+            height: 40
+            radius: Theme.radiusM
+            visible: params.controller.connected
+            color: "#1f3a2a"
+            border.color: Theme.accentGreen
+            Text {
+                anchors.fill: parent
+                anchors.margins: Theme.spacingS
+                verticalAlignment: Text.AlignVCenter
+                color: Theme.accentGreen
+                font.family: Theme.fontMono
+                font.pixelSize: Theme.fontSizeSmall
+                text: "🎮  Controller verbunden: " + params.controller.name +
+                      "  — Touch-Eingabe der Fast Params ist gesperrt, Steuerung erfolgt über den Controller."
+            }
+        }
+
         // ── Gruppen-Auswahl ───────────────────────────────────────────────
         Row {
             width: parent.width
@@ -73,6 +97,7 @@ Item {
         Flickable {
             width: parent.width
             height: parent.height - 56 - Theme.touchTargetMin - Theme.spacingS * 3
+                    - (params.controller.connected ? (40 + Theme.spacingS) : 0)
             clip: true
             contentHeight: pageLoader.item ? pageLoader.item.implicitHeight : 0
             // Während der Joystick bedient wird, soll diese Seite nicht
@@ -149,6 +174,11 @@ Item {
                                     label: modelData.name
                                     from: modelData.min; to: modelData.max
                                     value: modelData.default
+                                    // Nur auf der Fast-Seite greift der Controller ein
+                                    // (Slow-Params bleiben immer per Touch bedienbar).
+                                    externalControl: pageCol.g.kind === "fast" && params.controller.connected
+                                    externalValue: params.controller.values.length > modelData.index
+                                                   ? params.controller.values[modelData.index] : modelData.default
                                     onMoved: (v) => pageCol._sendFloat(modelData.index, v)
                                 }
                             }
@@ -177,7 +207,15 @@ Item {
                                         from: Math.round(modelData.min * 1000)
                                         to: Math.round(modelData.max * 1000)
                                         stepSize: Math.max(1, Math.round(modelData.step * 1000))
-                                        value: Math.round(modelData.default * 1000)
+                                        // Falls ein fast_floats-Eintrag als "number" statt "slider"
+                                        // konfiguriert ist, greift der Controller genauso hier ein.
+                                        readonly property bool _controllerActive:
+                                            pageCol.g.kind === "fast" && params.controller.connected
+                                        enabled: !_controllerActive
+                                        opacity: _controllerActive ? 0.55 : 1.0
+                                        value: _controllerActive && params.controller.values.length > modelData.index
+                                               ? Math.round(params.controller.values[modelData.index] * 1000)
+                                               : Math.round(modelData.default * 1000)
                                         textFromValue: (v) => (v / 1000).toFixed(3)
                                         valueFromText: (t) => Math.round(parseFloat(t.replace(",", ".")) * 1000)
                                         onValueModified: pageCol._sendFloat(modelData.index, value / 1000)
@@ -298,6 +336,14 @@ Item {
                                 xRangeMin: modelData.xRange[0]; xRangeMax: modelData.xRange[1]
                                 yRangeMin: modelData.yRange[0]; yRangeMax: modelData.yRange[1]
                                 returnToCenter: modelData.returnToCenter
+                                // Nur der/die Joystick(s) auf der Fast-Seite werden vom
+                                // Controller übernommen (Slow-Joysticks bleiben Touch).
+                                // Es wird der linke Stick des Controllers gespiegelt —
+                                // bei mehreren Fast-Joysticks in param_config.json müsste
+                                // hier zusätzlich nach modelData.xIndex unterschieden werden.
+                                externalControl: pageCol.g.kind === "fast" && params.controller.connected
+                                externalNormX: params.controller.stickNormX
+                                externalNormY: params.controller.stickNormY
                                 onMoved: (x, y) => {
                                     if (pageCol.g.kind === "fast") {
                                         params.setFastFloat(modelData.xIndex, x)

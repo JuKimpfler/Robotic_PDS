@@ -36,6 +36,7 @@ from param_io import (
     ParamConfig, ParamEntry, JoystickEntry,
     load_param_config, write_param_defaults_h, read_param_defaults_h,
 )
+from bridge.controller_bridge import ControllerBridge
 
 log = logging.getLogger("bridge.param")
 
@@ -218,6 +219,12 @@ class ParamBridge(QObject):
 
         self._store = ParamStore(self._config)
 
+        # PS4-Controller-Erkennung: pollt selbstständig (eigener QTimer) und
+        # schreibt bei Verbindung direkt in self._store — siehe
+        # controller_bridge.py und apply_controller_values()/
+        # fast_float_ranges() unten.
+        self._controller = ControllerBridge(self, self)
+
         if self._error is None:
             defaults = read_param_defaults_h(PARAM_DEFAULTS_H_PATH)
             if defaults:
@@ -263,6 +270,29 @@ class ParamBridge(QObject):
     @pyqtProperty(bool, notify=savedChanged)
     def defaultsLoadedFromFile(self):
         return self._defaults_loaded
+
+    @pyqtProperty(QObject, constant=True)
+    def controller(self):
+        """ControllerBridge-Instanz für QML (params.controller.connected,
+        params.controller.values, ...) — siehe controller_bridge.py."""
+        return self._controller
+
+    # ── Für ControllerBridge ──────────────────────────────────────────────
+    def fast_float_ranges(self) -> dict[int, tuple[float, float]]:
+        """index -> (min, max) aus param_config.json, live — damit der
+        Controller dieselben Grenzen respektiert wie die Touch-Slider."""
+        return {e.index: (e.min, e.max) for e in self._config.fast_floats}
+
+    def apply_controller_values(self, values: list[float]) -> None:
+        """Wird 100x/s von ControllerBridge aufgerufen, sobald ein Controller
+        verbunden ist. Schreibt direkt in den ParamStore — der bestehende
+        _fast_timer sendet das Paket unverändert weiter, unabhängig davon,
+        ob der Wert von Touch (setFastFloat) oder von hier kommt."""
+        if self._error is not None:
+            return
+        for i, v in enumerate(values):
+            if 0 <= i < len(self._store.fast_floats):
+                self._store.set_fast_float(i, v)
 
     # ── Slots: Werte-Änderungen aus QML ───────────────────────────────────
     @pyqtSlot(int, float)

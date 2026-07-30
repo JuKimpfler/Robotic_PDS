@@ -19,18 +19,34 @@ Item {
     property real valueX: 0
     property real valueY: 0
 
+    // ── Controller-Steuerung ─────────────────────────────────────────────
+    // Solange externalControl true ist, ignoriert der Knopf Touch/Maus
+    // (PointHandler deaktiviert) und folgt stattdessen externalNormX/Y
+    // (-1..1, gleiche Vorzeichenkonvention wie der interne Touch-Knopf:
+    // rechts/oben = positiv). Wird von ParamsView.qml an
+    // params.controller.stickNormX/Y gebunden.
+    property bool externalControl: false
+    property real externalNormX: 0
+    property real externalNormY: 0
+
     signal moved(real x, real y)
 
     readonly property real _r: Math.min(width, height) / 2 - 14
     readonly property point _center: Qt.point(width / 2, height / 2)
 
-    // normierte Knopf-Position -1..1
+    // normierte Knopf-Position -1..1 (Touch-gesteuert)
     property real _knobX: 0
     property real _knobY: 0
     property bool _dragging: false
 
     Behavior on _knobX { enabled: !root._dragging; NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
     Behavior on _knobY { enabled: !root._dragging; NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
+
+    // Angezeigte Position: bei aktiver Controller-Steuerung die externen
+    // Werte 1:1 (kein Easing nötig, kommt schon 100x/s glatt rein), sonst
+    // wie bisher die (gefederten) Touch-gesteuerten Werte.
+    readonly property real _dispX: root.externalControl ? root.externalNormX : root._knobX
+    readonly property real _dispY: root.externalControl ? root.externalNormY : root._knobY
 
     Rectangle {
         anchors.centerIn: parent
@@ -48,16 +64,22 @@ Item {
     Rectangle {
         id: knob
         width: 34; height: 34; radius: 17
-        color: root._dragging ? Theme.ledOn : Qt.darker(Theme.ledOn, 1.3)
-        border.color: Theme.ledOn
+        color: root.externalControl ? Theme.accentBlue
+               : (root._dragging ? Theme.ledOn : Qt.darker(Theme.ledOn, 1.3))
+        border.color: root.externalControl ? Theme.accentBlue : Theme.ledOn
         border.width: 2
-        x: root._center.x + root._knobX * root._r - width / 2
-        y: root._center.y + root._knobY * root._r - height / 2
+        x: root._center.x + root._dispX * root._r - width / 2
+        y: root._center.y + root._dispY * root._r - height / 2
     }
+
+    // Bei aktiver Controller-Steuerung optisch abdunkeln (Touch bleibt
+    // zusätzlich unten über den PointHandler gesperrt).
+    opacity: root.externalControl ? 0.55 : 1.0
 
     PointHandler {
         id: pointHandler
         target: null
+        enabled: !root.externalControl
         // Exklusiven Grab erzwingen, damit die umgebende Flickable/
         // SwipeView den Drag nicht mehr für Scroll/Swipe "stiehlt".
         grabPermissions: PointerHandler.CanTakeOverFromItems | PointerHandler.CanTakeOverFromHandlersOfDifferentType

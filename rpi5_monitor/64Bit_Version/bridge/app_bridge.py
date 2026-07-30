@@ -199,6 +199,7 @@ class AppBridge(QObject):
     # ── Aufräumen ──────────────────────────────────────────────────────────
     @pyqtSlot()
     def shutdown(self) -> None:
+        self._params.controller.shutdown()
         self._nm.stop()
 
     # ── Strg+S in der GUI (siehe Shortcut in qml/Main.qml) ────────────────
