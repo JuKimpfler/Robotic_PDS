@@ -139,14 +139,44 @@ also lokal. Beim Start bestätigt eine Log-Zeile die Übernahme:
 pip3 install --break-system-packages pygame
 ```
 
-(ist jetzt auch Teil von `setup_rpi5.sh`). Der PS4-Controller wird per
-USB angeschlossen und vom Kernel als Standard-HID-Gamepad erkannt — kein
+(ist auch Teil von `setup_rpi5.sh`). Der PS4-Controller wird per USB
+angeschlossen und vom Kernel als Standard-HID-Gamepad erkannt — kein
 zusätzlicher Treiber nötig. Falls `pygame` auf einem schlanken
 Raspberry-Pi-OS-Image keine passende SDL2-Bibliothek findet, zusätzlich:
 
 ```bash
 sudo apt-get install -y libsdl2-2.0-0
 ```
+
+### pygame ist optional — und auf Python 3.14 nicht installierbar
+
+`pygame` ist eine **optionale** Abhängigkeit. Fehlt es, läuft die komplette
+GUI unverändert weiter; nur die Controller-Unterstützung ist dann aus und die
+Fast-Params werden wie bisher per Touch bedient. Beim Start steht dann eine
+Warnung im Log:
+
+```
+[bridge.controller] WARNING  pygame nicht verfuegbar (...) — Controller-Unterstuetzung
+                             ist deaktiviert, die Fast-Params bleiben per Touch bedienbar.
+```
+
+> Das war bis zu diesem Review **nicht** so: `import pygame` stand auf
+> Modulebene und hat bei einem fehlenden Paket den Import von
+> `controller_bridge` → `param_bridge` → `app_bridge` mitgerissen — die
+> gesamte Oberfläche startete dann gar nicht mehr.
+
+**Für Python 3.14 gibt es (Stand 08/2026) kein `pygame`-Wheel**, und der
+Build aus dem Quelltext scheitert (`ModuleNotFoundError: No module named
+'setuptools._distutils.msvccompiler'`). Auf einem so neuen Python
+stattdessen die Community-Variante verwenden — gleicher Import-Name,
+API-kompatibel:
+
+```bash
+pip install pygame-ce
+```
+
+Auf Raspberry Pi OS Bookworm (Python 3.11) und den dort üblichen
+Windows-Installationen (3.11–3.13) funktioniert das normale `pygame`.
 
 ## Bekannte Einschränkung
 

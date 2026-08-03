@@ -139,6 +139,7 @@ If you prefer running the monitor GUI on a Windows laptop instead of an RPi 5:
    ```bash
    pip install PyQt6 numpy pygame
    ```
+   `pygame` is optional and only provides PS4 controller support — the GUI runs without it (touch input only). On **Python 3.14 there is no pygame wheel yet** and the source build fails; use `pip install pygame-ce` there instead (same import name, API-compatible).
 2. Set up a Windows Mobile Hotspot (Settings → Network & Internet → Mobile hotspot) with SSID `RoboDebug` and key `robodebug123` — those are the values `setup_node.sh` provisions on the nodes (`AP_SSID`/`AP_PASS`). Then connect the Pi Zero nodes to it.
 3. Allow `python.exe` through the Windows Firewall for **private** networks; without that, the inbound UDP telemetry on ports 5001/5002 is silently dropped.
 4. Start the GUI with `rpi5_monitor/64Bit_Version/starter.bat` (or `python main_qml.py` from that directory).

@@ -53,7 +53,22 @@ import time
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
 
-import pygame
+# pygame ist eine OPTIONALE Abhaengigkeit. Fehlt sie, laeuft die komplette
+# GUI unveraendert weiter — nur die Controller-Unterstuetzung ist dann aus
+# und die Fast-Params werden wie bisher per Touch bedient.
+#
+# Das ist kein theoretischer Fall: fuer Python 3.14 gibt es (Stand 08/2026)
+# kein pygame-Wheel, und der Quell-Build scheitert. Ohne diese Fallunter-
+# scheidung hat ein fehlendes pygame den Import von controller_bridge ->
+# param_bridge -> app_bridge mitgerissen und damit den Start der GESAMTEN
+# Oberflaeche verhindert. Siehe Doku/PS4_Controller_Implementierung.md.
+try:
+    import pygame
+    _PYGAME_IMPORT_ERROR: str | None = None
+except Exception as _exc:            # ImportError, aber auch SDL-Ladefehler
+    pygame = None
+    _PYGAME_IMPORT_ERROR = str(_exc)
+
 from PyQt6.QtCore import QObject, pyqtProperty, pyqtSignal
 
 from config import CONTROLLER_CONFIG_PATH, CONTROLLER_UI_NOTIFY_MS
@@ -148,6 +163,16 @@ class ControllerBridge(QObject):
         self._ui_notify_interval = CONTROLLER_UI_NOTIFY_MS / 1000.0
 
         self._last_debug_dump = 0.0
+
+        if pygame is None:
+            log.warning(
+                "pygame nicht verfuegbar (%s) — Controller-Unterstuetzung ist "
+                "deaktiviert, die Fast-Params bleiben per Touch bedienbar. "
+                "Installation: pip install pygame  (fuer Python 3.14 gibt es "
+                "noch kein pygame-Wheel, dort stattdessen: pip install pygame-ce)",
+                _PYGAME_IMPORT_ERROR,
+            )
+            return
 
         try:
             pygame.init()
