@@ -13,7 +13,7 @@
 #    8. Zusammenfassung
 #
 #  Installiert/startet die neue PyQt6 + Qt Quick/QML-Oberfläche
-#  (rpi5_monitor/New_PyQT_QML/main_qml.py) statt der alten
+#  (rpi5_monitor/64Bit_Version/main_qml.py) statt der alten
 #  Widgets-GUI (Old_PySide/main.py).
 #
 #  Aufruf:  sudo bash setup_rpi5.sh [INSTALL_DIR]
@@ -144,7 +144,7 @@ ok "Python-Abhängigkeiten bereit."
 # ════════════════════════════════════════════════════════════════════════════════
 step "4/8  Anwendungsdateien → ${INSTALL_DIR}"
 
-# Quelle: rpi5_monitor/New_PyQT_QML/ (die PyQt6 + Qt Quick/QML-Oberfläche).
+# Quelle: rpi5_monitor/64Bit_Version/ (die PyQt6 + Qt Quick/QML-Oberfläche).
 # main_qml.py erwartet config.py/network_worker.py/param_io.py, die
 # *_config.json-/*.h-Dateien, visuals_overlays.json und bild/ FLACH im
 # selben Verzeichnis (relativ zu __file__ gesucht), sowie die Ordner
@@ -153,8 +153,8 @@ step "4/8  Anwendungsdateien → ${INSTALL_DIR}"
 # Dateien aufzulisten (bei einer festen Liste wären z.B. qml/UiState.qml
 # oder qml/components/BodiesField.qml bei künftigen Erweiterungen sonst
 # stillschweigend nicht mit installiert worden).
-QML_SRC="${SCRIPT_DIR}/rpi5_monitor/New_PyQT_QML"
-[[ -d "$QML_SRC" ]] || QML_SRC="${SCRIPT_DIR}/New_PyQT_QML"   # Fallback: flache Struktur
+QML_SRC="${SCRIPT_DIR}/rpi5_monitor/64Bit_Version"
+[[ -d "$QML_SRC" ]] || QML_SRC="${SCRIPT_DIR}/64Bit_Version"   # Fallback: flache Struktur
 
 if [[ -d "$QML_SRC" ]]; then
     mkdir -p "$INSTALL_DIR"
@@ -164,7 +164,7 @@ if [[ -d "$QML_SRC" ]]; then
     rm -f "${INSTALL_DIR}/starter.bat"
     ok "qml/, qml/components/, bridge/ und alle Kerndateien nach ${INSTALL_DIR} kopiert."
 else
-    err "Quellverzeichnis nicht gefunden: erwartet rpi5_monitor/New_PyQT_QML/ neben diesem Skript."
+    err "Quellverzeichnis nicht gefunden: erwartet rpi5_monitor/64Bit_Version/ neben diesem Skript."
     exit 1
 fi
 
