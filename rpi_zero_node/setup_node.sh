@@ -61,6 +61,11 @@
 #    • Projektordner liegt in ~/power_debug_system/ auf dem RPi Zero 2 W
 #
 # ==============================================================================
+
+if [ -z "${BASH_VERSION:-}" ]; then
+  exec bash "$0" "$@"
+fi
+
 set -euo pipefail
 
 # ── Farben ────────────────────────────────────────────────────────────────────
