@@ -7,28 +7,69 @@ elapsedMillis DBGTimer;
 elapsedMillis DescChunkTimer;
 
 static constexpr uint32_t HEADER_MAGIC     = 0xDEADBEEF;
+
+// MAX_FLOATS ist Teil des WIRE-FORMATS und muss mit rpi_zero_node/
+// spi_receiver.py (MAX_FLOATS) und rpi5_monitor/.../config.py (MAX_FLOATS)
+// uebereinstimmen. ACTIVE_CHANNELS (Build-Flag) steuert nur, wie viele
+// davon benannt/gebunden werden koennen -- es darf MAX_FLOATS nicht
+// ueberschreiten, sonst wuerde sampleBoundChannels() ueber debugData[]
+// hinausschreiben.
 static constexpr int      MAX_FLOATS       = 200;
-static constexpr int      PACKET_BYTES     = 8 + MAX_FLOATS * 4;  // 1608
-static constexpr uint32_t SAMPLE_PERIOD_US = 10;            // 50 Hz
-static constexpr uint32_t DESC_CHUNK_PERIOD_MS = 10;        // ein Deskriptor-Chunk pro 10 ms
-static uint8_t _serial1_tx_buf[4096];
+static_assert(ACTIVE_CHANNELS <= MAX_FLOATS,
+              "ACTIVE_CHANNELS darf MAX_FLOATS (Wire-Format) nicht ueberschreiten");
+
+static constexpr int      PACKET_BYTES     = 8 + MAX_FLOATS * 4;  // 808 bei 200 Kanaelen
+static constexpr uint32_t SAMPLE_PERIOD_MS = 10;                  // 10 ms -> 100 Hz
+static constexpr uint32_t DESC_CHUNK_PERIOD_MS = 10;              // ein Deskriptor-Chunk pro 10 ms
+
+// ── UART-Puffer ───────────────────────────────────────────────────────────
+//  TX: 808 B/Paket bei 100 Hz = 80.8 kB/s gegen 100 kB/s Baud-Budget
+//      (1 Mbps, 8N1 = 10 Bit/Byte). 4 KB Puffer ueberbrueckt Jitter.
+//
+//  RX: WICHTIG fuer die Latenz des Fast-/Joystick-Kanals. Der Teensy-Core
+//      legt per Default nur 64 Byte RX-Puffer an -- ein einzelnes Slow-
+//      Paket (258 B) passt da nicht hinein und laeuft schon waehrend des
+//      Empfangs ueber, sobald loop() nicht alle ~0.6 ms pollt. Die dabei
+//      verlorenen Bytes bringen den Paket-Parser aus dem Tritt: er wartet
+//      dann auf die fehlenden Bytes und frisst dabei die naechsten
+//      Fast-Pakete als vermeintliche Nutzlast auf -> ruckartige,
+//      hundert Millisekunden lange Aussetzer der Fernsteuerung.
+//      2 KB puffern ~600 ms Downlink-Strom und machen den Empfang
+//      unabhaengig von der Zykluszeit des Roboter-Hauptprogramms.
+static uint8_t _uart_dbg_tx_buf[4096];
+static uint8_t _uart_dbg_rx_buf[2048];
+
 static uint8_t _pkt_buf[PACKET_BYTES];
-uint32_t pkt_count = 0;
 
 static float debugData[MAX_FLOATS];
-#define DBG(channel, value)  debugData[(channel)] = static_cast<float>(value);
+
+// Bereichsgeprueft: ein Channel()-Aufruf mit einem Index >= MAX_FLOATS hat
+// vorher hinter debugData[] geschrieben und dabei beliebigen anderen
+// Speicher zerstoert (uint8_t-Index reicht bis 255, das Array hat 200).
+#define DBG(channel, value)                                                   \
+    do {                                                                      \
+        if ((int)(channel) < MAX_FLOATS)                                      \
+            debugData[(channel)] = static_cast<float>(value);                 \
+    } while (0)
 
 static char _descBuf[CHANNEL_DESC_JSON_BUF_BYTES];
 
 // ── Kleine JSON-Bau-Helfer (Deskriptor wird nur einmal beim Boot bzw. auf
 //    Anfrage gebaut -- Effizienz ist hier zweitrangig gegenueber Klarheit) ──
 static void jsonPut(char* buf, size_t bufSize, size_t& pos, const char* fmt, ...) {
-    if (pos >= bufSize) return;
+    if (pos + 1 >= bufSize) return;
     va_list args;
     va_start(args, fmt);
     int n = vsnprintf(buf + pos, bufSize - pos, fmt, args);
     va_end(args);
-    if (n > 0) pos += (size_t)n;
+    if (n <= 0) return;
+    // vsnprintf liefert die Laenge, die OHNE Abschneiden noetig gewesen waere.
+    // Ungeprueft uebernommen konnte pos dadurch hinter das Pufferende wandern
+    // -- _descJsonLen waere dann groesser als _descBuf und sendNextDescChunk()
+    // haette Fremdspeicher verschickt.
+    size_t written = (size_t)n;
+    size_t room    = bufSize - pos - 1;
+    pos += (written < room) ? written : room;
 }
 
 // Haengt s escaped an (Anfuehrungszeichen/Backslash), OHNE umschliessende Quotes.
@@ -41,12 +82,12 @@ static void jsonPutEscaped(char* buf, size_t bufSize, size_t& pos, const char* s
     }
 }
 
-void PowerDebugger::Channel(u_int8_t chn , float val){
-    DBG(chn,val);
+void PowerDebugger::Channel(uint8_t chn, float val){
+    DBG(chn, val);
 }
 
-void PowerDebugger::Channel(u_int8_t chn, float val, const char* name){
-    DBG(chn,val);
+void PowerDebugger::Channel(uint8_t chn, float val, const char* name){
+    DBG(chn, val);
     if (name) setName(chn, name);
 }
 
@@ -230,34 +271,48 @@ void PowerDebugger::buildPacket() {
 //
 //  UART_DBG.available()/read() wird jede update()-Iteration abgefragt,
 //  nicht-blockierend. Ein 4-Byte-Schiebefenster sucht nach einem der
-//  beiden bekannten Magic-Werte; sobald einer erkannt ist, steht die
+//  drei bekannten Magic-Werte; sobald einer erkannt ist, steht die
 //  erwartete Gesamtlänge fest (Slow = 258 Byte, Fast = 28 Byte) und die
 //  restlichen Bytes werden einfach angehängt, bis das Paket vollständig
 //  ist. Da loop()/update() einzelsträngig laufen (keine ISR greift auf
 //  dieselben Arrays zu), ist kein noInterrupts()/interrupts() nötig.
 //
+//  BUGFIX (Latenz Fernsteuerung): Die alte Fassung hat das Schiebefenster
+//  bei JEDEM Byte weitergeschoben, den Magic-Vergleich aber erst ab dem
+//  FUENFTEN Byte nach einem Zustands-Reset ausgefuehrt ("if (fill < 4)
+//  { fill++; continue; }" uebersprang den Vergleich genau in dem Moment,
+//  in dem die vier Magic-Bytes vollstaendig im Fenster standen). Nach
+//  jedem fertig geparsten Paket wurde der Magic des unmittelbar folgenden
+//  Pakets deshalb systematisch uebersehen und dieses Paket komplett
+//  verworfen -- der Fast-Kanal kam so nur mit 50 statt 100 Hz an, der
+//  Slow-Kanal mit 1 statt 2 Hz. Jetzt wird das Fenster erst gefuellt und
+//  danach bei jedem Byte geprueft, also auch beim vierten.
 void PowerDebugger::pollParamUart() {
     static uint8_t buf[PARAM_SLOW_PACKET_BYTES];   // größerer der beiden Pakettypen, wiederverwendet
     static int     fill = 0;
     static int     expectedLen = 0;                // 0 = suche noch nach gültigem Magic
 
     while (UART_DBG.available()) {
-        uint8_t b = UART_DBG.read();
+        uint8_t b = (uint8_t)UART_DBG.read();
 
         if (expectedLen == 0) {
-            // Schiebefenster über die letzten 4 Bytes fuer die Magic-Suche
-            buf[0] = buf[1]; buf[1] = buf[2]; buf[2] = buf[3]; buf[3] = b;
-            if (fill < 4) { fill++; continue; }
+            // Schiebefenster über die letzten 4 Bytes fuer die Magic-Suche:
+            // erst auffuellen, danach byteweise nachruecken.
+            if (fill < 4) {
+                buf[fill++] = b;
+                if (fill < 4) continue;    // noch keine 4 Bytes -> kein Magic moeglich
+            } else {
+                buf[0] = buf[1]; buf[1] = buf[2]; buf[2] = buf[3]; buf[3] = b;
+                _paramSyncLosses++;        // das herausgeschobene Byte war Muell
+            }
 
             uint32_t magic;
             memcpy(&magic, buf, 4);
 
             if (magic == PARAM_SLOW_MAGIC) {
                 expectedLen = PARAM_SLOW_PACKET_BYTES;
-                fill = 4;
             } else if (magic == PARAM_FAST_MAGIC) {
                 expectedLen = PARAM_FAST_PACKET_BYTES;
-                fill = 4;
             } else if (magic == CHANNEL_DESC_REQUEST_MAGIC) {
                 // Kein Payload -- Paket ist mit dem Magic selbst schon komplett,
                 // bleibt daher in diesem Zweig (nicht ueber expectedLen/fill,
@@ -269,7 +324,7 @@ void PowerDebugger::pollParamUart() {
         } else {
             buf[fill++] = b;
 
-            if (fill == expectedLen) {
+            if (fill >= expectedLen) {
                 if (expectedLen == PARAM_SLOW_PACKET_BYTES) {
                     memcpy(_paramFloats, buf + PARAM_HEADER_BYTES,
                            PARAM_SLOW_FLOAT_COUNT * 4);
@@ -278,10 +333,12 @@ void PowerDebugger::pollParamUart() {
                             buf[PARAM_HEADER_BYTES + PARAM_SLOW_FLOAT_COUNT * 4 + i] != 0;
                     }
                     _lastSlowRxMs = millis();
+                    _slowPktCount++;
                 } else {
                     memcpy(_fastFloats, buf + PARAM_HEADER_BYTES,
                            PARAM_FAST_FLOAT_COUNT * 4);
                     _lastFastRxMs = millis();
+                    _fastPktCount++;
                 }
                 expectedLen = 0;
                 fill = 0;   // bereit fuer das naechste Paket
@@ -312,6 +369,11 @@ bool PowerDebugger::fastParamsAreFresh() const {
     return (_lastFastRxMs != 0) && (millis() - _lastFastRxMs < PARAM_FAST_TIMEOUT_MS);
 }
 
+uint32_t PowerDebugger::fastParamAgeMs() const {
+    if (_lastFastRxMs == 0) return 0xFFFFFFFFUL;   // noch nie etwas empfangen
+    return millis() - _lastFastRxMs;
+}
+
 // ══════════════════════════════════════════════════════════════════════════
 
 void PowerDebugger::init(){
@@ -330,8 +392,11 @@ void PowerDebugger::init(){
         setName(CHANNEL_NAMES[i].index, CHANNEL_NAMES[i].name);
     }
 
-    // Serial1 TX-Buffer erweitern und UART starten
-    UART_DBG.addMemoryForWrite(_serial1_tx_buf, sizeof(_serial1_tx_buf));
+    // TX- UND RX-Buffer erweitern, danach erst UART starten.
+    // Der RX-Buffer ist der entscheidende Teil fuer die Reaktionszeit der
+    // Fernsteuerung -- siehe Kommentar bei _uart_dbg_rx_buf oben.
+    UART_DBG.addMemoryForWrite(_uart_dbg_tx_buf, sizeof(_uart_dbg_tx_buf));
+    UART_DBG.addMemoryForRead(_uart_dbg_rx_buf, sizeof(_uart_dbg_rx_buf));
     UART_DBG.begin(UART_DBG_BAUD, SERIAL_8N1);
 
     pinMode(10,INPUT);
@@ -349,29 +414,43 @@ void PowerDebugger::init(){
 
 void PowerDebugger::update(){
 
-    // ── Kanal-Bindung: gebundene Pointer vor dem Packen automatisch auslesen ──
-    sampleBoundChannels();
-
-    // ── Alle 10 ms: Paket senden (100 Hz) ────────────────────────────────────
-    if (DBGTimer >= SAMPLE_PERIOD_US) {
-        buildPacket();
-        DBGTimer = 0;
-
-        // Serial1.write() kopiert 1608 Bytes in den TX-Buffer und kehrt
-        // sofort zurück. Der UART-DMA überträgt asynchron (~4 ms bei 4 Mbps).
-        // Bei 10 ms Paket-Intervall ist der Buffer stets leer wenn wir schreiben.
-        //last_buffer = _pkt_buf;
-        //last_bytes = PACKET_BYTES;
-        UART_DBG.write(_pkt_buf, PACKET_BYTES);
-    }
-
-    // ── Param-Downlink: nicht-blockierend, jede update()-Iteration ──────────
+    // ── Param-Downlink ZUERST: nicht-blockierend, jede update()-Iteration.
+    //    Bewusst vor dem Telemetrie-Versand, damit getFastParam() direkt nach
+    //    update() den zuletzt eingetroffenen Stand liefert und nicht einen um
+    //    einen Zyklus alten. ──────────────────────────────────────────────────
     pollParamUart();
 
+    // ── Alle 10 ms: Paket senden (100 Hz) ────────────────────────────────────
+    if (DBGTimer >= SAMPLE_PERIOD_MS) {
+        // Nachlauf statt Reset auf 0: verhindert, dass sich die Sendefrequenz
+        // bei einer laengeren loop()-Iteration dauerhaft nach unten verschiebt.
+        // Nur wenn wir mehr als eine ganze Periode hinterherhinken, wird hart
+        // resynchronisiert (sonst wuerden Pakete nachgeholt/gebuendelt).
+        if (DBGTimer >= 2 * SAMPLE_PERIOD_MS) DBGTimer = 0;
+        else                                  DBGTimer -= SAMPLE_PERIOD_MS;
+
+        // ── Kanal-Bindung: gebundene Pointer direkt vor dem Packen auslesen ──
+        //    (frueher bei JEDER update()-Iteration -- bei einem schnellen
+        //    Hauptprogramm waren das mehrere tausend ueberfluessige
+        //    200-Kanal-Durchlaeufe pro Sekunde.)
+        sampleBoundChannels();
+        buildPacket();
+
+        // UART_DBG.write() kopiert die 808 Bytes in den TX-Buffer und kehrt
+        // sofort zurück; die Übertragung läuft asynchron (~8 ms bei 1 Mbps).
+        // Bei 10 ms Paket-Intervall ist der Buffer stets leer wenn wir schreiben.
+        UART_DBG.write(_pkt_buf, PACKET_BYTES);
+        _txPktCount++;
+    }
+
     // ── Namens-/Overlay-Deskriptor: ein Chunk alle 10 ms, solange ein
-    //    Sendevorgang laeuft (Boot oder GUI-Anfrage) ──────────────────────────
+    //    Sendevorgang laeuft (Boot oder GUI-Anfrage). Nur senden, wenn im
+    //    TX-Buffer genug Platz ist -- sonst wuerde write() blockierend auf den
+    //    UART warten und dabei den 100-Hz-Takt des Hauptprogramms verzoegern.
     if (_descNextChunk != 0xFF && DescChunkTimer >= DESC_CHUNK_PERIOD_MS) {
-        DescChunkTimer = 0;
-        sendNextDescChunk();
+        if (UART_DBG.availableForWrite() >= CHANNEL_DESC_CHUNK_PACKET_BYTES) {
+            DescChunkTimer = 0;
+            sendNextDescChunk();
+        }
     }
 }

@@ -43,8 +43,11 @@ from network_worker import NetworkManager
 from bridge.app_bridge import AppBridge
 from bridge.plot_bridge import PlotCanvas
 
+# PDS_LOGLEVEL=DEBUG schaltet u. a. die 1x/s-Ausgabe aller rohen Controller-
+# Achsen/Buttons frei (siehe bridge/controller_bridge.py) — der schnellste Weg,
+# eine abweichende SDL-Belegung zu ermitteln.
 logging.basicConfig(
-    level=logging.INFO,
+    level=getattr(logging, os.environ.get("PDS_LOGLEVEL", "INFO").upper(), logging.INFO),
     format="%(asctime)s  [%(name)-20s]  %(levelname)-8s  %(message)s",
     datefmt="%H:%M:%S",
 )

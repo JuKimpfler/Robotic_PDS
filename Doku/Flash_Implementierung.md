@@ -104,7 +104,7 @@ Das funktioniert laut CPython-Dokumentation (bpo-36590) sowohl unter Windows (ab
 - **PC-Seite (einmalig pro PC, manuell):**
   - In Windows-Einstellungen → Bluetooth & Geräte → Gerät hinzufügen → `PDS-Node1-BT` / `PDS-Node2-BT` auswählen, PIN bestätigen.
   - Danach ist die Bluetooth-Adresse des Node dauerhaft im Windows-Gerätespeicher hinterlegt; das Python-Tool kann jederzeit per bekannter MAC-Adresse verbinden.
-- Die MAC-Adressen der beiden Nodes werden in einer kleinen Konfigurationsdatei `pc_setup/bt_targets.json` hinterlegt (vom Anwender einmalig einzutragen, wird beim Setup des Nodes ausgegeben).
+- Die MAC-Adressen der beiden Nodes werden in einer kleinen Konfigurationsdatei `pc_flash_tool/bt_targets.json` hinterlegt (vom Anwender einmalig einzutragen, wird beim Setup des Nodes ausgegeben).
 
 ### 3.4 Warum keine automatische Geräte-Discovery zur Laufzeit?
 
@@ -146,7 +146,7 @@ Auth-Token: ein statischer, in `bt_targets.json` (PC) bzw. `/opt/power_debug_nod
 
 ## 5. Komponenten im Detail
 
-### 5.1 PC-Seite: `pc_setup/pc_flash_tool/bt_flash_sender.py`
+### 5.1 PC-Seite: `pc_flash_tool/bt_flash_sender.py`
 
 Aufgaben:
 1. `bt_targets.json` laden (`{"node1": {"mac": "AA:BB:CC:DD:EE:FF", "channel": 4}, "node2": {...}}`).
@@ -227,8 +227,8 @@ Konkrete Anpassungen (in der bestehenden Struktur des Skripts):
 |---|---|---|
 | `rpi_zero_node/bt_flash_receiver.py` | **neu** | RFCOMM-Server, Datei-Empfang, Aufruf `teensy_loader_cli` |
 | `rpi_zero_node/setup_node.sh` | **ändern** | Overlay-Umstellung, BT-Setup, neuer systemd-Dienst |
-| `pc_setup/pc_flash_tool/bt_flash_sender.py` | **neu** | RFCOMM-Client, Datei-Versand, CLI |
-| `pc_setup/pc_flash_tool/bt_targets.json` | **neu** | MAC-Adressen, Kanäle, Auth-Token je Node (Vorlage) |
+| `pc_flash_tool/bt_flash_sender.py` | **neu** | RFCOMM-Client, Datei-Versand, CLI |
+| `pc_flash_tool/bt_targets.json` | **neu** | MAC-Adressen, Kanäle, Auth-Token je Node (Vorlage) |
 | `pc_setup/README.md` | **ergänzen** | Abschnitt „Wireless Flashing" mit Bedienungsanleitung |
 | `README.md` (Hauptprojekt) | **ergänzen** | Architekturdiagramm um Bluetooth-Flash-Pfad erweitern; Hinweis „Firmware-Flashing wurde entfernt" korrigieren/aktualisieren |
 | `rpi_zero_node/status_leds.py` | **optional, später** | Flash-Status-LED-Muster |

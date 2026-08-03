@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from pathlib import Path
 
 from PyQt6.QtCore import QObject, pyqtSignal, pyqtProperty, pyqtSlot
@@ -145,7 +146,15 @@ def _load_raw_config() -> dict:
 
 
 def _save_raw_config(config: dict) -> None:
-    _CONFIG_FILE.write_text(json.dumps(config, indent=2, ensure_ascii=False), encoding="utf-8")
+    """Atomar schreiben: erst in eine Temp-Datei daneben, dann umbenennen.
+
+    Beim direkten write_text() haette ein Absturz (oder ein Strom-Aus am
+    RPi 5) mitten im Schreiben eine halb geschriebene, unlesbare
+    visuals_overlays.json hinterlassen — und damit die komplette
+    Systemansicht dauerhaft leer."""
+    tmp = _CONFIG_FILE.with_suffix(_CONFIG_FILE.suffix + ".tmp")
+    tmp.write_text(json.dumps(config, indent=2, ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp, _CONFIG_FILE)
 
 
 class VisualsBridge(QObject):
@@ -165,6 +174,10 @@ class VisualsBridge(QObject):
         reine Anzeige-Widgets, die ohnehin aus telemetry.latestValues
         neu gezeichnet werden."""
         self._groups = _load_groups()
+        # Gruppenzahl kann beim Neuladen kleiner geworden sein -> Index
+        # nachziehen, sonst wirft activeGroup einen IndexError.
+        if self._active_index >= len(self._groups):
+            self._active_index = max(0, len(self._groups) - 1)
         self.groupsChanged.emit()
         self.activeGroupChanged.emit()
 

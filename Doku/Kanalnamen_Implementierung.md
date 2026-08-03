@@ -2,7 +2,7 @@
 
 **Projekt:** Robotic_PDS (RoboCup Junior Soccer 2vs2)
 **Betrifft:** `teensy_firmware/` (Firmware), `rpi_zero_node/spi_receiver.py` (Relay),
-`rpi5_monitor/64Bit_Version` (PyQt6-Widgets-GUI **und** QML-GUI), `rpi5_monitor/32Bit_Version` (QML-GUI, PyQt5)
+`rpi5_monitor/64Bit_Version` (PyQt6: QML-GUI `main_qml.py` sowie die ältere Widgets-GUI `main.py`/`gui/`)
 **Nicht betroffen:** `rpi5_monitor/Old_PySide` (nicht mehr aktiv gepflegt)
 
 ---

@@ -19,10 +19,12 @@ from __future__ import annotations
 
 import logging
 import socket
+import struct
+from time import monotonic as _monotonic
 from typing import Callable
 
 import numpy as np
-from PyQt6.QtCore import QObject, QTimer, pyqtSignal, pyqtProperty, pyqtSlot
+from PyQt6.QtCore import Qt, QObject, QTimer, pyqtSignal, pyqtProperty, pyqtSlot
 
 from config import (
     PARAM_SLOW_MAGIC, PARAM_FAST_MAGIC,
@@ -66,17 +68,17 @@ class ParamStore:
         self.fast_floats[i] = v
 
     def pack_slow(self) -> bytes:
-        import struct
         self._slow_seq = (self._slow_seq + 1) & 0xFFFFFFFF
         header = struct.pack("<II", PARAM_SLOW_MAGIC, self._slow_seq)
         return (
             header
             + self.floats.astype("<f4").tobytes()
-            + bytes(1 if b else 0 for b in self.bools)
+            # astype(uint8) liefert garantiert 0/1 je Element und ersetzt den
+            # bisherigen Python-Generator ueber alle 50 Bools pro Paket.
+            + self.bools.astype(np.uint8).tobytes()
         )
 
     def pack_fast(self) -> bytes:
-        import struct
         self._fast_seq = (self._fast_seq + 1) & 0xFFFFFFFF
         header = struct.pack("<II", PARAM_FAST_MAGIC, self._fast_seq)
         return header + self.fast_floats.astype("<f4").tobytes()
@@ -205,6 +207,8 @@ class ParamBridge(QObject):
         self._enabled = True
         self._pkt_sent_slow = 0
         self._pkt_sent_fast = 0
+        self._send_drops = 0
+        self._last_send_error_log = 0.0
         self._error: str | None = None
         self._defaults_loaded = False
         self._status = ""
@@ -219,9 +223,10 @@ class ParamBridge(QObject):
 
         self._store = ParamStore(self._config)
 
-        # PS4-Controller-Erkennung: pollt selbstständig (eigener QTimer) und
-        # schreibt bei Verbindung direkt in self._store — siehe
-        # controller_bridge.py und apply_controller_values()/
+        # PS4-Controller-Erkennung. Wird NICHT von einem eigenen Timer
+        # getrieben, sondern direkt aus _send_fast_tick() heraus gepollt
+        # (siehe dort) und schreibt bei Verbindung direkt in self._store —
+        # siehe controller_bridge.py sowie apply_controller_values()/
         # fast_float_ranges() unten.
         self._controller = ControllerBridge(self, self)
 
@@ -232,6 +237,14 @@ class ParamBridge(QObject):
             self._groups = _build_groups(self._config)
 
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        # Nicht-blockierend: ein UDP-sendto() kann auf einem WLAN-Interface
+        # blockieren, sobald die Sendewarteschlange des Treibers voll ist
+        # (ENOBUFS). Das passiert genau dann, wenn der Funkkanal ohnehin
+        # ausgelastet ist -- und wuerde dann den kompletten GUI-Thread
+        # anhalten, inklusive des 10-ms-Timers, der die Steuerbefehle
+        # verschickt. Lieber ein einzelnes Paket verwerfen (der naechste
+        # Stand kommt in 10 ms) als die gesamte Oberflaeche einfrieren.
+        self._sock.setblocking(False)
         self._refresh_status()
 
         if self._error is None:
@@ -240,7 +253,11 @@ class ParamBridge(QObject):
             self._slow_timer.timeout.connect(self._send_slow_tick)
             self._slow_timer.start()
 
+            # PreciseTimer: Qt darf diesen Timer NICHT mit anderen zusammen-
+            # legen oder um bis zu 5 % verschieben -- er bestimmt direkt die
+            # Reaktionszeit der Fernsteuerung.
             self._fast_timer = QTimer(self)
+            self._fast_timer.setTimerType(Qt.TimerType.PreciseTimer)
             self._fast_timer.setInterval(PARAM_FAST_SEND_INTERVAL_MS)
             self._fast_timer.timeout.connect(self._send_fast_tick)
             self._fast_timer.start()
@@ -249,6 +266,15 @@ class ParamBridge(QObject):
             self._status_timer.setInterval(500)
             self._status_timer.timeout.connect(self._refresh_status)
             self._status_timer.start()
+        else:
+            # Ohne gueltige Konfiguration gibt es keinen Sendetimer -- der
+            # Controller wuerde dann nie gepollt und die GUI zeigte ihn als
+            # dauerhaft getrennt an. Ein eigener Timer haelt wenigstens die
+            # Statusanzeige korrekt.
+            self._fallback_poll_timer = QTimer(self)
+            self._fallback_poll_timer.setInterval(PARAM_FAST_SEND_INTERVAL_MS * 5)
+            self._fallback_poll_timer.timeout.connect(self._controller.poll)
+            self._fallback_poll_timer.start()
 
     # ── Properties ─────────────────────────────────────────────────────────
     @pyqtProperty(str, notify=errorChanged)
@@ -284,15 +310,16 @@ class ParamBridge(QObject):
         return {e.index: (e.min, e.max) for e in self._config.fast_floats}
 
     def apply_controller_values(self, values: list[float]) -> None:
-        """Wird 100x/s von ControllerBridge aufgerufen, sobald ein Controller
-        verbunden ist. Schreibt direkt in den ParamStore — der bestehende
-        _fast_timer sendet das Paket unverändert weiter, unabhängig davon,
-        ob der Wert von Touch (setFastFloat) oder von hier kommt."""
+        """Wird 100x/s aus ControllerBridge.poll() heraus aufgerufen, sobald
+        ein Controller verbunden ist — und zwar unmittelbar bevor
+        _send_fast_tick() das Paket packt. Schreibt direkt in den ParamStore,
+        unabhängig davon, ob der Wert von Touch (setFastFloat) oder von hier
+        kommt."""
         if self._error is not None:
             return
-        for i, v in enumerate(values):
-            if 0 <= i < len(self._store.fast_floats):
-                self._store.set_fast_float(i, v)
+        n = min(len(values), len(self._store.fast_floats))
+        if n:
+            self._store.fast_floats[:n] = values[:n]
 
     # ── Slots: Werte-Änderungen aus QML ───────────────────────────────────
     @pyqtSlot(int, float)
@@ -379,28 +406,57 @@ class ParamBridge(QObject):
         if not self._enabled:
             return
         ip, port = self._current_target(fast=False)
-        try:
-            self._sock.sendto(self._store.pack_slow(), (ip, port))
-            self._pkt_sent_slow += 1
-        except OSError as exc:
-            log.warning("Slow-Param-Sendefehler: %s", exc)
+        self._sendto(self._store.pack_slow(), ip, port, fast=False)
 
     def _send_fast_tick(self) -> None:
+        """100-Hz-Takt des Fast-Kanals.
+
+        Der Controller wird BEWUSST hier gepollt und nicht über einen eigenen
+        Timer: so ist der gerade gepackte Stand garantiert der zuletzt
+        gelesene. Zwei unabhängige 10-ms-Timer hatten eine driftende
+        Phasenlage und haben im Mittel 5 ms, im Maximum 10 ms zusätzliche –
+        und vor allem schwankende – Verzögerung erzeugt (siehe
+        controller_bridge.py, Abschnitt LATENZ).
+
+        Der Poll steht vor der `_enabled`-Prüfung, damit Verbindungsstatus
+        und Anzeige auch bei pausierter Übertragung stimmen."""
+        self._controller.poll()
+
         if not self._enabled:
             return
         ip, port = self._current_target(fast=True)
+        self._sendto(self._store.pack_fast(), ip, port, fast=True)
+
+    def _sendto(self, payload: bytes, ip: str, port: int, fast: bool) -> None:
         try:
-            self._sock.sendto(self._store.pack_fast(), (ip, port))
-            self._pkt_sent_fast += 1
+            self._sock.sendto(payload, (ip, port))
+            if fast:
+                self._pkt_sent_fast += 1
+            else:
+                self._pkt_sent_slow += 1
+        except BlockingIOError:
+            # Sendepuffer voll (siehe setblocking(False) in __init__).
+            # Beim Fast-Kanal ist das folgenlos: in 10 ms kommt der nächste,
+            # aktuellere Stand. Nur zählen, nicht pro Paket loggen — sonst
+            # flutet ein schlechter Funkkanal das Log mit 100 Zeilen/s.
+            self._send_drops += 1
         except OSError as exc:
-            log.warning("Fast-Param-Sendefehler: %s", exc)
+            self._send_drops += 1
+            now = _monotonic()
+            if now - self._last_send_error_log >= 2.0:
+                self._last_send_error_log = now
+                log.warning("Param-Sendefehler (%s-Kanal) an %s:%d: %s",
+                            "Fast" if fast else "Slow", ip, port, exc)
 
     def _refresh_status(self) -> None:
         ip = self._get_node_ip(self._active_node)
         state = "aktiv" if self._enabled else "pausiert"
+        ctrl = " - 🎮 Controller" if self._controller.connected else ""
+        drops = f" - Verworfen: {self._send_drops}" if self._send_drops else ""
         self._status = (
             f"{state} -> Node {self._active_node} ({ip}) - "
             f"Slow: {PARAM_SLOW_SEND_HZ:.1f} Hz ({self._pkt_sent_slow} Pkt) - "
             f"Fast: {PARAM_FAST_SEND_HZ:.0f} Hz ({self._pkt_sent_fast} Pkt)"
+            f"{drops}{ctrl}"
         )
         self.statusChanged.emit()

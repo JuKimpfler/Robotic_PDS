@@ -5,7 +5,7 @@ bt_flash_protocol.py
 Gemeinsames Byte-Frame-Protokoll für den Bluetooth-Flash-Kanal
 (Windows-PC <-> RPi Zero 2 W). Diese Datei ist auf BEIDEN Seiten identisch:
 
-  - PC:  pc_setup/pc_flash_tool/bt_flash_sender.py importiert sie aus ../../shared/
+  - PC:  pc_flash_tool/bt_flash_sender.py importiert sie aus ../../shared/
   - Pi:  rpi_zero_node/bt_flash_receiver.py importiert sie aus ../shared/
          (setup_node.sh kopiert sie mit nach /opt/power_debug_node/shared/)
 

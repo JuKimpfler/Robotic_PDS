@@ -64,9 +64,11 @@ BOOT_CONFIG="${BOOT_DIR}/config.txt"
 BOOT_CMDLINE="${BOOT_DIR}/cmdline.txt"
 
 # Netzwerk-Konfiguration
-# WICHTIG: SSID/Passwort MÜSSEN mit rpi_zero_node/setup_node.sh und dem
-# Default in rpi5_monitor/platform_utils.py (setup_hotspot) übereinstimmen,
-# und entsprechen jetzt dem aktuellen PC-Setup (pc_setup/setup_windows.bat).
+# WICHTIG: SSID/Passwort MÜSSEN mit rpi_zero_node/setup_node.sh (AP_SSID/
+# AP_PASS) und dem Default in rpi5_monitor/64Bit_Version/platform_utils.py
+# (setup_hotspot) übereinstimmen. Wird die GUI stattdessen auf einem
+# Windows-PC betrieben, muss dessen Mobile Hotspot dieselbe SSID/dasselbe
+# Passwort verwenden (siehe README, Abschnitt "PC Setup").
 AP_SSID="RoboDebug"
 AP_PASS="robodebug123"
 AP_IP="192.168.42.1"

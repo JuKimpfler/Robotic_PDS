@@ -3,3 +3,15 @@
 .vscode/c_cpp_properties.json
 .vscode/launch.json
 .vscode/ipch
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Lokale, geraetespezifische Anpassungen (siehe Doku/PS4_Controller_Implementierung.md)
+rpi5_monitor/64Bit_Version/controller_config.json
+
+# Reste eines abgebrochenen atomaren Schreibvorgangs (visuals_bridge.py)
+*.json.tmp

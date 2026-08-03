@@ -11,11 +11,12 @@ from __future__ import annotations
 import logging
 import subprocess
 import sys
+from time import monotonic
 
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal, pyqtProperty, pyqtSlot
 
 from config import (
-    GUI_TIMER_MS, NODE1_IP, NODE2_IP, VARIABLE_NAMES,
+    GUI_TIMER_MS, NODE1_IP, NODE2_IP, VARIABLE_NAMES, NODE_TIMEOUT_SEC,
     UDP_CHANNEL_DESC_REQUEST_PORT_NODE1, UDP_CHANNEL_DESC_REQUEST_PORT_NODE2,
 )
 from network_worker import NetworkManager
@@ -53,7 +54,12 @@ class AppBridge(QObject):
         self._visuals   = VisualsBridge(self)
         self._params    = ParamBridge(self.get_active_node_ip, self)
 
-        # ── Poll-Timer: identisch zu main_window.py::_poll_data (30 Hz) ──
+        # Zeitpunkt des letzten empfangenen Pakets je Node, für die
+        # Verbindungs-LEDs (siehe _poll_data).
+        self._node_last_seen = {1: 0.0, 2: 0.0}
+
+        # ── Poll-Timer: identisch zu main_window.py::_poll_data ──
+        #    GUI_TIMER_MS = 1000 / GUI_FPS = 50 ms -> 20 Hz
         self._poll_timer = QTimer(self)
         self._poll_timer.setInterval(GUI_TIMER_MS)
         self._poll_timer.timeout.connect(self._poll_data)
@@ -126,16 +132,49 @@ class AppBridge(QObject):
 
     # ── Daten-Pipeline (identisch zur bisherigen _poll_data-Logik) ───────
     def _poll_data(self) -> None:
-        q = self._nm.get_queue(self._active_node)
+        now = monotonic()
+        ip_changed = False
+        batch: list = []
 
-        batch = []
-        try:
-            while True:
-                nid, _ts, values, sender_ip = q.get_nowait()
-                batch.append(values)
-                self._node_ips[nid] = sender_ip
-        except Exception:
-            pass   # Queue leer
+        # BEIDE Queues leeren, nicht nur die des aktiven Nodes.
+        # Die Empfänger-Prozesse befüllen unabhängig vom GUI-Zustand beide
+        # Queues; wurde die des inaktiven Nodes nie gelesen, lief sie bis
+        # DATA_QUEUE_MAXSIZE (300) voll und blieb es — der zugehörige
+        # Prozess hat danach dauerhaft jedes Paket verworfen, und beim
+        # Umschalten auf diesen Node kamen erst einmal 300 uralte Pakete an.
+        # Nebeneffekt: die Verbindungs-LED des inaktiven Nodes stimmt jetzt.
+        for nid in (1, 2):
+            q = self._nm.get_queue(nid)
+            try:
+                while True:
+                    _nid, _ts, values, sender_ip = q.get_nowait()
+                    if nid == self._active_node:
+                        batch.append(values)
+                    if self._node_ips.get(nid) != sender_ip:
+                        self._node_ips[nid] = sender_ip
+                        ip_changed = True
+                    self._node_last_seen[nid] = now
+            except Exception:
+                pass   # Queue leer
+
+        # ── Verbindungs-LEDs: auch das AUSbleiben von Paketen auswerten ──
+        #    Bisher wurde `_node_connected` nur auf True gesetzt und nie
+        #    wieder zurück — eine einmal grüne LED blieb grün, selbst wenn
+        #    der Node längst abgeschaltet war.
+        led_changed = ip_changed
+        for nid in (1, 2):
+            alive = (now - self._node_last_seen[nid]) < NODE_TIMEOUT_SEC
+            if alive != self._node_connected[nid]:
+                self._node_connected[nid] = alive
+                led_changed = True
+        if led_changed:
+            self.ledChanged.emit()
+
+        # Namens-/Overlay-Deskriptor vom Teensy (einmalig beim Boot + auf
+        # Anfrage). Bewusst VOR dem batch-Abbruch: der Deskriptor kommt über
+        # eine eigene Queue und wurde bisher nur dann ausgewertet, wenn im
+        # selben 50-ms-Fenster auch Telemetrie eintraf.
+        self._poll_descriptor()
 
         if not batch:
             return
@@ -146,20 +185,20 @@ class AppBridge(QObject):
         self._telemetry.update_data(latest)
         self._plotter.append_batch(batch)
 
-        self._node_connected[self._active_node] = True
-        self.ledChanged.emit()
-
-        # Namens-/Overlay-Deskriptor vom Teensy (einmalig beim Boot + auf Anfrage)
-        self._poll_descriptor()
-
     def _poll_descriptor(self) -> None:
-        q = self._nm.get_desc_queue(self._active_node)
+        # Auch hier beide Queues leeren (siehe _poll_data): sonst sammeln
+        # sich Deskriptoren des inaktiven Nodes unbegrenzt an und werden beim
+        # Umschalten alle auf einmal verarbeitet.
         data = None
-        try:
-            while True:
-                data = q.get_nowait()   # nur das neueste Paket interessiert
-        except Exception:
-            pass   # Queue leer
+        for nid in (1, 2):
+            q = self._nm.get_desc_queue(nid)
+            try:
+                while True:
+                    latest = q.get_nowait()   # nur das neueste Paket interessiert
+                    if nid == self._active_node:
+                        data = latest
+            except Exception:
+                pass   # Queue leer
 
         if data is None:
             return

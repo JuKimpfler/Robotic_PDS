@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-spi_receiver.py — RPi Zero W Node  (v5 — Einthreadige Event-Loop)
+spi_receiver.py — RPi Zero W Node  (v6 — Unicast-Telemetrie + Fast-Coalescing)
 ==========================================================
 Liest Binärpakete vom Teensy 4.0 über UART und leitet sie sofort als
 UDP-Datagramm an den RPi 5 weiter. Empfängt außerdem zwei Param-Downlink-
@@ -8,7 +8,38 @@ Streams (Slow + Fast) vom RPi 5 und reicht sie unverändert über UART_DBG-TX
 an den Teensy weiter.
 
 ────────────────────────────────────────────────────────────────────────────
-WARUM v5 EIN KOMPLETTER UMBAU IST (Bugfix für Throughput-Einbruch):
+WAS v6 GEGENÜBER v5 ÄNDERT (Bugfix: Latenz der Fernsteuerung):
+────────────────────────────────────────────────────────────────────────────
+1. TELEMETRIE PER UNICAST STATT BROADCAST.
+   v5 hat jedes Telemetriepaket (808 B, 100 Hz = 80.8 kB/s) an
+   255.255.255.255 geschickt. WLAN sendet Broadcast-/Multicast-Frames
+   zwingend mit der niedrigsten Basisrate des BSS, ohne MAC-Level-ACK und
+   ohne Frame-Aggregation. Bei 6 Mbit/s Basisrate belegt ein Node damit
+   grob 10-15 % der Funkzeit, bei 1 Mbit/s ein Vielfaches davon — mit zwei
+   Nodes ist der Kanal praktisch dicht. Die 28-Byte-Fast-Pakete (Joystick/
+   Controller) in der Gegenrichtung stehen dann in der Sendewarteschlange
+   des Access Points an und kommen verzögert und stoßweise an: genau das
+   spürbare "Steuerung reagiert träge/ruckelig".
+   v6 lernt die Adresse der GUI aus den eingehenden Param-Paketen und
+   schickt die Telemetrie danach per Unicast dorthin (volle MCS-Rate,
+   Aggregation, ARQ). Solange noch nichts gelernt wurde — und wenn länger
+   als DEST_LEARN_TIMEOUT nichts mehr von der GUI kam — bleibt es beim
+   bisherigen Broadcast, das Verhalten ist also nie schlechter als v5.
+
+2. NUR DAS JEWEILS NEUESTE FAST-PAKET WIRD WEITERGEREICHT.
+   Lagen mehrere Fast-Pakete im Socket-Puffer (WLAN liefert sie gern in
+   Bündeln aus), hat v5 sie alle nacheinander über die UART geschoben. Der
+   Teensy hat dann veraltete Joystick-Stände abgearbeitet, bevor er beim
+   aktuellen ankam. v6 verwirft die überholten Pakete sofort — beim
+   Fast-Kanal zählt ausschließlich der neueste Stand.
+
+3. KEIN subprocess-FORK MEHR IM 15-Sekunden-Takt.
+   Der WLAN-Check hat "ip addr show wlan0" gestartet, also den kompletten
+   Python-Prozess geforkt. Auf dem RPi Zero 2 W ist das ein spürbarer
+   Aussetzer mitten im 100-Hz-Betrieb. Jetzt per ioctl(SIOCGIFADDR).
+
+────────────────────────────────────────────────────────────────────────────
+WARUM v5 EIN KOMPLETTER UMBAU WAR (Bugfix für Throughput-Einbruch):
 ────────────────────────────────────────────────────────────────────────────
 In v4 liefen UART-Reader, NetworkMonitor, ParamDownlinkSlow und
 ParamDownlinkFast als VIER separate Python-Threads. Sobald der Fast-Kanal
@@ -30,9 +61,16 @@ Puffer-Zustandsautomat (TelemetryFrameAssembler) die alte byte-fuer-byte
 Resync-Schleife durch ein effizientes bytearray.find()-basiertes Verfahren.
 
 Umgebungsvariablen:
-    NODE_ID  = 1 oder 2  (Standard: 1)
-    RPI5_IP  = IP des RPi 5 (Standard: 192.168.42.1) — aktuell nur fuer
-               Logging verwendet, der eigentliche Versand ist Broadcast.
+    NODE_ID   = 1 oder 2  (Standard: 1)
+    RPI5_IP   = erwartete IP des RPi 5 (Standard: 192.168.42.1). Nur
+                Anzeige/Log — welches Ziel tatsaechlich verwendet wird,
+                ergibt sich aus den eingehenden Param-Paketen (siehe
+                TelemetryTarget).
+    PDS_TELEMETRY_DEST      = feste Ziel-IP erzwingen (kein Lernen, kein
+                              Broadcast). Nuetzlich fuer feste Setups.
+    PDS_TELEMETRY_BROADCAST = "1" -> immer Broadcast wie in v5 (Notnagel,
+                              falls das Lernen in einem exotischen Netz
+                              nicht funktioniert).
 
 Paket-Format (vom Teensy, Telemetrie):
     [Header: 4 Bytes = 0xDEADBEEF][Timestamp: 4 Bytes][Data: 200 × float32]
@@ -42,9 +80,10 @@ Param-Downlink (vom RPi 5, Gegenrichtung):
     Slow-Kanal (Port 700X): 50 Floats + 50 Bools, 2 Hz    (Magic 0xCAFEFEED, 258 B)
     Fast-Kanal (Port 701X): 5 Floats, 100 Hz               (Magic 0xFA57DA7A, 28 B)
 
-Verdrahtung:
-    RPi GPIO15 (Pin 10, UART RX) ←── Teensy Pin 1 (TX1)
-    RPi GPIO14 (Pin  8, UART TX) ──→ Teensy Pin 0 (RX1)  [Pflicht fuer Param-Downlink]
+Verdrahtung (Teensy-Seite = UART_DBG, per Default Serial3 -> Pin 14/15;
+siehe teensy_firmware/src/params.h):
+    RPi GPIO15 (Pin 10, UART RX) ←── Teensy Pin 14 (TX3)
+    RPi GPIO14 (Pin  8, UART TX) ──→ Teensy Pin 15 (RX3)  [Pflicht fuer Param-Downlink]
     GND (Pin 6)                  ───  GND
 
 UART-Einrichtung (RPi Zero W, einmalig):
@@ -62,7 +101,11 @@ import socket
 import struct
 import logging
 import selectors
-import subprocess
+
+try:
+    import fcntl          # nur Linux — auf dem Node immer vorhanden
+except ImportError:       # pragma: no cover  (erlaubt Import/Lint unter Windows)
+    fcntl = None
 
 import serial
 
@@ -70,6 +113,12 @@ import serial
 NODE_ID      = int(os.environ.get("NODE_ID", "1"))
 RPI5_IP      = os.environ.get("RPI5_IP", "192.168.42.1")
 UDP_PORT     = 5000 + NODE_ID          # 5001 oder 5002
+
+# Ziel-Auswahl fuer den Telemetrie-Uplink (siehe Modul-Docstring, Punkt 1)
+FORCED_DEST        = os.environ.get("PDS_TELEMETRY_DEST", "").strip()
+FORCE_BROADCAST    = os.environ.get("PDS_TELEMETRY_BROADCAST", "").strip() == "1"
+BROADCAST_ADDR     = "255.255.255.255"
+DEST_LEARN_TIMEOUT = 10.0   # s ohne Param-Paket -> zurueck auf Broadcast
 
 UART_PORT    = "/dev/ttyAMA0"          # PL011 Full-UART (nach dtoverlay=disable-bt)
 UART_BAUD    = 1_000_000               # 1 Mbps — muss mit params.h (UART_DBG_BAUD) übereinstimmen!
@@ -191,32 +240,52 @@ class ChunkFrameAssembler:
 
     Läuft unabhängig neben TelemetryFrameAssembler auf demselben Rohbyte-Strom
     (beide bekommen denselben ser.read()-Chunk): Bytes, die nicht zum eigenen
-    Magic gehören, werden als Rauschen verworfen (sync_losses) -- das ist
-    unproblematisch, da Telemetrie-Header (0xDEADBEEF) und Deskriptor-Header
-    (0xDE5C0001, gefolgt von reinem ASCII-JSON) sich nicht überschneiden
-    können.
+    Magic gehören, werden verworfen -- das ist unproblematisch, da
+    Telemetrie-Header (0xDEADBEEF) und Deskriptor-Header (0xDE5C0001, gefolgt
+    von reinem ASCII-JSON) sich nicht überschneiden können.
+
+    Optimierung: Solange KEIN Deskriptor unterwegs ist (der Normalfall — der
+    Teensy sendet ihn nur beim Boot und auf Anfrage), landet der komplette
+    80-kB/s-Telemetriestrom hier trotzdem an. Statt ihn wie bisher in einen
+    wachsenden bytearray zu kopieren und anschliessend wieder zu beschneiden,
+    wird jetzt nur noch direkt auf dem Eingangs-Chunk gesucht und lediglich
+    dessen letzte 3 Bytes gemerkt (ein Magic koennte ueber die Chunk-Grenze
+    hinweg zerschnitten sein). Erst wenn wirklich ein Magic auftaucht, wird
+    gepuffert.
     """
 
     def __init__(self) -> None:
-        self._buf = bytearray()
-        self.sync_losses = 0
+        self._buf = bytearray()   # nur belegt, solange ein Chunk unvollstaendig ist
+        self._tail = b""          # letzte <=3 Bytes des vorherigen Blocks
         self.packets_out = 0
 
     def feed(self, chunk: bytes) -> list[bytes]:
         if not chunk:
             return []
-        self._buf.extend(chunk)
+
+        if not self._buf:
+            # Suchmodus: nur pruefen, ob ueberhaupt ein Magic im Strom ist.
+            probe = (self._tail + chunk) if self._tail else chunk
+            idx = probe.find(CHANNEL_DESC_MAGIC_BYTES)
+            if idx < 0:
+                self._tail = probe[-3:]
+                return []
+            self._buf.extend(probe[idx:])
+            self._tail = b""
+        else:
+            self._buf.extend(chunk)
+
         packets: list[bytes] = []
 
         while True:
             idx = self._buf.find(CHANNEL_DESC_MAGIC_BYTES)
-            if idx == -1:
-                if len(self._buf) > 3:
-                    del self._buf[:-3]
+            if idx < 0:
+                # Nur noch Fremdbytes im Puffer -> zurueck in den Suchmodus
+                self._tail = bytes(self._buf[-3:])
+                self._buf.clear()
                 break
 
             if idx > 0:
-                self.sync_losses += 1
                 del self._buf[:idx]
 
             if len(self._buf) < CHANNEL_DESC_HEADER_BYTES:
@@ -236,19 +305,88 @@ class ChunkFrameAssembler:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  Netzwerk-Check (jetzt eine einfache Funktion statt eigenem Thread)
+#  Netzwerk-Check — ohne Prozess-Fork
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _check_wlan_connected() -> bool:
-    """Prüft ob wlan0 überhaupt eine IP-Adresse besitzt (DHCP erfolgreich)."""
+_SIOCGIFADDR = 0x8915   # linux/sockios.h
+
+
+def _wlan_ip(iface: str = "wlan0") -> str | None:
+    """IPv4-Adresse eines Interfaces oder None (kein DHCP-Lease).
+
+    Frueher via subprocess "ip addr show wlan0" — das forkt den kompletten
+    Python-Prozess und erzeugt auf dem RPi Zero 2 W einen Aussetzer von
+    zig Millisekunden mitten im 100-Hz-Weiterleitungsbetrieb. Der ioctl
+    kostet dagegen nichts.
+    """
+    if fcntl is None:
+        return None
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
-        result = subprocess.run(
-            ["ip", "addr", "show", "wlan0"],
-            capture_output=True, text=True, timeout=3,
+        packed = fcntl.ioctl(
+            sock.fileno(), _SIOCGIFADDR,
+            struct.pack("256s", iface.encode("utf-8")[:15]),
         )
-        return "inet " in result.stdout
-    except Exception:
-        return False
+        return socket.inet_ntoa(packed[20:24])
+    except OSError:
+        return None
+    finally:
+        sock.close()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  TelemetryTarget — wohin der Uplink geht (siehe Modul-Docstring, Punkt 1)
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TelemetryTarget:
+    """Bestimmt die Ziel-IP fuer Telemetrie- und Deskriptor-Pakete.
+
+    Reihenfolge:
+      1. PDS_TELEMETRY_BROADCAST=1  -> immer Broadcast (altes v5-Verhalten)
+      2. PDS_TELEMETRY_DEST=<ip>    -> immer diese Adresse
+      3. Adresse, von der zuletzt ein Param-/Deskriptor-Paket kam (Unicast)
+      4. Broadcast, solange nichts gelernt wurde bzw. die gelernte Adresse
+         laenger als DEST_LEARN_TIMEOUT stumm ist
+
+    Punkt 4 ist die Sicherheitsleine: schlimmstenfalls verhaelt sich der Node
+    exakt wie vorher, es kann also nichts ausfallen, was vorher lief.
+    """
+
+    def __init__(self) -> None:
+        self._learned: str | None = None
+        self._last_seen = 0.0
+        self.changes = 0
+
+    def note_sender(self, addr: str) -> None:
+        """Adresse aus einem eingehenden Paket der GUI uebernehmen."""
+        self._last_seen = time.monotonic()
+        if addr != self._learned:
+            log.info(
+                "Telemetrie-Ziel: %s -> %s (Unicast statt Broadcast)",
+                self._learned or "Broadcast", addr,
+            )
+            self._learned = addr
+            self.changes += 1
+
+    def resolve(self) -> str:
+        if FORCE_BROADCAST:
+            return BROADCAST_ADDR
+        if FORCED_DEST:
+            return FORCED_DEST
+        if self._learned is None:
+            return BROADCAST_ADDR
+        if time.monotonic() - self._last_seen > DEST_LEARN_TIMEOUT:
+            log.warning(
+                "Seit %.0f s kein Param-Paket von %s — zurueck auf Broadcast.",
+                DEST_LEARN_TIMEOUT, self._learned,
+            )
+            self._learned = None
+            return BROADCAST_ADDR
+        return self._learned
+
+    @property
+    def is_broadcast(self) -> bool:
+        return self.resolve() == BROADCAST_ADDR
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -257,7 +395,7 @@ def _check_wlan_connected() -> bool:
 
 def main() -> None:
     log.info(
-        f"Starte | NODE_ID={NODE_ID} | UDP→{RPI5_IP}:{UDP_PORT} (Broadcast) | "
+        f"Starte | NODE_ID={NODE_ID} | UDP-Port {UDP_PORT} | erwarteter RPi5: {RPI5_IP} | "
         f"UART {UART_PORT} @ {UART_BAUD // 1_000_000} Mbps | "
         f"{PACKET_BYTES} Bytes/Paket | {MAX_FLOATS} Floats"
     )
@@ -269,9 +407,15 @@ def main() -> None:
         f"Namens-/Overlay-Deskriptor | Chunks: UDP :{UDP_CHANNEL_DESC_PORT} | "
         f"Request: UDP :{UDP_CHANNEL_DESC_REQUEST_PORT}"
     )
-    log.info("v5: einthreadige selectors-Event-Loop (kein GIL-Konkurrenzproblem mehr)")
+    if FORCE_BROADCAST:
+        log.info("v6: Telemetrie-Ziel = Broadcast (PDS_TELEMETRY_BROADCAST=1 erzwungen)")
+    elif FORCED_DEST:
+        log.info(f"v6: Telemetrie-Ziel = {FORCED_DEST} (PDS_TELEMETRY_DEST erzwungen)")
+    else:
+        log.info("v6: Telemetrie-Ziel wird aus den Param-Paketen der GUI gelernt "
+                 "(bis dahin Broadcast)")
 
-    # ── UART öffnen (nicht-blockierend: timeout=0 -> read() kehrt sofort zurück) ──
+    # ── UART öffnen (nicht-blockierend lesen: timeout=0 -> read() kehrt sofort zurück) ──
     try:
         ser = serial.Serial(
             port         = UART_PORT,
@@ -280,7 +424,15 @@ def main() -> None:
             parity       = serial.PARITY_NONE,
             stopbits     = serial.STOPBITS_ONE,
             timeout      = 0,      # nicht-blockierend: read() liefert sofort, was da ist
-            write_timeout = 0,     # write() blockiert ebenfalls nicht
+            # write_timeout war 0 (nicht-blockierend). pyserial gibt dann bei
+            # einem vollen Kernel-Puffer die Zahl der TATSAECHLICH
+            # geschriebenen Bytes zurueck, ohne Fehler -- ein halb
+            # geschriebenes Param-Paket bringt den Teensy-Parser aus dem
+            # Tritt. Der Downlink ist mit ~3.3 kB/s gegen 100 kB/s
+            # Leitungskapazitaet so schmal, dass dieser Fall praktisch nie
+            # eintritt; falls doch, wartet write() jetzt lieber kurz, statt
+            # den Bytestrom zu zerreissen.
+            write_timeout = 0.05,
             xonxoff      = False,
             rtscts       = False,
             dsrdtr       = False,
@@ -322,6 +474,7 @@ def main() -> None:
 
     assembler = TelemetryFrameAssembler()
     desc_assembler = ChunkFrameAssembler()
+    target = TelemetryTarget()
 
     # ── Statistik ────────────────────────────────────────────────────────────
     pkt_sent      = 0
@@ -330,6 +483,7 @@ def main() -> None:
     fwd_slow_ok   = 0
     fwd_fast_ok   = 0
     fwd_bad       = 0
+    fwd_stale     = 0   # ueberholte Fast-Pakete, bewusst verworfen
     fwd_desc_req  = 0
     desc_pkt_sent = 0
     last_sync_losses = 0
@@ -337,7 +491,49 @@ def main() -> None:
     t_stat_start   = time.monotonic()
     t_last_netcheck = time.monotonic()
 
-    log.info("Event-Loop gestartet — warte auf Daten (UART + 2× UDP)...")
+    def uart_write(data: bytes, tag: str) -> bool:
+        """Schreibt ein komplettes Paket auf die UART. Ein Teilschreibvorgang
+        wuerde den Paketstrom fuer den Teensy-Parser zerreissen, deshalb wird
+        er als Fehler behandelt und geloggt statt still hingenommen."""
+        try:
+            written = ser.write(data)
+        except serial.SerialException as exc:
+            log.warning(f"[{tag}] UART-Schreibfehler: {exc}")
+            return False
+        if written is not None and written != len(data):
+            log.warning(f"[{tag}] UART-Teilschreibvorgang: {written}/{len(data)} Bytes")
+            return False
+        return True
+
+    def drain_latest(sock, max_len: int, magic: bytes, exact_len: int):
+        """Liest ALLE anstehenden Datagramme des Sockets und gibt nur das
+        letzte gueltige zurueck, zusammen mit (Anzahl_verworfen, Anzahl_ungueltig).
+
+        Fuer den Fast-Kanal ist das der entscheidende Punkt: liefert das WLAN
+        drei Pakete auf einmal aus, sind die ersten beiden Joystick-Staende
+        bereits ueberholt. Sie trotzdem ueber die UART zu schieben kostet nur
+        Zeit und laesst den Teensy veraltete Werte abarbeiten."""
+        newest = None
+        newest_addr = None
+        stale = 0
+        bad = 0
+        while True:
+            try:
+                data, addr = sock.recvfrom(max_len)
+            except (BlockingIOError, InterruptedError):
+                break
+            except OSError:
+                break
+            if len(data) == exact_len and data[:4] == magic:
+                if newest is not None:
+                    stale += 1
+                newest = data
+                newest_addr = addr[0]
+            else:
+                bad += 1
+        return newest, newest_addr, stale, bad
+
+    log.info("Event-Loop gestartet — warte auf Daten (UART + 3× UDP)...")
 
     try:
         while True:
@@ -349,9 +545,11 @@ def main() -> None:
                 if key.data == "uart":
                     # Nicht-blockierend: liefert sofort 0..N verfügbare Bytes
                     chunk = ser.read(4096)
+                    dest = target.resolve()
+
                     for raw in assembler.feed(chunk):
                         try:
-                            sent = udp_out.sendto(raw, ("255.255.255.255", UDP_PORT))
+                            sent = udp_out.sendto(raw, (dest, UDP_PORT))
                             pkt_sent += 1
                             bytes_sent += sent
                         except OSError as exc:
@@ -362,53 +560,55 @@ def main() -> None:
                     # (siehe ChunkFrameAssembler-Docstring).
                     for raw in desc_assembler.feed(chunk):
                         try:
-                            udp_out.sendto(raw, ("255.255.255.255", UDP_CHANNEL_DESC_PORT))
+                            udp_out.sendto(raw, (dest, UDP_CHANNEL_DESC_PORT))
                             desc_pkt_sent += 1
                         except OSError as exc:
                             log.warning(f"UDP-Sendefehler (Deskriptor): {exc}")
                             send_errors += 1
 
                 elif key.data == "desc_request":
-                    try:
-                        data, _addr = desc_request_sock.recvfrom(CHANNEL_DESC_REQUEST_PACKET_BYTES + 64)
-                    except (BlockingIOError, OSError):
-                        continue
-                    if len(data) == CHANNEL_DESC_REQUEST_PACKET_BYTES and data == CHANNEL_DESC_REQUEST_MAGIC_BYTES:
-                        try:
-                            ser.write(data)
+                    data, addr, _stale, bad = drain_latest(
+                        desc_request_sock,
+                        CHANNEL_DESC_REQUEST_PACKET_BYTES + 64,
+                        CHANNEL_DESC_REQUEST_MAGIC_BYTES,
+                        CHANNEL_DESC_REQUEST_PACKET_BYTES,
+                    )
+                    fwd_bad += bad
+                    if data is not None:
+                        target.note_sender(addr)
+                        if uart_write(data, "DescRequest"):
                             fwd_desc_req += 1
-                        except serial.SerialException as exc:
-                            log.warning(f"[DescRequest] UART-Schreibfehler: {exc}")
-                    else:
-                        fwd_bad += 1
 
                 elif key.data == "param_slow":
-                    try:
-                        data, _addr = slow_sock.recvfrom(PARAM_SLOW_PACKET_BYTES + 64)
-                    except (BlockingIOError, OSError):
-                        continue
-                    if len(data) == PARAM_SLOW_PACKET_BYTES and data[:4] == PARAM_SLOW_MAGIC_BYTES:
-                        try:
-                            ser.write(data)
+                    # Slow-Kanal: ebenfalls nur der neueste Stand — ein
+                    # ueberholtes Konfigurationspaket 258 B durch die UART zu
+                    # schieben verzoegert nur den Fast-Kanal dahinter.
+                    data, addr, stale, bad = drain_latest(
+                        slow_sock,
+                        PARAM_SLOW_PACKET_BYTES + 64,
+                        PARAM_SLOW_MAGIC_BYTES,
+                        PARAM_SLOW_PACKET_BYTES,
+                    )
+                    fwd_bad += bad
+                    fwd_stale += stale
+                    if data is not None:
+                        target.note_sender(addr)
+                        if uart_write(data, "Slow"):
                             fwd_slow_ok += 1
-                        except serial.SerialException as exc:
-                            log.warning(f"[Slow] UART-Schreibfehler: {exc}")
-                    else:
-                        fwd_bad += 1
 
                 elif key.data == "param_fast":
-                    try:
-                        data, _addr = fast_sock.recvfrom(PARAM_FAST_PACKET_BYTES + 64)
-                    except (BlockingIOError, OSError):
-                        continue
-                    if len(data) == PARAM_FAST_PACKET_BYTES and data[:4] == PARAM_FAST_MAGIC_BYTES:
-                        try:
-                            ser.write(data)
+                    data, addr, stale, bad = drain_latest(
+                        fast_sock,
+                        PARAM_FAST_PACKET_BYTES + 64,
+                        PARAM_FAST_MAGIC_BYTES,
+                        PARAM_FAST_PACKET_BYTES,
+                    )
+                    fwd_bad += bad
+                    fwd_stale += stale
+                    if data is not None:
+                        target.note_sender(addr)
+                        if uart_write(data, "Fast"):
                             fwd_fast_ok += 1
-                        except serial.SerialException as exc:
-                            log.warning(f"[Fast] UART-Schreibfehler: {exc}")
-                    else:
-                        fwd_bad += 1
 
             # ── Periodische Aufgaben (statt eigener Threads) ────────────────────
             now = time.monotonic()
@@ -418,21 +618,23 @@ def main() -> None:
                 pps = pkt_sent / elapsed
                 kbps = bytes_sent / elapsed / 1024
                 new_losses = assembler.sync_losses - last_sync_losses
+                dest = target.resolve()
                 log.info(
-                    f"Telemetrie: {pps:.1f} Pkt/s | {kbps:.1f} KB/s | "
+                    f"Telemetrie -> {dest}: {pps:.1f} Pkt/s | {kbps:.1f} KB/s | "
                     f"Sync-Verluste: {new_losses} | Sendefehler: {send_errors} || "
                     f"Param-Downlink: Slow={fwd_slow_ok} Fast={fwd_fast_ok} "
-                    f"({fwd_fast_ok / elapsed:.1f} Pkt/s) ungültig={fwd_bad} || "
+                    f"({fwd_fast_ok / elapsed:.1f} Pkt/s) überholt={fwd_stale} "
+                    f"ungültig={fwd_bad} || "
                     f"Deskriptor: Chunks_ok={desc_pkt_sent} Requests_fwd={fwd_desc_req}"
                 )
                 pkt_sent = bytes_sent = send_errors = 0
-                fwd_slow_ok = fwd_fast_ok = fwd_bad = 0
+                fwd_slow_ok = fwd_fast_ok = fwd_bad = fwd_stale = 0
                 desc_pkt_sent = fwd_desc_req = 0
                 last_sync_losses = assembler.sync_losses
                 t_stat_start = now
 
             if now - t_last_netcheck >= NET_CHECK_INTERVAL:
-                if not _check_wlan_connected():
+                if _wlan_ip() is None:
                     log.warning("WLAN nicht verbunden (keine IP-Adresse auf wlan0)")
                 t_last_netcheck = now
 

@@ -183,7 +183,10 @@ class TelemetryBridge(QObject):
     # ── Vom AppBridge-Poll-Loop aufgerufen ────────────────────────────────
     def update_data(self, values: np.ndarray) -> None:
         self.table_model.update_data(values)
-        self._latest = [float(v) for v in values]
+        # ndarray.tolist() konvertiert in C statt über eine Python-Schleife
+        # mit 200 float()-Aufrufen pro Durchlauf (20x/s = 4000 Aufrufe/s,
+        # alle im GUI-Thread, der parallel den 100-Hz-Sendetimer bedienen muss).
+        self._latest = values.tolist()
         self.valuesChanged.emit()
 
     @pyqtSlot()

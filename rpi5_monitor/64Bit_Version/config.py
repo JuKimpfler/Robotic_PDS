@@ -54,6 +54,16 @@ UDP_PARAM_FAST_PORT_NODE2 = 7012
 PARAM_FAST_SEND_HZ          = 100.0
 PARAM_FAST_SEND_INTERVAL_MS = int(1000 / PARAM_FAST_SEND_HZ)   # 10
 
+# ── PS4-Controller (siehe bridge/controller_bridge.py) ────────────────────────
+# Die optionale Datei CONTROLLER_CONFIG_PATH (weiter unten definiert)
+# überschreibt bei Bedarf die Achsen-/Button-Zuordnung.
+#
+# Wie oft die Controller-Werte an QML gemeldet werden. Der Fast-Kanal wird
+# unabhängig davon mit PARAM_FAST_SEND_HZ gesendet — die Anzeige muss dem
+# aber nicht mit 100 Hz folgen (das Display schafft max. 60 fps und jedes
+# Signal kostet GUI-Thread-Zeit, die dem Sendetimer fehlt).
+CONTROLLER_UI_NOTIFY_MS = 40    # 25 Hz
+
 # ── Namens-/Overlay-Deskriptor (Teensy -> GUI, einmalig beim Boot + auf Anfrage) ─
 # Muss exakt mit params.h (Teensy) und rpi_zero_node/spi_receiver.py übereinstimmen!
 CHANNEL_DESC_MAGIC          = 0xDE5C0001
@@ -69,14 +79,17 @@ UDP_CHANNEL_DESC_REQUEST_PORT_NODE2 = 7022
 
 # ── Param-Downlink: Konfigurations- & Persistenzdateien ────────────────────────
 from pathlib import Path as _Path
-PARAM_CONFIG_PATH     = _Path(__file__).parent / "param_config.json"
-PARAM_DEFAULTS_H_PATH = _Path(__file__).parent / "param_defaults.h"
+PARAM_CONFIG_PATH      = _Path(__file__).parent / "param_config.json"
+PARAM_DEFAULTS_H_PATH  = _Path(__file__).parent / "param_defaults.h"
+CONTROLLER_CONFIG_PATH = _Path(__file__).parent / "controller_config.json"
 
 # ── Paket-Format ──────────────────────────────────────────────────────────────
+# MAX_FLOATS ist Wire-Format und muss mit teensy_firmware/src/PDS.cpp
+# (MAX_FLOATS) und rpi_zero_node/spi_receiver.py (MAX_FLOATS) übereinstimmen.
 PACKET_HEADER_MAGIC = 0xDEADBEEF    # Muss mit Teensy übereinstimmen
 HEADER_SIZE         = 8              # uint32 magic + uint32 timestamp
 MAX_FLOATS          = 200           # Maximale Anzahl float32 pro Paket
-PACKET_SIZE_BYTES   = HEADER_SIZE + MAX_FLOATS * 4   # 4008 Bytes
+PACKET_SIZE_BYTES   = HEADER_SIZE + MAX_FLOATS * 4   # 808 Bytes
 DUMMY_VALUE         = 9898.0         # Füllwert für inaktive Kanäle
 
 # ── Netzwerk-Worker Performance ───────────────────────────────────────────────
@@ -86,6 +99,10 @@ DATA_QUEUE_MAXSIZE  = 300            # Maximale Queue-Tiefe (dann: Drop älteste
 # ── GUI Timing ────────────────────────────────────────────────────────────────
 GUI_FPS             = 20
 GUI_TIMER_MS        = 1000 // GUI_FPS        # 50 ms
+
+# Nach dieser Zeit ohne empfangenes Telemetriepaket gilt ein Node als
+# getrennt (Verbindungs-LED in der StatusBar, siehe app_bridge.py).
+NODE_TIMEOUT_SEC    = 1.5
 
 # ── Plotter ───────────────────────────────────────────────────────────────────
 PLOT_HISTORY_SEC    = 10              # Sekunden sichtbarer Verlauf

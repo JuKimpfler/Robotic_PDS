@@ -31,7 +31,7 @@
 #  WIRELESS-FLASH-FEATURE (siehe Flash_Implementierung.md im Projekt-Root):
 #    Nach Abschluss + reboot gibt dieses Skript MAC-Adresse, Auth-Token und
 #    RFCOMM-Kanal aus — diese Werte in
-#    pc_setup/pc_flash_tool/bt_targets.json auf dem Windows-PC eintragen.
+#    pc_flash_tool/bt_targets.json auf dem Windows-PC eintragen.
 #
 #    Seit der Ergänzung um trigger_bootloader_mode() in bt_flash_receiver.py
 #    versetzt der Node den Teensy 4.0 VOR jedem Flash-Vorgang per Software in
@@ -537,7 +537,7 @@ echo "   Geraetename:  PDS-Node${NODE_ID}-BT (sichtbar erst NACH sudo reboot)"
 echo "   Pairing-PIN:  0000 (Auto-Accept-Agent, siehe bt_flash_receiver.py)"
 echo ""
 echo "   -> Diese drei Werte (MAC, Token, Kanal) in bt_targets.json auf dem"
-echo "      Windows-PC eintragen (pc_setup/pc_flash_tool/bt_targets.json)."
+echo "      Windows-PC eintragen (pc_flash_tool/bt_targets.json)."
 
 echo ""
 info "──── Software-Bootloader-Trigger (kein Knopfdruck mehr nötig) ────"

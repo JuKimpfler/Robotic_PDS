@@ -22,9 +22,26 @@ import sys
 Import("env")
 
 PROJECT_DIR = env["PROJECT_DIR"]
-SENDER_SCRIPT = os.path.normpath(
-    os.path.join(PROJECT_DIR, "..", "pc_setup", "pc_flash_tool", "bt_flash_sender.py")
+
+# Der Pfad zeigte auf "../pc_setup/pc_flash_tool/" -- ein Verzeichnis, das es
+# in diesem Repository nicht (mehr) gibt; das Tool liegt unter
+# "../pc_flash_tool/". Beide Varianten werden der Reihe nach probiert, damit
+# ein aelteres, lokal noch anders strukturiertes Arbeitsverzeichnis weiter
+# funktioniert.
+_CANDIDATES = (
+    os.path.join(PROJECT_DIR, "..", "pc_flash_tool", "bt_flash_sender.py"),
+    os.path.join(PROJECT_DIR, "..", "pc_setup", "pc_flash_tool", "bt_flash_sender.py"),
 )
+
+SENDER_SCRIPT = next(
+    (os.path.normpath(p) for p in _CANDIDATES if os.path.isfile(p)),
+    os.path.normpath(_CANDIDATES[0]),
+)
+
+if not os.path.isfile(SENDER_SCRIPT):
+    print(f"[extra_script] WARNUNG: bt_flash_sender.py nicht gefunden "
+          f"(gesucht: {', '.join(os.path.normpath(p) for p in _CANDIDATES)}). "
+          f"Die 'Upload BT'-Targets werden fehlschlagen.")
 
 # Python-Interpreter des aktuellen PlatformIO-venv verwenden (robust unter Win/Linux/Mac)
 PYTHON_EXE = sys.executable
