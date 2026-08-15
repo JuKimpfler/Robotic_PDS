@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # ================================================================
-#  Power Debug System — Raspberry Pi 5 Master Setup
+#  Power Debug System — Raspberry pi 4 Master Setup
 # ================================================================
-#  Richtet den RPi 5 als zentralen Debug-Monitor ein:
+#  Richtet den Rpi 4 als zentralen Debug-Monitor ein:
 #    1. Hostname setzen
 #    2. Systempakete + Python-Abhängigkeiten
 #    3. Anwendungsdateien installieren
@@ -45,8 +45,8 @@ fi
 MODEL=""
 [[ -f /proc/device-tree/model ]] && MODEL=$(tr -d '\0' < /proc/device-tree/model)
 info "Gerät: ${MODEL:-Unbekannt}"
-if [[ -n "$MODEL" && ! "$MODEL" =~ "Raspberry Pi 5" ]]; then
-    warn "Dieses Skript ist für den RPi 5 optimiert (erkannt: ${MODEL})."
+if [[ -n "$MODEL" && ! "$MODEL" =~ "Raspberry Pi 4" ]]; then
+    warn "Dieses Skript ist für den Rpi 4 optimiert (erkannt: ${MODEL})."
     read -rp "  Trotzdem fortfahren? [j/N] " CONT
     [[ "$CONT" =~ ^[jJ]$ ]] || exit 0
 fi
@@ -78,7 +78,7 @@ WIFI_COUNTRY="DE"   # Regulatory-Domain — ohne diese startet der AP oft nicht
 
 echo ""
 echo -e "${CYAN}╔══════════════════════════════════════════════════════════╗${NC}"
-echo -e "${CYAN}║     Power Debug Monitor — RPi 5 Setup                   ║${NC}"
+echo -e "${CYAN}║     Power Debug Monitor — Rpi 4 Setup                   ║${NC}"
 echo -e "${CYAN}╠══════════════════════════════════════════════════════════╣${NC}"
 printf  "${CYAN}║  %-56s║${NC}\n" "Install-Dir : ${INSTALL_DIR}"
 printf  "${CYAN}║  %-56s║${NC}\n" "Service-User: ${SERVICE_USER}"
@@ -191,7 +191,7 @@ step "5/8  WLAN Access Point konfigurieren (${AP_SSID})"
 systemctl enable --now NetworkManager 2>/dev/null || true
 
 # Regulatory-Domain setzen — ohne gesetztes WLAN-Land verweigert der Kernel
-# auf dem Pi 5 (Bookworm) häufig den AP-Modus (0 dBm / kein Broadcast).
+# auf dem pi 4 (Bookworm) häufig den AP-Modus (0 dBm / kein Broadcast).
 if command -v raspi-config &>/dev/null; then
     raspi-config nonint do_wifi_country "$WIFI_COUNTRY" \
         && ok "WLAN-Land gesetzt: ${WIFI_COUNTRY}" \
@@ -381,7 +381,7 @@ $AUTOLOGIN_SET || warn "Autologin nicht automatisch konfiguriert → manuell via
 # ════════════════════════════════════════════════════════════════════════════════
 echo ""
 echo -e "${GREEN}╔══════════════════════════════════════════════════════════════╗${NC}"
-echo -e "${GREEN}║  ✅  Raspberry Pi 5 Setup ERFOLGREICH ABGESCHLOSSEN!         ║${NC}"
+echo -e "${GREEN}║  ✅  Raspberry pi 4 Setup ERFOLGREICH ABGESCHLOSSEN!         ║${NC}"
 echo -e "${GREEN}╠══════════════════════════════════════════════════════════════╣${NC}"
 printf "${GREEN}║  %-62s║${NC}\n" "WLAN-Hotspot  : ${AP_SSID} → ${AP_IP}"
 printf "${GREEN}║  %-62s║${NC}\n" "Anwendung     : ${INSTALL_DIR}"
