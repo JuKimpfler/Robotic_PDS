@@ -16,8 +16,14 @@ import QtQuick
 QtObject {
     id: theme
 
-    readonly property bool dark: appBridge.settings.dark
-    readonly property real fontScale: appBridge.settings.fontScale
+    // Die Abfrage auf `undefined` ist kein Zierrat: Theme ist ein Singleton
+    // und koennte theoretisch ausgewertet werden, bevor main_qml.py die
+    // Kontext-Property appBridge gesetzt hat. Ohne den Schutz stuende dann
+    // die komplette Oberflaeche ohne Farben da.
+    readonly property bool dark: (typeof appBridge !== "undefined" && appBridge.settings)
+                                 ? appBridge.settings.dark : true
+    readonly property real fontScale: (typeof appBridge !== "undefined" && appBridge.settings)
+                                      ? appBridge.settings.fontScale : 1.0
 
     // ── Farben ───────────────────────────────────────────────────────────
     readonly property color bg:          dark ? "#1e1e1e" : "#f2f3f5"

@@ -327,6 +327,21 @@ class FastControlWorker(threading.Thread):
         next_slow = next_tick
         next_disc = next_tick
 
+        try:
+            self._loop(b, period, slow_period, disc_period,
+                        next_tick, next_slow, next_disc)
+        finally:
+            # pygame/SDL in DEMSELBEN Thread schliessen, in dem es aufgesetzt
+            # wurde (siehe ControllerBridge._ensure_init) — auch dann, wenn
+            # die Schleife durch eine Ausnahme verlassen wird.
+            try:
+                b._controller.shutdown()
+            except Exception:                       # noqa: BLE001
+                log.debug("Controller-Abbau im Sende-Thread fehlgeschlagen.",
+                           exc_info=True)
+
+    def _loop(self, b, period, slow_period, disc_period,
+               next_tick, next_slow, next_disc) -> None:
         while not self._stop.is_set():
             now = time.perf_counter()
             late = now - next_tick
@@ -362,13 +377,6 @@ class FastControlWorker(threading.Thread):
                 # hochaufloesenden Timer; darunter waere die Granularitaet
                 # ~15 ms und dieser Takt nicht zu halten.
                 time.sleep(sleep_for)
-
-        # pygame/SDL in DEMSELBEN Thread schliessen, in dem es aufgesetzt
-        # wurde (siehe ControllerBridge._ensure_init).
-        try:
-            b._controller.shutdown()
-        except Exception:                           # noqa: BLE001
-            log.debug("Controller-Abbau im Sende-Thread fehlgeschlagen.", exc_info=True)
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -446,11 +454,13 @@ class ParamBridge(QObject):
         # (ENOBUFS). Lieber ein einzelnes Paket verwerfen (der naechste Stand
         # kommt in 10 ms) als den Sendetakt anzuhalten.
         self._sock.setblocking(False)
-        self._refresh_status()
 
         # ── Sende-Thread ──────────────────────────────────────────────────
+        #  VOR dem ersten _refresh_status(): die Statuszeile meldet auch die
+        #  Zahl der zu spaet gekommenen Zyklen und liest dafuer self._worker.
         self._worker = FastControlWorker(self)
         self._worker.start()
+        self._refresh_status()
 
         # Der GUI-Thread aktualisiert nur noch die Anzeige.
         self._status_timer = QTimer(self)

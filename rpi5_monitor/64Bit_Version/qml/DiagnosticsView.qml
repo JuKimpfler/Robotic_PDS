@@ -238,22 +238,22 @@ Item {
                         AppSwitch {
                             text: "Dunkles Farbschema"
                             checked: root.settings.dark
-                            onToggled: root.settings.setDark(checked)
+                            onToggled: (v) => root.settings.setDark(v)
                         }
                         AppSwitch {
                             text: "Kiosk-Modus (ESC/Shutdown sperren)"
                             checked: root.settings.kiosk
-                            onToggled: root.settings.setKiosk(checked)
+                            onToggled: (v) => root.settings.setKiosk(v)
                         }
                         AppSwitch {
                             text: "Tastatursteuerung (WASD)"
                             checked: root.settings.keyboardControl
-                            onToggled: root.settings.setKeyboardControl(checked)
+                            onToggled: (v) => root.settings.setKeyboardControl(v)
                         }
                         AppSwitch {
                             text: "Konfiguration vom Teensy übernehmen"
                             checked: root.settings.autoApplyTeensyConfig
-                            onToggled: root.settings.setAutoApplyTeensyConfig(checked)
+                            onToggled: (v) => root.settings.setAutoApplyTeensyConfig(v)
                         }
                     }
 
@@ -293,7 +293,7 @@ Item {
                         AppSwitch {
                             text: "aktiv"
                             checked: root.diag.batteryConfig.enabled
-                            onToggled: root.diag.setBatteryConfig({ "enabled": checked })
+                            onToggled: (v) => root.diag.setBatteryConfig({ "enabled": v })
                         }
 
                         Row {

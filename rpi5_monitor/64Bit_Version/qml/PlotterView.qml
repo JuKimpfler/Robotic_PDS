@@ -139,14 +139,14 @@ Item {
             AppSwitch {
                 text: "Gemeinsame Skala"
                 checked: root.plotter.sharedScale
-                onToggled: root.plotter.setSharedScale(checked)
+                onToggled: (v) => root.plotter.setSharedScale(v)
             }
 
             AppButton {
                 text: root.plotter.frozen ? "Weiter" : "Einfrieren"
                 checkable: true
                 checked: root.plotter.frozen
-                onClicked: root.plotter.setFrozen(checked)
+                onToggled: (v) => root.plotter.setFrozen(v)
             }
 
             AppButton {
@@ -172,7 +172,7 @@ Item {
                 AppSwitch {
                     text: "Trigger"
                     checked: root.plotter.triggerEnabled
-                    onToggled: root.plotter.setTriggerEnabled(checked)
+                    onToggled: (v) => root.plotter.setTriggerEnabled(v)
                 }
 
                 ComboBox {
@@ -258,6 +258,12 @@ Item {
                     }
                 }
 
+                AppSwitch {
+                    text: "nur markieren"
+                    checked: root.plotter.triggerMarkOnly
+                    onToggled: (v) => root.plotter.setTriggerMarkOnly(v)
+                }
+
                 AppButton {
                     text: "Neu scharf"
                     enabled: root.plotter.triggerEnabled && root.plotter.frozen
@@ -268,11 +274,12 @@ Item {
                     anchors.verticalCenter: parent.verticalCenter
                     color: Theme.textDim
                     font.pixelSize: Theme.fontSizeSmall
-                    text: root.plotter.triggerEnabled
-                          ? (root.plotter.frozen
-                             ? "ausgelöst (" + root.plotter.triggerCount + ")"
-                             : "scharf, wartet … (" + root.plotter.triggerCount + ")")
-                          : ""
+                    text: !root.plotter.triggerEnabled ? ""
+                          : root.plotter.frozen
+                            ? "ausgelöst (" + root.plotter.triggerCount + ")"
+                            : root.plotter.triggerMarkOnly
+                              ? "markiert: " + root.plotter.triggerCount
+                              : "scharf, wartet … (" + root.plotter.triggerCount + ")"
                 }
             }
         }

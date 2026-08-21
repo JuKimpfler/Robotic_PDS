@@ -151,9 +151,25 @@ class PlotBridge(QObject):
             clean = [0]
         if clean == self._channels:
             return
+
+        # Die Zeilen des Ringpuffers haengen an der POSITION in der Auswahl,
+        # nicht am Kanal. Beim Hinzufuegen einer fuenften Kurve wuerde ein
+        # simples clearBuffer() den Verlauf der vier bereits laufenden Kurven
+        # mitloeschen — genau in dem Moment, in dem man vergleichen will.
+        # Deshalb werden die Zeilen umsortiert statt verworfen; neue Kurven
+        # starten mit NaN und werden bis zum ersten Wert einfach nicht
+        # gezeichnet.
+        old = self._channels
+        moved = np.full_like(self._ring, np.nan)
+        for dst, chn in enumerate(clean):
+            if chn in old:
+                moved[dst] = self._ring[old.index(chn)]
+        self._ring = moved
         self._channels = clean
-        self.clearBuffer()
+        self._frozen_snapshot = None      # Zeilenzahl kann sich geaendert haben
         self.channelsChanged.emit()
+        self._update_stats()
+        self.bufferChanged.emit()
 
     @pyqtSlot(int)
     def toggleChannel(self, idx: int) -> None:
@@ -259,10 +275,14 @@ class PlotBridge(QObject):
         value = bool(value)
         if value == self._frozen:
             return
+        # Reihenfolge ist wichtig: snapshot() liefert bei gesetztem _frozen
+        # den ALTEN Schnappschuss zurueck. Erst holen, dann einfrieren.
+        snap = self.snapshot().copy() if value else None
         self._frozen = value
-        self._frozen_snapshot = self.snapshot().copy() if value else None
+        self._frozen_snapshot = snap
         if not value:
             self._trig_fired_at = None
+            self._trig_capture_at = None
         self.frozenChanged.emit()
 
     @pyqtProperty(bool, notify=frozenChanged)
@@ -369,14 +389,21 @@ class PlotBridge(QObject):
             self.triggerChanged.emit()
 
     @pyqtProperty(bool, notify=triggerChanged)
-    def triggerAutoRearm(self) -> bool:
+    def triggerMarkOnly(self) -> bool:
+        """true = beim Ausloesen nur eine Marke setzen, nicht einfrieren.
+
+        Damit laesst sich zaehlen und im Verlauf wiederfinden, wie oft eine
+        Bedingung eingetreten ist, ohne dass die Anzeige jedes Mal stehen
+        bleibt — bei einem seltenen Aussetzer will man einfrieren, bei einem
+        regelmaessigen Ereignis nur die Marken."""
         return self._trig_auto_rearm
 
     @pyqtSlot(bool)
-    def setTriggerAutoRearm(self, value: bool) -> None:
+    def setTriggerMarkOnly(self, value: bool) -> None:
         value = bool(value)
         if value != self._trig_auto_rearm:
             self._trig_auto_rearm = value
+            self._trig_capture_at = None
             self.triggerChanged.emit()
 
     @pyqtProperty(int, notify=triggerChanged)
@@ -556,9 +583,10 @@ class PlotBridge(QObject):
         fire_offset = int(where[0])
         self._trig_fired_at = self._total - n_new + fire_offset
         self._trig_count += 1
-        post = int(self._points * self._trig_post)
-        self._trig_capture_at = self._trig_fired_at + max(1, post)
         self.add_marker(f"Trigger {self._trig_count}", 1)
+        if not self._trig_auto_rearm:
+            post = int(self._points * self._trig_post)
+            self._trig_capture_at = self._trig_fired_at + max(1, post)
         self.triggerChanged.emit()
 
     def snapshot(self, points: int | None = None) -> np.ndarray:

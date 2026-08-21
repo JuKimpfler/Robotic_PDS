@@ -278,3 +278,104 @@ bzw. lokal editierten Overlays an, die Bearbeitung bleibt Widgets-exklusiv.
   → Vor dem ersten echten Flash: `PDS.cpp`/`channel_config.h` mit dem
   vollständigen Projekt (inkl. `main.cpp`/`enum.h`) auf einem Rechner ohne
   diese Einschränkungen kompilieren.
+
+
+---
+
+# Nachtrag (Wire-Format 2): Der Deskriptor traegt jetzt die ganze Konfiguration
+
+Der Deskriptor war urspruenglich eine reine **Namensliste**. Inzwischen ist er
+die vollstaendige Beschreibung der Oberflaeche — der Teensy ist damit die
+einzige Quelle der Wahrheit, und die GUI braucht keine von Hand gepflegte
+Parallelkonfiguration mehr.
+
+## Was jetzt drinsteht
+
+```jsonc
+{
+  "meta": { "pds": "2.1", "wire": 2, "channels": 200, "used": 37,
+            "build": "Aug 22 2026 10:14:03", "fw": "1.4.2" },
+  "channels":          { "10": "Akku_Spannung", ... },
+  "units":             { "10": "V", "30": "cm", ... },   // NEU
+  "param_slow_floats": { "0": "Kp_Heading", ... },
+  "param_slow_bools":  { ... },
+  "param_fast_floats": { ... },
+  "param_cfg": {                                         // NEU
+    "slow_floats": [ { "i": 0, "n": "Kp_Heading", "w": "slider",
+                       "min": 0, "max": 10, "step": 0.05, "def": 2.5,
+                       "g": "Regler" }, ... ],
+    "slow_bools":  [ { "i": 1, "n": "Not_Aus", "w": "button", "m": true }, ... ],
+    "fast_floats": [ ... ],
+    "joysticks":   [ { "n": "Fahrt", "s": "fast", "x": 0, "y": 1,
+                       "xr": [-100, 100], "yr": [-100, 100], "c": true } ]
+  },
+  "overlays": [ ... ]
+}
+```
+
+Die Kurzschluessel in `param_cfg` sind kein Selbstzweck: der Deskriptor geht
+ueber dieselbe UART wie die Telemetrie, und jedes gesparte Byte ist
+Uebertragungszeit. Die Uebersetzung in das ausgeschriebene
+`param_config.json`-Format macht
+`rpi5_monitor/64Bit_Version/runtime_config.py`.
+
+## Dauerhaft gespeichert, je Node
+
+| Datei | Inhalt |
+|---|---|
+| `runtime_config/nodeN/descriptor.json` | der Roh-Deskriptor, wie er ankam |
+| `runtime_config/nodeN/param_config.json` | daraus gebauter Parameter-Tab |
+| `runtime_config/nodeN/visuals_overlays.json` | Overlays der Systemansicht |
+| `runtime_config/ui_settings.json` | Farbschema, Schriftgroesse, Akku-Warnung (nicht node-spezifisch) |
+
+Nach einem Neustart der GUI steht damit sofort wieder alles da, auch ohne
+eingeschalteten Roboter. Der Ordner ist in `.gitignore` — er ist
+geraetespezifischer Laufzeitzustand, kein Quellcode.
+
+## Wer gewinnt bei einem Konflikt?
+
+Overlays und Parameter lassen sich auch in der GUI bearbeiten. Wuerde jeder
+eintreffende Deskriptor blind ueberschreiben, waere jede Anpassung nach dem
+naechsten Einschalten des Roboters weg. Wuerde er nie ueberschreiben, kaeme
+eine neue Firmware nie in der GUI an.
+
+Deshalb wird zu jeder gespeicherten Datei der **Fingerabdruck** des
+Teensy-Inhalts mitgeschrieben (`_teensy_hash`, SHA-256 ueber das
+schluesselsortierte JSON):
+
+| Fingerabdruck | Verhalten |
+|---|---|
+| unveraendert | lokale Bearbeitung bleibt stehen |
+| geaendert | der Teensy hat eine neue Konfiguration — sie wird uebernommen |
+
+Kurz: **etwas in `channel_config.h` aendern und neu flashen setzt sich durch,
+alles andere nicht.**
+
+## Groesse und Uebertragungsdauer
+
+Der Puffer ist von 12 auf 24 kB gewachsen (auf Teensy 4.x im OCRAM, nicht im
+knappen DTCM). Ein Chunk geht jetzt alle 20 ms statt alle 10 ms raus — bei
+257 B je Chunk sind das 12,9 kB/s, die neben den 80,8 kB/s Telemetrie noch
+auf die 100 kB/s der Leitung passen. Ein voller 24-kB-Deskriptor braucht
+damit knapp 2 s; da er nur beim Boot und auf Anfrage laeuft, ist das der
+richtige Kompromiss.
+
+Zusaetzlich schreibt der Deskriptor (wie Ereignisse und Param-Ack) nur dann,
+wenn im TX-Puffer **zusaetzlich ein komplettes Telemetriepaket** Platz hat.
+Er kann den 100-Hz-Takt also nicht verdraengen, sondern hoechstens selbst
+laenger brauchen.
+
+## Geprueft wird das jetzt automatisch
+
+`python tools/desc_json_check.py` uebersetzt `PDS.cpp` mit einer
+Arduino-Attrappe fuer den PC, **fuehrt sie aus** und prueft den erzeugten
+Deskriptor mit einem echten JSON-Parser — inklusive Anfuehrungszeichen,
+Backslash, Umlauten und Steuerzeichen in Namen, Ueberlaufverhalten und der
+automatischen Wiederholung. Ein Uebersetzungslauf allein findet diese
+Fehlerklasse nicht; genau daran ist der Deskriptor hier schon einmal
+gescheitert.
+
+> Der Hinweis oben, die Firmware lasse sich auf dieser Maschine nicht bauen,
+> ist ueberholt: `teensy_firmware/src/main.cpp` existiert, `enum.h` ist
+> optional, und `tools/build_teensy_check.sh` uebersetzt die Bibliothek in
+> vier Konfigurationen.

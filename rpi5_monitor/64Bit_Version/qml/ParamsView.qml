@@ -69,7 +69,7 @@ Item {
                     text: "Übertragung aktiv"
                     checked: params.enabled
                     anchors.verticalCenter: parent.verticalCenter
-                    onToggled: params.setEnabled(checked)
+                    onToggled: (v) => params.setEnabled(v)
                 }
 
                 AppButton {
@@ -193,11 +193,14 @@ Item {
         // ── Aktive Gruppen-Seite ─────────────────────────────────────────
         Flickable {
             width: parent.width
-            height: parent.height - Math.round(56 * Theme.fontScale)
+            // Math.max(0, ...): bei sehr grosser Schrift auf einem kleinen
+            // Display kann die Rechnung sonst negativ werden, und die Seite
+            // verschwindet komplett statt nur zu scrollen.
+            height: Math.max(0, parent.height - Math.round(56 * Theme.fontScale)
                     - Math.round(34 * Theme.fontScale)
                     - Theme.touchTargetMin - Theme.spacingS * 4
                     - ((params.controller.connected || params.keyboardActive)
-                       ? (Math.round(40 * Theme.fontScale) + Theme.spacingS) : 0)
+                       ? (Math.round(40 * Theme.fontScale) + Theme.spacingS) : 0))
             clip: true
             contentHeight: pageLoader.item ? pageLoader.item.implicitHeight : 0
             // Während der Joystick bedient wird, soll diese Seite nicht
@@ -548,11 +551,20 @@ Item {
                             // "toggle": normaler Ein/Aus-Schalter, Zustand bleibt bis
                             // zum nächsten Antippen erhalten.
                             AppSwitch {
+                                id: boolSwitch
                                 anchors.verticalCenter: parent.verticalCenter
                                 visible: modelData.widget !== "button"
                                 text: modelData.name
+                                // Der Zustand lebt hier in QML — Python meldet
+                                // nichts zurueck, also setzt der Handler ihn
+                                // selbst. Bei einem Neuaufbau der Gruppen wird
+                                // der Delegate ohnehin neu erzeugt und startet
+                                // wieder auf modelData.default.
                                 checked: modelData.default
-                                onToggled: params.setSlowBool(modelData.index, checked)
+                                onToggled: (v) => {
+                                    boolSwitch.checked = v
+                                    params.setSlowBool(modelData.index, v)
+                                }
                             }
 
                             // "button": Taster — bei momentary:true wird der Wert NUR
@@ -560,19 +572,24 @@ Item {
                             // false bei Release), bei momentary:false verhält er sich
                             // wie ein klickbarer Umschalt-Button.
                             AppButton {
+                                id: boolButton
                                 anchors.verticalCenter: parent.verticalCenter
                                 visible: modelData.widget === "button"
                                 danger: true
                                 checkable: !modelData.momentary
                                 checked: modelData.default
                                 text: modelData.name
+                                // momentary: der Wert gilt NUR solange gedrueckt
+                                // wird (true bei Press, false bei Release).
                                 onPressedChanged: {
                                     if (modelData.momentary)
                                         params.setSlowBool(modelData.index, pressed)
                                 }
-                                onClicked: {
-                                    if (!modelData.momentary)
-                                        params.setSlowBool(modelData.index, checked)
+                                // sonst Umschalter — der Zustand lebt hier in
+                                // QML, Python meldet nichts zurueck.
+                                onToggled: (v) => {
+                                    boolButton.checked = v
+                                    params.setSlowBool(modelData.index, v)
                                 }
                             }
                         }
