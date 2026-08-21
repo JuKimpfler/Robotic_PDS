@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-uart_receiver.py — RPi Zero W Node  (v6 — Unicast-Telemetrie + Fast-Coalescing)
+uart_receiver.py — RPi Zero 2 W Node  (v7)
 ==========================================================
 Liest Binärpakete vom Teensy 4.0 über UART und leitet sie sofort als
 UDP-Datagramm an den RPi 5 weiter. Empfängt außerdem zwei Param-Downlink-
@@ -8,7 +8,30 @@ Streams (Slow + Fast) vom RPi 5 und reicht sie unverändert über UART_DBG-TX
 an den Teensy weiter.
 
 ────────────────────────────────────────────────────────────────────────────
-WAS v6 GEGENÜBER v5 ÄNDERT (Bugfix: Latenz der Fernsteuerung):
+WAS v7 GEGENÜBER v6 ÄNDERT:
+────────────────────────────────────────────────────────────────────────────
+A. DISCOVERY/KEEPALIVE (Port 703X). Die GUI schickt Param-Pakete nur an den
+   gerade ausgewaehlten Node — der andere hat deshalb nie eine Zieladresse
+   gelernt und seine kompletten 80 kB/s dauerhaft gebroadcastet, was den
+   Funkkanal auch fuer den aktiven Node belastet hat. Das neue 4-Byte-Paket
+   geht 1x/s an BEIDE Nodes, wird nur zum Lernen der Adresse ausgewertet und
+   NICHT an den Teensy weitergeleitet (siehe DISCOVERY_MAGIC unten).
+
+B. UART WIRD NACH EINEM FEHLER NEU GEOEFFNET. Vorher beendete jeder einzelne
+   Lese-/Schreibfehler (Wackelkontakt, Teensy-Reset waehrend eines
+   Flash-Vorgangs) den Prozess; systemd startete ihn zwar neu, aber mit
+   mehreren Sekunden Ausfall.
+
+C. STATUS-LEDS werden von hier angesteuert (status_leds.py) — es gibt dafuer
+   bewusst keinen eigenen Dienst, die noetigen Informationen liegen genau
+   hier vor.
+
+D. DESKRIPTOR-CHUNKS werden auf Plausibilitaet geprueft, bevor sie
+   weitergeleitet werden: der Assembler laeuft auf demselben Bytestrom wie
+   die Telemetrie, und deren Float-Bytes koennen den Magic zufaellig treffen.
+
+────────────────────────────────────────────────────────────────────────────
+WAS v6 GEGENÜBER v5 GEÄNDERT HAT (Bugfix: Latenz der Fernsteuerung):
 ────────────────────────────────────────────────────────────────────────────
 1. TELEMETRIE PER UNICAST STATT BROADCAST.
    v5 hat jedes Telemetriepaket (808 B, 100 Hz = 80.8 kB/s) an
@@ -77,8 +100,10 @@ Paket-Format (vom Teensy, Telemetrie):
     Gesamt: 808 Bytes   (bei MAX_FLOATS=200 — siehe PDS.cpp)
 
 Param-Downlink (vom RPi 5, Gegenrichtung):
-    Slow-Kanal (Port 700X): 50 Floats + 50 Bools, 2 Hz    (Magic 0xCAFEFEED, 258 B)
-    Fast-Kanal (Port 701X): 5 Floats, 100 Hz               (Magic 0xFA57DA7A, 28 B)
+    Slow-Kanal   (Port 700X): 50 Floats + 50 Bools, 2 Hz  (Magic 0xCAFEFEED, 258 B)
+    Fast-Kanal   (Port 701X): 5 Floats, 100 Hz            (Magic 0xFA57DA7A,  28 B)
+    Desc-Request (Port 702X): Kanalnamen anfordern        (Magic 0xDE5C00F0,   4 B)
+    Discovery    (Port 703X): nur Adresse lernen, 1 Hz    (Magic 0xD15C0BE5,   4 B)
 
 Verdrahtung (Teensy-Seite = UART_DBG, per Default Serial3 -> Pin 14/15;
 siehe teensy_firmware/src/params.h):
@@ -86,10 +111,10 @@ siehe teensy_firmware/src/params.h):
     RPi GPIO14 (Pin  8, UART TX) ──→ Teensy Pin 15 (RX3)  [Pflicht fuer Param-Downlink]
     GND (Pin 6)                  ───  GND
 
-UART-Einrichtung (RPi Zero W, einmalig):
+UART-Einrichtung (macht setup_node.sh automatisch):
     /boot/firmware/config.txt:
-        dtoverlay=disable-bt    ← PL011 UART auf GPIO14/15 (BT deaktiviert)
-        enable_uart=1
+        dtoverlay=miniuart-bt   ← PL011 auf GPIO14/15, Bluetooth auf Mini-UART
+        enable_uart=1              (Bluetooth bleibt fuer den Wireless-Flash aktiv)
     /boot/firmware/cmdline.txt:
         console=serial0,115200  ← DIESE ZEILE ENTFERNEN (kein Login-Prompt)
     Danach: sudo reboot
@@ -133,7 +158,7 @@ FORCE_BROADCAST    = os.environ.get("PDS_TELEMETRY_BROADCAST", "").strip() == "1
 BROADCAST_ADDR     = "255.255.255.255"
 DEST_LEARN_TIMEOUT = 10.0   # s ohne Param-Paket -> zurueck auf Broadcast
 
-UART_PORT    = "/dev/ttyAMA0"          # PL011 Full-UART (nach dtoverlay=disable-bt)
+UART_PORT    = "/dev/ttyAMA0"          # PL011 Full-UART (nach dtoverlay=miniuart-bt)
 UART_BAUD    = 1_000_000               # 1 Mbps — muss mit params.h (UART_DBG_BAUD) übereinstimmen!
 
 MAX_FLOATS   = 200                     # Muss mit Teensy PDS.cpp (MAX_FLOATS) übereinstimmen!
@@ -177,6 +202,23 @@ CHANNEL_DESC_REQUEST_MAGIC        = 0xDE5C00F0
 CHANNEL_DESC_REQUEST_MAGIC_BYTES  = struct.pack("<I", CHANNEL_DESC_REQUEST_MAGIC)
 CHANNEL_DESC_REQUEST_PACKET_BYTES = 4    # nur Magic, kein Payload
 UDP_CHANNEL_DESC_REQUEST_PORT     = 7020 + NODE_ID   # 7021 / 7022
+
+# ── Konfiguration: Discovery/Keepalive ───────────────────────────────────────
+# Muss exakt mit rpi5_monitor/64Bit_Version/config.py uebereinstimmen!
+#
+# Die GUI schickt Param-Pakete nur an den GERADE AUSGEWAEHLTEN Node. Der
+# jeweils andere hat deshalb nie eine Zieladresse gelernt und seine komplette
+# Telemetrie (80 kB/s) dauerhaft per Broadcast verschickt — was im WLAN ein
+# Vielfaches an Funkzeit kostet und auch die Fernsteuerung des AKTIVEN Nodes
+# ausgebremst hat (siehe Doku/Latenz_Fernsteuerung.md).
+#
+# Dieses 4-Byte-Paket kommt 1x/s an BEIDE Nodes. Es wird ausschliesslich zum
+# Lernen der Absenderadresse ausgewertet und NICHT an den Teensy weitergeleitet
+# — es kann also nie Parameter in den falschen Roboter schreiben.
+DISCOVERY_MAGIC        = 0xD15C0BE5
+DISCOVERY_MAGIC_BYTES  = struct.pack("<I", DISCOVERY_MAGIC)
+DISCOVERY_PACKET_BYTES = 4
+UDP_DISCOVERY_PORT     = 7030 + NODE_ID   # 7031 / 7032
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -472,7 +514,8 @@ def main() -> None:
     )
     log.info(
         f"Namens-/Overlay-Deskriptor | Chunks: UDP :{UDP_CHANNEL_DESC_PORT} | "
-        f"Request: UDP :{UDP_CHANNEL_DESC_REQUEST_PORT}"
+        f"Request: UDP :{UDP_CHANNEL_DESC_REQUEST_PORT} | "
+        f"Discovery: UDP :{UDP_DISCOVERY_PORT}"
     )
     if FORCE_BROADCAST:
         log.info("v6: Telemetrie-Ziel = Broadcast (PDS_TELEMETRY_BROADCAST=1 erzwungen)")
@@ -512,12 +555,19 @@ def main() -> None:
     desc_request_sock.setblocking(False)
     desc_request_sock.bind(("0.0.0.0", UDP_CHANNEL_DESC_REQUEST_PORT))
 
-    # ── Event-Loop: alle vier Quellen (UART, 3× UDP) über EINEN Selector ──────
+    # ── UDP Socket (Discovery/Keepalive, siehe DISCOVERY_MAGIC oben) ───────────
+    discovery_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    discovery_sock.setblocking(False)
+    discovery_sock.bind(("0.0.0.0", UDP_DISCOVERY_PORT))
+
+    # ── Event-Loop: alle fünf Quellen (UART, 4× UDP) über EINEN Selector ──────
     sel = selectors.DefaultSelector()
-    sel.register(ser.fileno(), selectors.EVENT_READ, data="uart")
+    uart_fd = ser.fileno()          # gemerkt fuer das Wieder-Oeffnen (s. u.)
+    sel.register(uart_fd, selectors.EVENT_READ, data="uart")
     sel.register(slow_sock, selectors.EVENT_READ, data="param_slow")
     sel.register(fast_sock, selectors.EVENT_READ, data="param_fast")
     sel.register(desc_request_sock, selectors.EVENT_READ, data="desc_request")
+    sel.register(discovery_sock, selectors.EVENT_READ, data="discovery")
 
     assembler = TelemetryFrameAssembler()
     desc_assembler = ChunkFrameAssembler()
@@ -537,6 +587,7 @@ def main() -> None:
     fwd_bad       = 0
     fwd_stale     = 0   # ueberholte Fast-Pakete, bewusst verworfen
     fwd_desc_req  = 0
+    discovery_rx  = 0
     desc_pkt_sent = 0
     last_sync_losses = 0
 
@@ -593,7 +644,7 @@ def main() -> None:
                 bad += 1
         return newest, newest_addr, stale, bad
 
-    log.info("Event-Loop gestartet — warte auf Daten (UART + 3× UDP)...")
+    log.info("Event-Loop gestartet — warte auf Daten (UART + 4× UDP)...")
 
     try:
         while True:
@@ -632,6 +683,19 @@ def main() -> None:
                         except OSError as exc:
                             log.warning(f"UDP-Sendefehler (Deskriptor): {exc}")
                             send_errors += 1
+
+                elif key.data == "discovery":
+                    # Nur die Absenderadresse auswerten, NICHT weiterleiten.
+                    data, addr, _stale, bad = drain_latest(
+                        discovery_sock,
+                        DISCOVERY_PACKET_BYTES + 64,
+                        DISCOVERY_MAGIC_BYTES,
+                        DISCOVERY_PACKET_BYTES,
+                    )
+                    fwd_bad += bad
+                    if data is not None:
+                        target.note_sender(addr)
+                        discovery_rx += 1
 
                 elif key.data == "desc_request":
                     data, addr, _stale, bad = drain_latest(
@@ -684,8 +748,12 @@ def main() -> None:
                 now = time.monotonic()
                 if now - t_last_uart_retry >= 1.0:
                     t_last_uart_retry = now
+                    # Die GEMERKTE fd abmelden, nicht ser.fileno(): auf einem
+                    # bereits kaputten Port wirft fileno() selbst, der Selector
+                    # behielte dann eine tote Registrierung und das folgende
+                    # register() liefe in ein KeyError ("already registered").
                     try:
-                        sel.unregister(state["ser"].fileno())
+                        sel.unregister(uart_fd)
                     except (KeyError, OSError, ValueError):
                         pass
                     try:
@@ -694,8 +762,11 @@ def main() -> None:
                         pass
                     try:
                         state["ser"] = _open_uart()
-                        sel.register(state["ser"].fileno(), selectors.EVENT_READ, data="uart")
+                        uart_fd = state["ser"].fileno()
+                        sel.register(uart_fd, selectors.EVENT_READ, data="uart")
                         state["broken"] = False
+                        # Assembler zuruecksetzen: ihre Puffer enthalten das
+                        # halbe Paket, an dem der Fehler aufgetreten ist.
                         assembler = TelemetryFrameAssembler()
                         desc_assembler = ChunkFrameAssembler()
                         log.info(f"UART {UART_PORT} nach Fehler wieder geöffnet.")
@@ -717,7 +788,8 @@ def main() -> None:
                     f"Param-Downlink: Slow={fwd_slow_ok} Fast={fwd_fast_ok} "
                     f"({fwd_fast_ok / elapsed:.1f} Pkt/s) überholt={fwd_stale} "
                     f"ungültig={fwd_bad} || "
-                    f"Deskriptor: Chunks_ok={desc_pkt_sent} Requests_fwd={fwd_desc_req}"
+                    f"Deskriptor: Chunks_ok={desc_pkt_sent} Requests_fwd={fwd_desc_req} "
+                    f"Discovery={discovery_rx}"
                     + (f" Fehlalarme={desc_assembler.false_magics}"
                        if desc_assembler.false_magics else "")
                 )
@@ -728,7 +800,7 @@ def main() -> None:
                     )
                 pkt_sent = bytes_sent = send_errors = 0
                 fwd_slow_ok = fwd_fast_ok = fwd_bad = fwd_stale = 0
-                desc_pkt_sent = fwd_desc_req = 0
+                desc_pkt_sent = fwd_desc_req = discovery_rx = 0
                 last_sync_losses = assembler.sync_losses
                 t_stat_start = now
 
@@ -752,6 +824,7 @@ def main() -> None:
         slow_sock.close()
         fast_sock.close()
         desc_request_sock.close()
+        discovery_sock.close()
         log.info("Alle Ressourcen freigegeben.")
 
 

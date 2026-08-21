@@ -72,6 +72,7 @@ except Exception as _exc:            # ImportError, aber auch SDL-Ladefehler
 from PyQt6.QtCore import QObject, pyqtProperty, pyqtSignal
 
 from config import CONTROLLER_CONFIG_PATH, CONTROLLER_UI_NOTIFY_MS
+from bridge.utils import safe_slot
 
 log = logging.getLogger("bridge.controller")
 
@@ -207,6 +208,7 @@ class ControllerBridge(QObject):
         return self._stick_y
 
     # ── Polling ───────────────────────────────────────────────────────────
+    @safe_slot
     def poll(self) -> None:
         """Einen Abtastzyklus ausführen. Wird von ParamBridge unmittelbar vor
         dem Packen des Fast-Pakets aufgerufen (100 Hz)."""

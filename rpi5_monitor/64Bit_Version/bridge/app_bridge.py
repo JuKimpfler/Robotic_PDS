@@ -21,6 +21,7 @@ from config import (
 )
 from network_worker import NetworkManager
 from channel_registry import ChannelRegistry, send_descriptor_request
+from bridge.utils import safe_slot
 from bridge.telemetry_bridge import TelemetryBridge
 from bridge.plot_bridge import PlotBridge
 from bridge.param_bridge import ParamBridge
@@ -65,7 +66,7 @@ class AppBridge(QObject):
 
         # ── Robustheit gegen Neustarts ────────────────────────────────────
         #  Je Node der zuletzt empfangene Teensy-Zeitstempel und der Zeitpunkt
-        #  der letzten automatischen Namensanfrage (siehe _note_stream_restart).
+        #  der letzten automatischen Namensanfrage (siehe _check_stream_continuity).
         self._last_ts: dict[int, int | None] = {1: None, 2: None}
         self._last_name_request: dict[int, float] = {1: 0.0, 2: 0.0}
         # Zuletzt empfangener Deskriptor JE NODE — beim Umschalten wird der
@@ -161,6 +162,7 @@ class AppBridge(QObject):
         self.statusTextChanged.emit()
         self._status_clear_timer.start(_STATUS_MESSAGE_MS)
 
+    @safe_slot
     def _clear_status_text(self) -> None:
         self._status_text = ""
         self.statusTextChanged.emit()
@@ -193,6 +195,7 @@ class AppBridge(QObject):
         return self._node_ips.get(node_id, default_ip)
 
     # ── Daten-Pipeline (identisch zur bisherigen _poll_data-Logik) ───────
+    @safe_slot
     def _poll_data(self) -> None:
         now = monotonic()
         ip_changed = False
@@ -207,18 +210,21 @@ class AppBridge(QObject):
         # Nebeneffekt: die Verbindungs-LED des inaktiven Nodes stimmt jetzt.
         for nid in (1, 2):
             q = self._nm.get_queue(nid)
-            try:
-                while True:
+            while True:
+                # Nur das Lesen selbst abfangen: waere die Verarbeitung mit
+                # im try, wuerde ein Fehler dort wie "Queue leer" aussehen
+                # und den Rest der Warteschlange stillschweigend liegen lassen.
+                try:
                     _nid, ts, values, sender_ip = q.get_nowait()
-                    if nid == self._active_node:
-                        batch.append(values)
-                    if self._node_ips.get(nid) != sender_ip:
-                        self._node_ips[nid] = sender_ip
-                        ip_changed = True
-                    self._check_stream_continuity(nid, ts)
-                    self._node_last_seen[nid] = now
-            except Exception:
-                pass   # Queue leer
+                except Exception:
+                    break   # Queue leer (oder beim Herunterfahren geschlossen)
+                if nid == self._active_node:
+                    batch.append(values)
+                if self._node_ips.get(nid) != sender_ip:
+                    self._node_ips[nid] = sender_ip
+                    ip_changed = True
+                self._check_stream_continuity(nid, ts)
+                self._node_last_seen[nid] = now
 
         # ── Verbindungs-LEDs: auch das AUSbleiben von Paketen auswerten ──
         #    Bisher wurde `_node_connected` nur auf True gesetzt und nie
@@ -299,6 +305,7 @@ class AppBridge(QObject):
         send_descriptor_request(ip, port)
         log.info("Kanalnamen von Node %d (%s) angefordert — %s.", node_id, ip, reason or "manuell")
 
+    @safe_slot
     def _poll_descriptor(self) -> None:
         # Auch hier beide Queues leeren (siehe _poll_data): sonst sammeln
         # sich Deskriptoren des inaktiven Nodes unbegrenzt an und werden beim
@@ -306,11 +313,11 @@ class AppBridge(QObject):
         received: dict[int, dict] = {}
         for nid in (1, 2):
             q = self._nm.get_desc_queue(nid)
-            try:
-                while True:
+            while True:
+                try:
                     received[nid] = q.get_nowait()   # nur das neueste zählt
-            except Exception:
-                pass   # Queue leer
+                except Exception:
+                    break   # Queue leer
 
         for nid, data in received.items():
             registry = ChannelRegistry.from_json_dict(data)
@@ -352,6 +359,7 @@ class AppBridge(QObject):
         ip = self.get_active_node_ip(self._active_node)
         self.statusMessage.emit(f"Kanalnamen von Node {self._active_node} ({ip}) angefordert.")
 
+    @safe_slot
     def _update_pps(self) -> None:
         self._pps = self._pkt_count
         self._pkt_count = 0

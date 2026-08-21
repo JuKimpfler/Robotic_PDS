@@ -181,6 +181,7 @@ class NetworkManager:
 
         self._restarts: dict[str, int] = {}
         self._procs: dict[str, mp.Process] = {}
+        self._started = False
         for attr, target, port, node_id, queue_attr, name in self._SPECS:
             self._procs[attr] = self._make_proc(target, port, node_id, queue_attr, name)
             self._restarts[attr] = 0
@@ -203,7 +204,13 @@ class NetworkManager:
 
     def start(self) -> None:
         for proc in self._procs.values():
-            proc.start()
+            try:
+                proc.start()
+            except Exception as exc:            # noqa: BLE001
+                # Ein Prozess, der gar nicht erst startet, darf die anderen
+                # nicht mitnehmen — supervise() versucht es später erneut.
+                log.error("[NetworkManager] %s konnte nicht starten: %s", proc.name, exc)
+        self._started = True
         log.info(
             "[NetworkManager] Gestartet | %s",
             " | ".join(f"{p.name}={p.pid}" for p in self._procs.values()),
@@ -212,7 +219,9 @@ class NetworkManager:
     def supervise(self) -> list[str]:
         """Beendete Empfänger-Prozesse neu starten. Gibt die Namen der neu
         gestarteten Prozesse zurück (für eine Statusmeldung in der GUI)."""
-        if self._stop_event.is_set():
+        # Vor start() melden alle Prozesse is_alive()==False — ohne diese
+        # Abfrage würde supervise() sie dann fälschlich "neu starten".
+        if not self._started or self._stop_event.is_set():
             return []
         restarted: list[str] = []
         for attr, target, port, node_id, queue_attr, name in self._SPECS:
@@ -235,18 +244,28 @@ class NetworkManager:
     def stop(self) -> None:
         log.info("[NetworkManager] Stoppe Prozesse...")
         self._stop_event.set()
+        if not self._started:
+            return
+        self._started = False
         for proc in self._procs.values():
-            proc.join(timeout=3)
-            if proc.is_alive():
-                log.warning("[NetworkManager] %s reagiert nicht — terminate().", proc.name)
-                proc.terminate()
-                proc.join(timeout=1)
+            try:
+                proc.join(timeout=3)
+                if proc.is_alive():
+                    log.warning("[NetworkManager] %s reagiert nicht — terminate().", proc.name)
+                    proc.terminate()
+                    proc.join(timeout=1)
+            except Exception as exc:            # noqa: BLE001
+                log.warning("[NetworkManager] %s: %s", proc.name, exc)
         # Queues explizit schließen, sonst hält der Feeder-Thread des
         # GUI-Prozesses den Interpreter beim Beenden gelegentlich fest.
+        # Reihenfolge: erst cancel_join_thread(), dann close().
         for q in (self.queue_node1, self.queue_node2,
                   self.queue_desc_node1, self.queue_desc_node2):
-            q.close()
-            q.cancel_join_thread()
+            try:
+                q.cancel_join_thread()
+                q.close()
+            except Exception:                   # noqa: BLE001
+                pass
         log.info("[NetworkManager] Beendet.")
 
     def get_queue(self, node_id: int) -> mp.Queue:

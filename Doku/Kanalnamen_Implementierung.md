@@ -140,20 +140,23 @@ Beide Listen sind **sparse** — nicht belegte Indizes/Kanäle bekommen GUI-seit
 weiterhin den generischen Fallback (`Var_NNN`) bzw. bleiben in
 `visuals_overlays.json` unangetastet.
 
-### 3.2 `PDS.h` / `PDS.cpp` — neue Bibliotheks-API
+### 3.2 `PDS.h` / `PDS.cpp` — Bibliotheks-API
+
+> **Stand PDS 2.0.** Die hier beschriebene erste Fassung verlangte noch für
+> jeden Kanal eine feste Nummer. Inzwischen vergibt die Bibliothek sie selbst;
+> die vollständige, aktuelle API steht in
+> [`teensy_firmware/README.md`](../teensy_firmware/README.md).
 
 ```cpp
-// Pointer-Bindung, Auto-Sampling: liest *ptr bei jedem update()-Zyklus
-// automatisch aus, kein weiterer Channel()-Aufruf im Sketch nötig.
-void bind(uint8_t chn, float* ptr, const char* name = nullptr);
-void bind(uint8_t chn, bool*  ptr, const char* name = nullptr);
-void bind(uint8_t chn, int*   ptr, const char* name = nullptr);
+// Empfohlen: Name statt Nummer — der Kanal wird beim ersten Aufruf
+// automatisch vergeben und mit dem Namen an die GUI gemeldet.
+uint8_t plot(const char* name, float value);       // pro Schreibvorgang
+template<class T> uint8_t track(const char* name, T* ptr);   // einmal in setup()
 
-// Bestehend, unverändert: dynamischer, namenloser Wert-Write pro Zyklus.
+// Weiterhin verfügbar: feste Kanalnummern.
 void Channel(uint8_t chn, float val);
-
-// Neu: dynamischer Write + einmalige Namensregistrierung.
 void Channel(uint8_t chn, float val, const char* name);
+void bind(uint8_t chn, float*/double*/bool*/int8..uint32*, const char* name = nullptr);
 ```
 
 Beispiel im Sketch:
@@ -163,24 +166,39 @@ float akkuSpannung;
 bool  motorEnable;
 
 void setup() {
-    debugger.init();
-    debugger.bind(10, &akkuSpannung, "Akku_Spannung");   // ab jetzt automatisch gesampelt
-    debugger.bind(20, &motorEnable);                      // Name kommt aus CHANNEL_NAMES[]
+    PDS.begin();                             // `PDS` ist eine fertige globale Instanz
+    PDS.track("Akku_Spannung", &akkuSpannung);   // ab jetzt automatisch gesampelt
+    PDS.track("Motor_frei",    &motorEnable);
 }
 
 void loop() {
-    debugger.update();                     // sampelt gebundene Kanäle automatisch
-    debugger.Channel(5, sin(millis()));     // weiterhin: dynamisch, namenlos wie bisher
+    PDS.plot("Testsinus", sinf(millis() / 1000.0f));   // Kanal wird selbst vergeben
+    PDS.update();                                       // sampelt gebundene Kanäle
 }
 ```
 
 Intern: eine Namens-Registry (`_names[ACTIVE_CHANNELS][CHANNEL_NAME_MAXLEN]`,
-befüllt aus `CHANNEL_NAMES[]` in `init()`, danach von `bind()`/`Channel(...,name)`
-überschreibbar) und eine Bindungs-Tabelle (`_bound[ACTIVE_CHANNELS]`), die vor
-`buildPacket()` in `update()` abgetastet wird. Das JSON wird einmalig in einen
-~12-KB-Puffer gebaut (`buildDescriptorJson()`) und über eine kleine
+vorbelegt aus `CHANNEL_NAMES[]` in `begin()`, danach von
+`plot()`/`track()`/`bind()`/`Channel(...,name)` erweiterbar), ein direkt
+abbildender Cache Name-Pointer → Kanal (macht `plot()` auch in einer heissen
+Schleife O(1)) und eine kompakte Bindungsliste, die vor jedem Sendevorgang
+abgetastet wird. Das JSON wird in einen ~12-KB-Puffer gebaut
+(`buildDescriptorJson()`, auf Teensy 4.x im OCRAM) und über eine kleine
 Zustandsmaschine (`startDescriptorSend()` / `sendNextDescChunk()`) chunkweise
 versendet.
+
+**Wiederholung (neu in 2.0).** Der Deskriptor geht nicht mehr nur einmal beim
+Boot raus:
+
+| Auslöser | Wirkung |
+|---|---|
+| ~250 ms nach `begin()` | erste Meldung (so spät, damit alle `plot()`/`track()`-Namen registriert sind) |
+| Verbindung zur GUI kommt (wieder) zustande | sofortige Wiederholung |
+| keine GUI erreichbar | Wiederholung alle 5 s, Abstand verdoppelt sich bis 60 s |
+| `CHANNEL_DESC_REQUEST_MAGIC` von der GUI | sofortige Wiederholung |
+
+Damit übersteht das Namensverzeichnis einen Neustart des Teensy, des Nodes
+**und** der GUI, ohne dass jemand „Kanalnamen anfordern" drücken muss.
 
 ---
 

@@ -632,9 +632,14 @@ void PowerDebugger::begin() {
     _rxFill = 0;
     _rxExpectedLen = 0;
 
-    // Namens-/Overlay-Deskriptor einmalig beim Boot senden (die GUI kann per
-    // CHANNEL_DESC_REQUEST_MAGIC jederzeit eine Neuuebertragung anfordern).
-    startDescriptorSend();
+    // Namens-/Overlay-Deskriptor beim Boot melden — aber nicht sofort:
+    // plot()/track() registrieren ihre Namen erst in setup()/dem ersten
+    // loop()-Durchlauf, ein hier gebauter Deskriptor waere noch leer.
+    // (Die GUI kann per CHANNEL_DESC_REQUEST_MAGIC jederzeit eine
+    //  Neuuebertragung anfordern.)
+    _descNextChunk     = 0xFF;
+    _bootAnnounceAtMs  = millis() + PDS_BOOT_ANNOUNCE_DELAY_MS;
+    if (_bootAnnounceAtMs == 0) _bootAnnounceAtMs = 1;   // 0 ist der "erledigt"-Marker
 }
 
 void PowerDebugger::update() {
@@ -678,6 +683,13 @@ void PowerDebugger::update() {
         return;
     }
 
+    // ── Erste Namensmeldung nach dem Boot ───────────────────────────────
+    if (_bootAnnounceAtMs != 0 && (int32_t)(millis() - _bootAnnounceAtMs) >= 0) {
+        _bootAnnounceAtMs = 0;
+        startDescriptorSend();
+        return;
+    }
+
     // ── Robustheit gegen Neustarts (auf BEIDEN Seiten) ──────────────────
     //  Der Deskriptor wurde frueher ausschliesslich beim Boot des Teensy
     //  gesendet. Startete die GUI (oder der Pi-Zero-Node) danach neu, waren
@@ -686,15 +698,25 @@ void PowerDebugger::update() {
     //
     //    a) Flanke "Verbindung zur GUI kommt (wieder) zustande" -> senden.
     //       Deckt: GUI/Node startet neu, waehrend der Teensy durchlaeuft.
-    //    b) In Ruhe (keine GUI) alle PDS_DESC_REPEAT_MS wiederholen.
-    //       Deckt: Teensy startet neu, bevor GUI/Node ueberhaupt da sind.
-    //       Kostet ~2.5 kB/s von 100 kB/s und endet, sobald die GUI sendet.
+    //    b) In Ruhe (keine GUI) wiederholen, beginnend bei
+    //       PDS_DESC_REPEAT_MS und mit jedem unbeantworteten Versuch
+    //       verdoppelt bis PDS_DESC_REPEAT_MAX_MS.
+    //       Deckt: Teensy startet neu, bevor GUI/Node ueberhaupt da sind —
+    //       ohne im reinen Wettkampfbetrieb (nie eine GUI) dauerhaft
+    //       Bandbreite zu verbrauchen.
     const bool linkUp = linkOk();
     if (linkUp != _linkWasUp) {
         _linkWasUp = linkUp;
-        if (linkUp) startDescriptorSend();
-    } else if (!linkUp && PDS_DESC_REPEAT_MS > 0
-               && DescChunkTimer >= (uint32_t)PDS_DESC_REPEAT_MS) {
+        if (linkUp) {
+            _descRepeatMs = PDS_DESC_REPEAT_MS;   // GUI da -> wieder schnell reagieren
+            startDescriptorSend();
+        }
+    } else if (!linkUp && PDS_DESC_REPEAT_MS > 0 && DescChunkTimer >= _descRepeatMs) {
         startDescriptorSend();
+        if (_descRepeatMs < (uint32_t)PDS_DESC_REPEAT_MAX_MS) {
+            _descRepeatMs *= 2;
+            if (_descRepeatMs > (uint32_t)PDS_DESC_REPEAT_MAX_MS)
+                _descRepeatMs = PDS_DESC_REPEAT_MAX_MS;
+        }
     }
 }

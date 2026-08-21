@@ -83,6 +83,8 @@ def collect() -> dict[str, dict[str, int]]:
         "CHANNEL_DESC_CHUNK_PAYLOAD_MAX": _num(node, r"^CHANNEL_DESC_CHUNK_PAYLOAD_MAX\s*=\s*([0-9_]+)", "uart_receiver.py"),
         "BAUD":                    _num(node, r"^UART_BAUD\s*=\s*([0-9_]+)", "uart_receiver.py"),
         "PACKET_HEADER_MAGIC":     _num(node, r"^MAGIC\s*=\s*(0x[0-9A-Fa-f_]+)", "uart_receiver.py"),
+        "DISCOVERY_MAGIC":         _num(node, r"^DISCOVERY_MAGIC\s*=\s*(0x[0-9A-Fa-f_]+)", "uart_receiver.py"),
+        "DISCOVERY_PACKET_BYTES":  _num(node, r"^DISCOVERY_PACKET_BYTES\s*=\s*([0-9_]+)", "uart_receiver.py"),
     }
 
     gui = {
@@ -98,6 +100,8 @@ def collect() -> dict[str, dict[str, int]]:
         "CHANNEL_DESC_REQUEST_MAGIC": _num(cfg, r"^CHANNEL_DESC_REQUEST_MAGIC\s*=\s*(0x[0-9A-Fa-f_]+)", "config.py"),
         "CHANNEL_DESC_HEADER_BYTES": _num(cfg, r"^CHANNEL_DESC_HEADER_BYTES\s*=\s*([0-9_]+)", "config.py"),
         "PACKET_HEADER_MAGIC":     _num(cfg, r"^PACKET_HEADER_MAGIC\s*=\s*(0x[0-9A-Fa-f_]+)", "config.py"),
+        "DISCOVERY_MAGIC":         _num(cfg, r"^DISCOVERY_MAGIC\s*=\s*(0x[0-9A-Fa-f_]+)", "config.py"),
+        "DISCOVERY_PACKET_BYTES":  _num(cfg, r"^DISCOVERY_PACKET_BYTES\s*=\s*([0-9_]+)", "config.py"),
     }
 
     return {"Teensy": teensy, "Node": node_vals, "GUI": gui}

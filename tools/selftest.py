@@ -322,10 +322,30 @@ def test_bt_protocol() -> None:
         b.close()
 
 
+# ══════════════════════════════════════════════════════════════════════════
+#  9) QML <-> Python-Bruecken
+# ══════════════════════════════════════════════════════════════════════════
+def test_qml_bindings() -> None:
+    section("9) QML-Zugriffe auf die Python-Bruecken")
+    import check_qml_bindings as q
+
+    members = {name: q.members_of(path, cls)
+               for name, (path, cls) in q.BRIDGE_CLASSES.items()}
+    qml_files = sorted(q.QML_DIR.rglob("*.qml"))
+    check("QML-Dateien gefunden", len(qml_files) > 0)
+
+    problems: list[str] = []
+    for f in qml_files:
+        problems += q.check_balance(f)
+        problems += q.check_file(f, members)
+    check(f"{len(qml_files)} QML-Dateien ohne unbekannte Zugriffe/Klammerfehler",
+          not problems, "; ".join(problems[:4]))
+
+
 def main() -> int:
     print("Power Debug System — Selbsttest")
     for fn in (test_wire_format, test_frame_assemblers, test_descriptor,
-               test_param_io, test_bt_protocol):
+               test_param_io, test_bt_protocol, test_qml_bindings):
         try:
             fn()
         except Exception as exc:            # noqa: BLE001

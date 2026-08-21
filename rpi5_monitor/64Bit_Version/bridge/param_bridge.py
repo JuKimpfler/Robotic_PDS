@@ -33,14 +33,19 @@ from config import (
     PARAM_SLOW_SEND_INTERVAL_MS, PARAM_FAST_SEND_INTERVAL_MS,
     PARAM_SLOW_SEND_HZ, PARAM_FAST_SEND_HZ,
     PARAM_CONFIG_PATH, PARAM_DEFAULTS_H_PATH,
+    DISCOVERY_MAGIC, DISCOVERY_SEND_INTERVAL_MS,
+    UDP_DISCOVERY_PORT_NODE1, UDP_DISCOVERY_PORT_NODE2,
 )
 from param_io import (
     ParamConfig, ParamEntry, JoystickEntry,
     load_param_config, write_param_defaults_h, read_param_defaults_h,
 )
 from bridge.controller_bridge import ControllerBridge
+from bridge.utils import safe_slot
 
 log = logging.getLogger("bridge.param")
+
+_DISCOVERY_BYTES = struct.pack("<I", DISCOVERY_MAGIC)
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -276,6 +281,14 @@ class ParamBridge(QObject):
             self._fallback_poll_timer.timeout.connect(self._controller.poll)
             self._fallback_poll_timer.start()
 
+        # Discovery an BEIDE Nodes — bewusst AUSSERHALB des if/else: der Node
+        # soll seine Telemetrie auch dann per Unicast schicken können, wenn
+        # die Parameter-Konfiguration kaputt ist (siehe config.py::DISCOVERY_MAGIC).
+        self._discovery_timer = QTimer(self)
+        self._discovery_timer.setInterval(DISCOVERY_SEND_INTERVAL_MS)
+        self._discovery_timer.timeout.connect(self._send_discovery)
+        self._discovery_timer.start()
+
     # ── Properties ─────────────────────────────────────────────────────────
     @pyqtProperty(str, notify=errorChanged)
     def configError(self):
@@ -402,12 +415,31 @@ class ParamBridge(QObject):
             port = UDP_PARAM_SLOW_PORT_NODE1 if self._active_node == 1 else UDP_PARAM_SLOW_PORT_NODE2
         return ip, port
 
+    @safe_slot
+    def _send_discovery(self) -> None:
+        """1x/s ein 4-Byte-Paket an BEIDE Nodes, damit auch der gerade nicht
+        ausgewählte Node die Adresse der GUI kennt und seine Telemetrie per
+        Unicast statt per Broadcast schickt.
+
+        Enthält bewusst KEINE Parameter — es kann also nie Werte in den
+        falschen Roboter schreiben, und der Node leitet es nicht an den
+        Teensy weiter."""
+        for node_id, port in ((1, UDP_DISCOVERY_PORT_NODE1),
+                               (2, UDP_DISCOVERY_PORT_NODE2)):
+            ip = self._get_node_ip(node_id)
+            try:
+                self._sock.sendto(_DISCOVERY_BYTES, (ip, port))
+            except OSError:
+                pass   # Node (noch) nicht erreichbar — nächster Versuch in 1 s
+
+    @safe_slot
     def _send_slow_tick(self) -> None:
         if not self._enabled:
             return
         ip, port = self._current_target(fast=False)
         self._sendto(self._store.pack_slow(), ip, port, fast=False)
 
+    @safe_slot
     def _send_fast_tick(self) -> None:
         """100-Hz-Takt des Fast-Kanals.
 
@@ -448,6 +480,7 @@ class ParamBridge(QObject):
                 log.warning("Param-Sendefehler (%s-Kanal) an %s:%d: %s",
                             "Fast" if fast else "Slow", ip, port, exc)
 
+    @safe_slot
     def _refresh_status(self) -> None:
         ip = self._get_node_ip(self._active_node)
         state = "aktiv" if self._enabled else "pausiert"
@@ -474,7 +507,8 @@ class ParamBridge(QObject):
         einen bereits abgebauten Socket geschrieben — das erzeugte beim
         Schließen der GUI reproduzierbar eine Handvoll Fehlermeldungen.
         """
-        for attr in ("_slow_timer", "_fast_timer", "_status_timer", "_fallback_poll_timer"):
+        for attr in ("_slow_timer", "_fast_timer", "_status_timer",
+                      "_fallback_poll_timer", "_discovery_timer"):
             timer = getattr(self, attr, None)
             if timer is not None:
                 timer.stop()

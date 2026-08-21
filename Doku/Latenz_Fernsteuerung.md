@@ -244,6 +244,7 @@ In dieser Reihenfolge prüfen — von „kostet nichts“ zu „kostet Aufwand�
 |---|---|
 | `teensy_firmware/src/PDS.cpp` | Parser-Fix (1.1), RX-Puffer (1.2), `sampleBoundChannels()` nur noch vor dem Packen, Deskriptor-Chunk nur bei freiem TX-Puffer, Bereichsprüfung in `DBG()`, Überlauf-Fix im JSON-Bau |
 | `teensy_firmware/src/PDS.h` | Diagnose-Zähler + `fastParamAgeMs()`, korrigierter Kopfkommentar (808 statt 1608 Byte), `enum.h` optional |
+| `bridge/param_bridge.py` (v7) | **Discovery-Paket an BEIDE Nodes (1 Hz, 4 Byte, Magic `0xD15C0BE5`, Port 7031/7032)**: der inaktive Node hatte vorher nie eine Zieladresse gelernt und seine kompletten 80 kB/s dauerhaft gebroadcastet — das hat den Funkkanal auch fuer den aktiven Node belastet. Das Paket enthaelt keine Parameter und wird vom Node nicht an den Teensy weitergeleitet. |
 | `rpi_zero_node/uart_receiver.py` | Unicast-Ziel (1.3), Coalescing überholter Pakete, `ioctl` statt `subprocess`, Teilschreib-Erkennung, Deskriptor-Assembler ohne Dauerkopieren |
 | `.../bridge/controller_bridge.py` | kein eigener Timer mehr (1.4), UI-Drosselung, Event-Queue leeren, Warmup gegen Trigger-Fehlstand, konfigurierbares Mapping |
 | `.../bridge/param_bridge.py` | Poll+Senden im selben Tick (1.4), `PreciseTimer`, nicht-blockierender Socket, Drop-Zähler |

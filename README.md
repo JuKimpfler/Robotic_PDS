@@ -26,8 +26,9 @@ It provides real-time telemetry from Teensy microcontrollers via Raspberry Pi Ze
 ### 1. Telemetry Uplink (Teensy 4.0 → RPi Zero → GUI Monitor)
 - **Teensy 4.0** transmits telemetry packets over UART (`Serial3` at `1'000'000` Baud) to the Raspberry Pi Zero. Each packet is `8 + 200 × 4 = 808` bytes; at 100 Hz that is 80.8 kB/s against the 100 kB/s the link provides (~81 % utilisation).
 - **RPi Zero Node** runs `uart_receiver.py`, which reads the serial stream and forwards each packet over UDP (ports `5001` for Node 1, `5002` for Node 2).
-- **Addressing**: the node learns the GUI's address from the incoming parameter packets and then sends **unicast**. Until it has learned one — and if the GUI goes quiet for more than 10 s — it falls back to broadcast, so discovery still works out of the box.
+- **Addressing**: the node learns the GUI's address from incoming packets and then sends **unicast**. Until it has learned one — and if the GUI goes quiet for more than 10 s — it falls back to broadcast, so discovery still works out of the box.
   Broadcast is deliberately *not* the default any more: Wi-Fi must send broadcast frames at the lowest basic rate of the BSS, without aggregation and without MAC-level ACKs. At 80.8 kB/s that consumed a large share of the airtime per node and was the main reason the joystick/controller downlink became laggy. See [`Doku/Latenz_Fernsteuerung.md`](Doku/Latenz_Fernsteuerung.md).
+  Parameter packets only ever go to the *active* node, so the inactive one used to never learn an address and broadcast its full 80 kB/s forever — degrading the link for the active node too. A 4-byte **discovery packet** (magic `0xD15C0BE5`, UDP `7031`/`7032`) now goes to **both** nodes once per second; it carries no parameters and is never forwarded to the Teensy, so it cannot write values into the wrong robot.
   Override with `PDS_TELEMETRY_DEST=<ip>` (fixed target) or `PDS_TELEMETRY_BROADCAST=1` (old behaviour).
 - **GUI Monitor** detects the node IP addresses from the sender IP of the incoming UDP packets.
 
@@ -289,8 +290,9 @@ python tools/selftest.py
 
 | Script | What it covers |
 |---|---|
-| `tools/selftest.py` | Frame assemblers (resync, split packets, garbage), descriptor reassembly across restarts, channel registry robustness, overlay defaults, `param_io` round-trip, Bluetooth frame protocol + CRC. Standard library only — numpy/PyQt6/pyserial may be missing. |
+| `tools/selftest.py` | Runs everything below plus: frame assemblers (resync, split packets, garbage), descriptor reassembly across restarts, channel registry robustness, overlay defaults, `param_io` round-trip, Bluetooth frame protocol + CRC. Standard library only — numpy/PyQt6/pyserial may be missing. |
 | `tools/check_wire_format.py` | Magic numbers, packet sizes, channel count and baud rate across Teensy, node and GUI. |
+| `tools/check_qml_bindings.py` | Every `appBridge.…` access in the QML against the actual Python bridge classes. A typo there is silently `undefined` at runtime — this catches it statically. Also checks brace balance. |
 | `tools/build_teensy_check.sh` | Compiles the Teensy library with `-Wall` in three configurations (default, without `channel_config.h`, 32 channels) using the ARM toolchain PlatformIO already installed. |
 
 The GUI itself can be exercised without any hardware:

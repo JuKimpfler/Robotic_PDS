@@ -99,6 +99,23 @@
 #define PDS_DESC_REPEAT_MS 5000
 #endif
 
+// Die erste Namensmeldung wartet so lange nach begin(). Grund: plot() und
+// track() registrieren ihre Namen erst waehrend setup()/dem ersten loop()-
+// Durchlauf — wuerde der Deskriptor direkt in begin() gebaut, ginge er
+// (fast) leer raus und muesste sofort wiederholt werden.
+#ifndef PDS_BOOT_ANNOUNCE_DELAY_MS
+#define PDS_BOOT_ANNOUNCE_DELAY_MS 250
+#endif
+
+// Der Abstand verdoppelt sich nach jeder unbeantworteten Wiederholung bis zu
+// diesem Wert. Im Wettkampfbetrieb (Roboter laeuft ohne GUI) faellt die
+// Namensmeldung dadurch nach kurzer Zeit auf ein Minimum zurueck, statt
+// dauerhaft ~2.4 kB/s des UART-Budgets zu verbrauchen. Sobald die GUI sendet,
+// wird wieder auf PDS_DESC_REPEAT_MS zurueckgesetzt.
+#ifndef PDS_DESC_REPEAT_MAX_MS
+#define PDS_DESC_REPEAT_MAX_MS 60000
+#endif
+
 // Bindungs-Typ eines per bind()/track() registrierten Kanals (Auto-Sampling).
 enum class BoundChannelType : uint8_t {
     NONE = 0, FLOAT_PTR, DOUBLE_PTR, BOOL_PTR,
@@ -309,9 +326,11 @@ class PowerDebugger {
         size_t  _descJsonLen    = 0;
         uint8_t _descChunkCount = 0;
         uint8_t _descNextChunk  = 0xFF;   // 0xFF = kein Sendevorgang aktiv
-        bool    _descBuilt      = false;
-        bool    _descOverflow   = false;
-        bool    _linkWasUp      = false;   // fuer die Flanke "GUI wieder da"
+        bool     _descBuilt     = false;
+        bool     _descOverflow  = false;
+        bool     _linkWasUp     = false;   // fuer die Flanke "GUI wieder da"
+        uint32_t _descRepeatMs  = PDS_DESC_REPEAT_MS;   // waechst bis PDS_DESC_REPEAT_MAX_MS
+        uint32_t _bootAnnounceAtMs = 0;    // 0 = erste Meldung schon raus
 
         void buildDescriptorJson();
         void startDescriptorSend();

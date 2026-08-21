@@ -64,6 +64,28 @@ PARAM_FAST_SEND_INTERVAL_MS = int(1000 / PARAM_FAST_SEND_HZ)   # 10
 # Signal kostet GUI-Thread-Zeit, die dem Sendetimer fehlt).
 CONTROLLER_UI_NOTIFY_MS = 40    # 25 Hz
 
+# ── Discovery/Keepalive (GUI -> Node, 1 Hz an BEIDE Nodes) ────────────────────
+#  Der Node schickt seine Telemetrie per Unicast an die Adresse, von der er
+#  zuletzt ein Paket der GUI bekommen hat — sonst per Broadcast. Broadcast
+#  kostet im WLAN ein Vielfaches an Funkzeit (niedrigste Basisrate, keine
+#  Aggregation, keine ACKs) und war die Hauptursache der trägen Fernsteuerung
+#  (siehe Doku/Latenz_Fernsteuerung.md).
+#
+#  Param-Pakete gehen aber immer nur an den AKTIVEN Node — der inaktive hat
+#  deshalb nie eine Adresse gelernt und dauerhaft mit 80 kB/s gebroadcastet,
+#  was den Funkkanal auch für den aktiven Node belastet hat.
+#
+#  Dieses 4-Byte-Paket schließt die Lücke: es geht an BEIDE Nodes, der Node
+#  wertet ausschließlich die Absenderadresse aus und leitet es NICHT an den
+#  Teensy weiter. Damit kann es auch nie versehentlich Parameter in den
+#  falschen Roboter schreiben.
+#  Muss mit rpi_zero_node/uart_receiver.py übereinstimmen.
+DISCOVERY_MAGIC             = 0xD15C_0BE5
+DISCOVERY_PACKET_BYTES      = 4
+UDP_DISCOVERY_PORT_NODE1    = 7031
+UDP_DISCOVERY_PORT_NODE2    = 7032
+DISCOVERY_SEND_INTERVAL_MS  = 1000
+
 # ── Namens-/Overlay-Deskriptor (Teensy -> GUI, einmalig beim Boot + auf Anfrage) ─
 # Muss exakt mit params.h (Teensy) und rpi_zero_node/uart_receiver.py übereinstimmen!
 CHANNEL_DESC_MAGIC          = 0xDE5C0001
