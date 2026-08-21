@@ -35,12 +35,13 @@ import logging
 from collections import deque
 from time import monotonic, strftime, localtime
 
-from PyQt6.QtCore import QObject, pyqtSignal, pyqtProperty, pyqtSlot
+from PyQt6.QtCore import QObject, QTimer, pyqtSignal, pyqtProperty, pyqtSlot
 
 from config import (
     EVENT_LOG_MAXLEN, PDS_EVENT_KIND_EVENT, PDS_EVENT_LEVEL_NAMES,
     BATTERY_ALARM_DEFAULTS,
 )
+from bridge.utils import safe_slot
 
 log = logging.getLogger("bridge.diag")
 
@@ -55,6 +56,15 @@ _LOSS_WINDOW = 1000
 
 # Nach dieser Zeit ohne Statuspaket gilt der Node-Status als veraltet.
 _STATUS_STALE_S = 4.0
+
+# Das Logbuch wird hoechstens so oft an QML gemeldet.
+#
+# Jedes eventsChanged laesst QML die KOMPLETTE Liste (bis 500 Eintraege) neu
+# aufbauen und in eine QVariantList wandeln. Der Teensy darf 20 Meldungen pro
+# Sekunde schicken — ungedrosselt waeren das 10 000 Dict-Umwandlungen pro
+# Sekunde im GUI-Thread, also genau dort, wo auch gerendert wird. 200 ms sind
+# fuer ein mitlaufendes Logbuch schnell genug.
+_EVENT_NOTIFY_MS = 200
 
 
 class NodeLink:
@@ -129,6 +139,34 @@ class DiagBridge(QObject):
         # Marken an den Plotter durchreichen (wird von AppBridge gesetzt).
         self.marker_sink = None
 
+        # Gedrosselte Meldung des Logbuchs (siehe _EVENT_NOTIFY_MS).
+        self._events_dirty = False
+        self._event_timer = QTimer(self)
+        self._event_timer.setInterval(_EVENT_NOTIFY_MS)
+        self._event_timer.setSingleShot(True)
+        self._event_timer.timeout.connect(self._flush_events)
+
+    def _notify_events(self, immediate: bool = False) -> None:
+        """Logbuch-Aenderung melden — gebuendelt statt je Eintrag.
+
+        immediate=True fuer Bedienvorgaenge (Filter umstellen, leeren): dort
+        erwartet der Nutzer eine sofortige Reaktion, und sie kommen einzeln.
+        """
+        if immediate:
+            self._events_dirty = False
+            self._event_timer.stop()
+            self.eventsChanged.emit()
+            return
+        self._events_dirty = True
+        if not self._event_timer.isActive():
+            self._event_timer.start()
+
+    @safe_slot
+    def _flush_events(self) -> None:
+        if self._events_dirty:
+            self._events_dirty = False
+            self.eventsChanged.emit()
+
     # ══════════════════════════════════════════════════════════════════════
     #  Eingehende Daten
     # ══════════════════════════════════════════════════════════════════════
@@ -184,7 +222,7 @@ class DiagBridge(QObject):
                 and self.marker_sink is not None):
             self.marker_sink(text, level)
 
-        self.eventsChanged.emit()
+        self._notify_events()
 
     def note_values(self, values) -> None:
         """Letzter Telemetriestand — nur für die Akku-Überwachung."""
@@ -315,19 +353,19 @@ class DiagBridge(QObject):
         level = max(0, min(2, int(level)))
         if level != self._event_filter:
             self._event_filter = level
-            self.eventsChanged.emit()
+            self._notify_events(immediate=True)
 
     @pyqtSlot()
     def clearEvents(self) -> None:
         self._events.clear()
         self._unseen_errors = 0
-        self.eventsChanged.emit()
+        self._notify_events(immediate=True)
 
     @pyqtSlot()
     def acknowledgeErrors(self) -> None:
         if self._unseen_errors:
             self._unseen_errors = 0
-            self.eventsChanged.emit()
+            self._notify_events(immediate=True)
 
     def add_local(self, text: str, level: int = 0) -> None:
         """Meldung der GUI selbst ins Logbuch (Node 0 = "lokal")."""
@@ -342,7 +380,7 @@ class DiagBridge(QObject):
         })
         if level >= 2:
             self._unseen_errors += 1
-        self.eventsChanged.emit()
+        self._notify_events()
 
     # ══════════════════════════════════════════════════════════════════════
     #  Properties: Akku-Warnung (C3)
@@ -388,6 +426,10 @@ class DiagBridge(QObject):
 
     def battery_config_dict(self) -> dict:
         return dict(self._batt)
+
+    # ── Aufraeumen (von AppBridge.shutdown aufgerufen) ────────────────────
+    def shutdown(self) -> None:
+        self._event_timer.stop()
 
     def load_battery_config(self, cfg: dict) -> None:
         if isinstance(cfg, dict):

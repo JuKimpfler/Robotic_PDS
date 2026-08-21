@@ -504,6 +504,7 @@ class AppBridge(QObject):
         self._shutdown_done = True
         self._poll_timer.stop()
         self._stat_timer.stop()
+        self._diag.shutdown()
         self._settings.flush()
         self._params.shutdown()
         self._nm.stop()
