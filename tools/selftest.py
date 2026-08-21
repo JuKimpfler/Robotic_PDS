@@ -15,6 +15,11 @@ testen kann, und die erfahrungsgemaess die meisten Fehler enthalten:
   6. apply_overlay_defaults   — leere Gruppen befuellen, volle nie ueberschreiben
   7. param_io                 — Konfiguration laden, Defaults schreiben/lesen
   8. bt_flash_protocol        — Frame-Round-Trip inkl. CRC und Resync
+  9. QML-Zugriffe             — jeder Zugriff existiert wirklich in Python
+ 10. Aux-Uplink               — Ereignis/Param-Ack/Node-Status parsen
+ 11. runtime_config           — Teensy-Konfiguration -> param_config.json,
+                                Fingerabdruck, atomares Speichern
+ 12. expand_textgrid          — Rasterlayout vieler Werte auf einem Bild
 
 Benoetigt nur die Standardbibliothek. numpy/PyQt6/pyserial/pygame duerfen
 fehlen — fehlende Module werden fuer den Test durch Attrappen ersetzt.
@@ -342,10 +347,238 @@ def test_qml_bindings() -> None:
           not problems, "; ".join(problems[:4]))
 
 
+
+# ══════════════════════════════════════════════════════════════════════════
+#  10) Aux-Uplink: Ereignisse, Param-Ack, Node-Status
+# ══════════════════════════════════════════════════════════════════════════
+def test_aux_uplink() -> None:
+    section("10) Aux-Uplink (Ereignisse, Param-Ack, Node-Status)")
+    import config
+    from aux_receiver import parse_aux_packet
+    import uart_receiver as node
+
+    # ── Ereignis ──────────────────────────────────────────────────────────
+    text = "Ball verloren".encode("utf-8")
+    ev = struct.pack("<IIfBBBB", config.PDS_EVENT_MAGIC, 123456, 4.25,
+                      0, 1, len(text), 0) + text
+    check("Ereignis: Kopfgroesse stimmt mit params.h ueberein",
+          config.PDS_EVENT_HEADER_BYTES == 16)
+    parsed = parse_aux_packet(ev)
+    check("Ereignis wird erkannt", parsed is not None and parsed[0] == "event")
+    if parsed:
+        d = parsed[1]
+        check("Ereignis: Text", d["text"] == "Ball verloren", d["text"])
+        check("Ereignis: Zeitstempel/Wert/Stufe",
+              d["ts_us"] == 123456 and abs(d["value"] - 4.25) < 1e-6 and d["level"] == 1)
+
+    bad = bytearray(ev)
+    bad[15] = 7        # reserved != 0
+    check("Ereignis mit belegtem Reserve-Byte wird verworfen",
+          parse_aux_packet(bytes(bad)) is None)
+    bad = bytearray(ev)
+    bad[12] = 9        # kind ausserhalb 0/1
+    check("Ereignis mit unbekannter Art wird verworfen",
+          parse_aux_packet(bytes(bad)) is None)
+    check("zu kurzes Ereignis wird verworfen", parse_aux_packet(ev[:10]) is None)
+
+    # ── Parameter-Rueckmeldung ────────────────────────────────────────────
+    floats = [i * 0.5 for i in range(config.PARAM_SLOW_FLOAT_COUNT)]
+    bools = [(i % 3) == 0 for i in range(config.PARAM_SLOW_BOOL_COUNT)]
+    fast = [-1.0, 0.0, 1.0, 2.0, 3.0][:config.PARAM_FAST_FLOAT_COUNT]
+    ack = (struct.pack("<IIIII", config.PARAM_ACK_MAGIC, 7, 8, 120, 0xFFFFFFFF)
+           + struct.pack(f"<{len(floats)}f", *floats)
+           + bytes(1 if b else 0 for b in bools)
+           + struct.pack(f"<{len(fast)}f", *fast))
+    check("Param-Ack: Paketgroesse wie in params.h",
+          len(ack) == config.PARAM_ACK_PACKET_BYTES,
+          f"{len(ack)} statt {config.PARAM_ACK_PACKET_BYTES}")
+    parsed = parse_aux_packet(ack)
+    check("Param-Ack wird erkannt", parsed is not None and parsed[0] == "ack")
+    if parsed:
+        d = parsed[1]
+        check("Param-Ack: Floats unveraendert",
+              all(abs(a - b) < 1e-6 for a, b in zip(d["floats"], floats)))
+        check("Param-Ack: Bools unveraendert", list(d["bools"]) == bools)
+        check("Param-Ack: 0xFFFFFFFF wird zu 'nie empfangen'",
+              d["fast_age_ms"] is None and d["slow_age_ms"] == 120)
+    check("Param-Ack mit falscher Laenge wird verworfen",
+          parse_aux_packet(ack[:-1]) is None)
+
+    # ── Node-Status ───────────────────────────────────────────────────────
+    st = struct.pack(config.NODE_STATUS_STRUCT, config.NODE_STATUS_MAGIC, 2,
+                      config.NODE_STATUS_FLAG_TEENSY | config.NODE_STATUS_FLAG_WIFI, 0,
+                      52.5, 0.75, 41.0, -58.0, 3600, 1000, 2, 999)
+    check("Node-Status: Paketgroesse", len(st) == config.NODE_STATUS_PACKET_BYTES)
+    parsed = parse_aux_packet(st)
+    check("Node-Status wird erkannt", parsed is not None and parsed[0] == "status")
+    if parsed:
+        d = parsed[1]
+        check("Node-Status: Werte",
+              d["node_id"] == 2 and abs(d["cpu_temp_c"] - 52.5) < 1e-6
+              and abs(d["wifi_rssi_dbm"] + 58.0) < 1e-6)
+        check("Node-Status: Flags", d["teensy_link"] and d["wifi_ok"] and not d["unicast"])
+        check("Node-Status: Uptime", d["uptime_s"] == 3600)
+
+    check("unbekanntes Magic wird verworfen",
+          parse_aux_packet(struct.pack("<I", 0x12345678) + b"x" * 40) is None)
+
+    # ── Assembler des Nodes auf einem gemischten Bytestrom ────────────────
+    #  Genau der kritische Fall: Ereignis und Ack stecken MITTEN in einem
+    #  Telemetriestrom und muessen sauber herausgefischt werden.
+    telemetry = struct.pack("<II", node.MAGIC, 42) + b"\x11" * (node.PACKET_BYTES - 8)
+    stream = telemetry + ev + telemetry + ack + b"\x00\x01\x02"
+
+    ea = node.EventFrameAssembler()
+    got = []
+    for i in range(0, len(stream), 97):          # bewusst krumme Blockgroesse
+        got += ea.feed(stream[i:i + 97])
+    check("EventFrameAssembler findet das Ereignis im Telemetriestrom",
+          len(got) == 1 and got[0] == ev, f"{len(got)} Treffer")
+
+    aa = node.ParamAckFrameAssembler()
+    got = []
+    for i in range(0, len(stream), 61):
+        got += aa.feed(stream[i:i + 61])
+    check("ParamAckFrameAssembler findet die Rueckmeldung",
+          len(got) == 1 and got[0] == ack, f"{len(got)} Treffer")
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  11) runtime_config: Konfiguration vom Teensy
+# ══════════════════════════════════════════════════════════════════════════
+def test_runtime_config() -> None:
+    section("11) runtime_config (Teensy-Konfiguration, reboot-fest)")
+    import runtime_config as rc
+
+    desc_cfg = {
+        "slow_floats": [
+            {"i": 0, "n": "Kp", "w": "slider", "min": 0, "max": 10, "step": 0.05,
+             "def": 2.5, "g": "Regler"},
+            {"i": 1, "n": "Ki", "w": "number", "min": 0, "max": 5, "step": 0.01, "def": 0.2},
+            {"i": 1, "n": "Doppelt", "w": "slider"},        # doppelter Index
+            {"i": 2, "n": "Kaputt", "w": "slider", "min": 5, "max": 1},  # leerer Bereich
+            {"i": 3, "w": "slider"},                        # ohne Namen
+        ],
+        "slow_bools": [{"i": 0, "n": "Motoren", "w": "toggle"},
+                        {"i": 1, "n": "NotAus", "w": "button", "m": True}],
+        "fast_floats": [{"i": 0, "n": "X", "w": "slider", "min": -100, "max": 100}],
+        "joysticks": [{"n": "Fahrt", "s": "fast", "x": 0, "y": 1,
+                       "xr": [-100, 100], "yr": [-100, 100], "c": True},
+                       {"n": "Kaputt", "s": "schnell", "x": 0, "y": 1}],
+    }
+    cfg = rc.param_config_from_descriptor(desc_cfg)
+    check("Konfiguration wird erzeugt", cfg is not None)
+    if cfg:
+        idx = [e["index"] for e in cfg["floats"]]
+        check("doppelter Index wird verworfen", idx.count(1) == 1, str(idx))
+        check("Eintrag ohne Namen wird verworfen", 3 not in idx, str(idx))
+        kaputt = [e for e in cfg["floats"] if e["index"] == 2]
+        check("leerer Wertebereich wird korrigiert",
+              len(kaputt) == 1 and kaputt[0]["max"] > kaputt[0]["min"])
+        check("Default wird in den Bereich geklemmt",
+              all(e["min"] <= e["default"] <= e["max"] for e in cfg["floats"]))
+        check("Bools werden zu Wahrheitswerten",
+              all(isinstance(e["default"], bool) for e in cfg["bools"]))
+        check("momentary bleibt erhalten",
+              any(e["momentary"] for e in cfg["bools"]))
+        check("ungueltige Joystick-Quelle wird verworfen",
+              len(cfg["joysticks"]) == 1, str(cfg["joysticks"]))
+
+        # Die erzeugte Konfiguration muss param_io tatsaechlich laden koennen —
+        # sonst waere der Parameter-Tab nach einem Firmware-Update tot.
+        import param_io
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "param_config.json"
+            path.write_text(json.dumps(cfg), encoding="utf-8")
+            loaded = param_io.load_param_config(path)
+            check("param_io laedt die erzeugte Konfiguration",
+                  loaded.floats[0].name == "Kp" and loaded.bools[1].momentary)
+
+    check("leere Teensy-Konfiguration -> None",
+          rc.param_config_from_descriptor({}) is None)
+    check("Unsinn statt dict -> None",
+          rc.param_config_from_descriptor("nope") is None)
+
+    # ── Fingerabdruck + atomares Speichern ────────────────────────────────
+    h1 = rc.teensy_hash({"a": 1, "b": [2, 3]})
+    h2 = rc.teensy_hash({"b": [2, 3], "a": 1})
+    check("Fingerabdruck ist unabhaengig von der Schluesselreihenfolge", h1 == h2)
+    check("Fingerabdruck aendert sich bei geaendertem Inhalt",
+          h1 != rc.teensy_hash({"a": 1, "b": [2, 4]}))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        base = Path(tmp)
+        orig_path_fn = rc.runtime_config_path
+        orig_dir = rc.RUNTIME_CONFIG_DIR
+        rc.runtime_config_path = lambda nid, name: base / f"node{nid}" / name
+        rc.RUNTIME_CONFIG_DIR = base
+        try:
+            ok = rc.save_json(1, "test.json", {"x": 1})
+            check("save_json legt die Datei an", ok and (base / "node1" / "test.json").exists())
+            check("load_json liest sie zurueck", rc.load_json(1, "test.json") == {"x": 1})
+            check("kein .tmp-Rest nach dem Schreiben",
+                  not list((base / "node1").glob("*.tmp")))
+            check("fehlende Datei -> None", rc.load_json(1, "fehlt.json") is None)
+            (base / "node1" / "kaputt.json").write_text("{nicht json", encoding="utf-8")
+            check("kaputte Datei -> None statt Ausnahme",
+                  rc.load_json(1, "kaputt.json") is None)
+
+            path, written = rc.sync_param_config(1, desc_cfg)
+            check("sync_param_config schreibt beim ersten Mal", written)
+            _path2, written2 = rc.sync_param_config(1, desc_cfg)
+            check("unveraenderte Konfiguration wird NICHT erneut geschrieben",
+                  not written2)
+            changed = dict(desc_cfg)
+            changed["slow_floats"] = desc_cfg["slow_floats"] + [
+                {"i": 9, "n": "Neu", "w": "slider", "min": 0, "max": 1}]
+            _path3, written3 = rc.sync_param_config(1, changed)
+            check("geaenderte Konfiguration wird uebernommen", written3)
+
+            removed = rc.clear(1)
+            check("clear() loescht die gespeicherten Dateien", removed >= 1)
+        finally:
+            rc.runtime_config_path = orig_path_fn
+            rc.RUNTIME_CONFIG_DIR = orig_dir
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  12) textgrid: viele Werte als Raster auf einem Bild
+# ══════════════════════════════════════════════════════════════════════════
+def test_textgrid() -> None:
+    section("12) Overlay-Typ textgrid")
+    sys.path.insert(0, str(ROOT / "rpi5_monitor" / "64Bit_Version"))
+    from bridge.utils import expand_textgrid
+
+    def name_for(ch):
+        return f"K{ch}"
+
+    grid = expand_textgrid({
+        "channels": "0-3,10", "cols": 2, "dx_pct": 20, "dy_pct": 5,
+        "x_pct": 4, "y_pct": 6,
+    }, name_for)
+    check("Kanalliste inkl. Bereich wird aufgeloest", len(grid) == 5, str(len(grid)))
+    if len(grid) == 5:
+        check("Kanaele in der richtigen Reihenfolge",
+              [g["channel"] for g in grid] == [0, 1, 2, 3, 10])
+        check("erste Zeile: zwei Spalten nebeneinander",
+              grid[0]["xPct"] == 4 and grid[1]["xPct"] == 24
+              and grid[0]["yPct"] == grid[1]["yPct"])
+        check("zweite Zeile beginnt wieder links und eine Zeile tiefer",
+              grid[2]["xPct"] == 4 and grid[2]["yPct"] == 11)
+        check("Beschriftung kommt aus der Namensfunktion", grid[0]["label"] == "K0")
+
+    ohne = expand_textgrid({"channels": "0-1", "labels": False}, name_for)
+    check("labels=0 laesst die Beschriftung weg",
+          all(g["label"] == "" for g in ohne))
+    check("ohne Kanalliste kommt nichts heraus",
+          expand_textgrid({"cols": 2}, name_for) == [])
+
+
 def main() -> int:
     print("Power Debug System — Selbsttest")
     for fn in (test_wire_format, test_frame_assemblers, test_descriptor,
-               test_param_io, test_bt_protocol, test_qml_bindings):
+               test_param_io, test_bt_protocol, test_qml_bindings,
+               test_aux_uplink, test_runtime_config, test_textgrid):
         try:
             fn()
         except Exception as exc:            # noqa: BLE001

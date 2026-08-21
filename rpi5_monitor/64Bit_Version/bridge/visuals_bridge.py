@@ -44,7 +44,7 @@ from pathlib import Path
 from PyQt6.QtCore import QObject, pyqtSignal, pyqtProperty, pyqtSlot
 
 import runtime_config
-from bridge.utils import parse_channels
+from bridge.utils import parse_channels, expand_textgrid as _expand_textgrid
 from config import VARIABLE_NAMES
 from channel_registry import apply_overlay_defaults, ChannelRegistry
 
@@ -68,32 +68,10 @@ def _config_file(node_id: int) -> Path:
 
 
 def expand_textgrid(entry: dict) -> list[dict]:
-    """Einen "textgrid"-Eintrag in einzelne Text-Overlays auflösen.
-
-    Reine Funktion ohne Qt — damit in tools/selftest.py ohne GUI prüfbar.
-    """
-    channels = parse_channels(entry.get("channels", ""))
-    if not channels:
-        return []
-    cols = max(1, int(entry.get("cols", 1)))
-    dx = float(entry.get("dx_pct", 20.0))
-    dy = float(entry.get("dy_pct", 4.5))
-    x0 = float(entry.get("x_pct", 4.0))
-    y0 = float(entry.get("y_pct", 6.0))
-    color = entry.get("color", "#4ec9b0")
-    with_labels = bool(entry.get("labels", True))
-
-    out: list[dict] = []
-    for i, ch in enumerate(channels):
-        col, row = i % cols, i // cols
-        out.append({
-            "label": VARIABLE_NAMES.get(ch, f"Var_{ch:03d}") if with_labels else "",
-            "channel": ch,
-            "xPct": x0 + col * dx,
-            "yPct": y0 + row * dy,
-            "color": color,
-        })
-    return out
+    """Duenne Huelle um bridge.utils.expand_textgrid — die eigentliche
+    Rechnung liegt dort, damit sie ohne PyQt6 pruefbar ist (siehe
+    tools/selftest.py)."""
+    return _expand_textgrid(entry, lambda ch: VARIABLE_NAMES.get(ch, f"Var_{ch:03d}"))
 
 
 def _overlay_to_entry(o: dict) -> list[dict]:

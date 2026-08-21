@@ -65,9 +65,11 @@ Item {
             visible: root.bodiesGraphic !== null
             label: root.bodiesGraphic ? root.bodiesGraphic.label : ""
             imageUrl: root.visuals.activeGroup.imageUrl
-            fieldWidth: root.bodiesGraphic ? root.bodiesGraphic.fieldWidth : 2.0
-            fieldHeight: root.bodiesGraphic ? root.bodiesGraphic.fieldHeight : 1.5
-            readonly property var _emptyBody: ({ label: "", color: "#4ec9b0", diameter: 0.3, x: 0, y: 0, angleDeg: 0 })
+            // Feldmasse in ZENTIMETERN (x = Ost, y = Nord). Die Darstellung
+            // dreht das Feld um 90 Grad nach Osten — siehe BodiesField.qml.
+            fieldXCm: root.bodiesGraphic ? root.bodiesGraphic.fieldXCm : 180
+            fieldYCm: root.bodiesGraphic ? root.bodiesGraphic.fieldYCm : 240
+            readonly property var _emptyBody: ({ label: "", color: "#4ec9b0", diameter: 7, x: 0, y: 0, angleDeg: 0 })
             body1: root.bodiesGraphic ? root._bodyState(root.bodiesGraphic.body1) : _emptyBody
             body2: root.bodiesGraphic ? root._bodyState(root.bodiesGraphic.body2) : _emptyBody
         }

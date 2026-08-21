@@ -7,6 +7,10 @@ an einem einzigen Ort.
 
 import platform
 
+# Muss mit teensy_firmware/src/params.h (PDS_WIRE_VERSION) uebereinstimmen.
+# tools/check_wire_format.py prueft das.
+PDS_WIRE_VERSION = 2
+
 # ── Automatische OS-Erkennung für Testbetrieb ──────────────────────────────────
 IS_WINDOWS = platform.system() == "Windows"
 

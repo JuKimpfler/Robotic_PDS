@@ -1,28 +1,48 @@
 pragma Singleton
 import QtQuick
 
-// Migrationsplan Abschnitt 6: zentrale Farb-/Maß-Konstanten, Ersatz für
-// den grossen setStyleSheet(...)-String aus dem bisherigen main.py.
+// Zentrale Farb-/Maß-Konstanten.
+//
+// ── Hell/Dunkel und Schriftgröße (F7) ───────────────────────────────────────
+// `dark` und `fontScale` kommen aus appBridge.settings und werden dort
+// dauerhaft gespeichert (siehe bridge/settings_bridge.py). Weil ALLE Farben
+// und Schriftgrößen hier durchlaufen, genügt das Umschalten dieser beiden
+// Werte — jede daran hängende Bindung wertet sich von selbst neu aus, ohne
+// dass irgendeine Ansicht neu geladen werden muss.
+//
+// Die Helligkeitsvariante ist bewusst kein bloßes Invertieren: auf einem
+// 13"-Display in der Sonne braucht man kräftigere Kontraste und dunklere
+// Akzentfarben, damit die Kurvenfarben auf Weiß noch lesbar sind.
 QtObject {
-    // ── Farben (identisch zur bisherigen Dark-Palette in main.py) ────────
-    readonly property color bg:          "#1e1e1e"
-    readonly property color bgMid:       "#2d2d30"
-    readonly property color bgAlt:       "#37393a"
-    readonly property color bgInput:     "#3c3f41"
-    readonly property color text:        "#d4d4d4"
-    readonly property color textjulius:  "#a5dc6e"
-    readonly property color textDim:     "#969696"
-    readonly property color highlight:   "#0078d7"
-    readonly property color accentBlue:  "#9cdcfe"
-    readonly property color accentGreen: "#4ec9b0"
-    readonly property color accentRed:   "#f48771"
-    readonly property color accentAmber: "#f0c060"
-    readonly property color border:      "#444444"
-    readonly property color ledOn:       "#2ecc71"
-    readonly property color ledOff:      "#e74c3c"
+    id: theme
 
-    // ── Touch-Metriken (Migrationsplan Abschnitt 5) ───────────────────────
-    readonly property int touchTargetMin: 48
+    readonly property bool dark: appBridge.settings.dark
+    readonly property real fontScale: appBridge.settings.fontScale
+
+    // ── Farben ───────────────────────────────────────────────────────────
+    readonly property color bg:          dark ? "#1e1e1e" : "#f2f3f5"
+    readonly property color bgMid:       dark ? "#2d2d30" : "#e2e5e9"
+    readonly property color bgAlt:       dark ? "#37393a" : "#d6dae0"
+    readonly property color bgInput:     dark ? "#3c3f41" : "#ffffff"
+    readonly property color text:        dark ? "#d4d4d4" : "#1c1f23"
+    readonly property color textjulius:  dark ? "#a5dc6e" : "#2f6b12"
+    readonly property color textDim:     dark ? "#969696" : "#5a6169"
+    readonly property color highlight:   dark ? "#0078d7" : "#0a5ca8"
+    readonly property color accentBlue:  dark ? "#9cdcfe" : "#12608f"
+    readonly property color accentGreen: dark ? "#4ec9b0" : "#0d7a63"
+    readonly property color accentRed:   dark ? "#f48771" : "#b3271a"
+    readonly property color accentAmber: dark ? "#f0c060" : "#9a6b00"
+    readonly property color border:      dark ? "#444444" : "#b6bcc4"
+    readonly property color ledOn:       dark ? "#2ecc71" : "#1e8a4c"
+    readonly property color ledOff:      dark ? "#e74c3c" : "#c0392b"
+
+    // Flächen für Warn-/Fehlerbanner (sonst überall als Literal verstreut)
+    readonly property color warnBg:      dark ? "#3a2f00" : "#fff2cc"
+    readonly property color errorBg:     dark ? "#3a1f1f" : "#ffe0dd"
+    readonly property color okBg:        dark ? "#1f3a2a" : "#dff3e6"
+
+    // ── Touch-Metriken ───────────────────────────────────────────────────
+    readonly property int touchTargetMin: Math.round(48 * fontScale)
     readonly property int spacingXs: 4
     readonly property int spacingS:  8
     readonly property int spacingM:  16
@@ -32,11 +52,11 @@ QtObject {
     readonly property int radiusM: 8
     readonly property int radiusL: 14
 
-    readonly property int fontSizeSmall: 13
-    readonly property int fontSizeTabell: 16
-    readonly property int fontSizeBase:  15
-    readonly property int fontSizeLarge: 20
-    readonly property int fontSizeXLarge: 24
+    readonly property int fontSizeSmall:  Math.round(13 * fontScale)
+    readonly property int fontSizeTabell: Math.round(16 * fontScale)
+    readonly property int fontSizeBase:   Math.round(15 * fontScale)
+    readonly property int fontSizeLarge:  Math.round(20 * fontScale)
+    readonly property int fontSizeXLarge: Math.round(24 * fontScale)
 
     readonly property string fontMono: "monospace"
 }

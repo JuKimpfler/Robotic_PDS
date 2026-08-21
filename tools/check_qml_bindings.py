@@ -42,6 +42,8 @@ BRIDGE_CLASSES = {
     "VisualsBridge":        (GUI_DIR / "bridge" / "visuals_bridge.py", "VisualsBridge"),
     "ParamBridge":          (GUI_DIR / "bridge" / "param_bridge.py", "ParamBridge"),
     "ControllerBridge":     (GUI_DIR / "bridge" / "controller_bridge.py", "ControllerBridge"),
+    "DiagBridge":           (GUI_DIR / "bridge" / "diag_bridge.py", "DiagBridge"),
+    "SettingsBridge":       (GUI_DIR / "bridge" / "settings_bridge.py", "SettingsBridge"),
 }
 
 # Von main_qml.py als Kontext-Property gesetzte Wurzelobjekte
@@ -58,6 +60,8 @@ PROPERTY_TYPES = {
     ("AppBridge", "visuals"):   "VisualsBridge",
     ("AppBridge", "params"):    "ParamBridge",
     ("ParamBridge", "controller"): "ControllerBridge",
+    ("AppBridge", "diag"):      "DiagBridge",
+    ("AppBridge", "settings"):  "SettingsBridge",
 }
 
 # Von QAbstractTableModel/QObject geerbt bzw. in QML immer verfuegbar.

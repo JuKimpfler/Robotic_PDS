@@ -83,3 +83,44 @@ def parse_channels(channel_spec) -> List[int]:
                     pass
         return result
     return []
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  Overlay-Typ "textgrid": ein Eintrag -> viele Textfelder
+# ══════════════════════════════════════════════════════════════════════════
+
+def expand_textgrid(entry: dict, name_for) -> List[dict]:
+    """Einen "textgrid"-Eintrag in einzelne Text-Overlays aufloesen.
+
+    Genau dafuer gedacht, dass man bei 30 Messwerten nicht 30 Overlays mit je
+    eigener x/y-Position pflegen muss: angegeben wird nur die linke obere Ecke
+    plus Spaltenzahl und Abstaende, den Rest rechnet diese Funktion aus.
+
+    Bewusst hier und nicht in visuals_bridge.py: dort haengt alles an PyQt6,
+    und diese reine Rechenfunktion soll in tools/selftest.py ohne GUI
+    pruefbar bleiben.
+
+    name_for: Callable[[int], str] — liefert den Anzeigenamen eines Kanals.
+    """
+    channels = parse_channels(entry.get("channels", ""))
+    if not channels:
+        return []
+    cols = max(1, int(entry.get("cols", 1)))
+    dx = float(entry.get("dx_pct", 20.0))
+    dy = float(entry.get("dy_pct", 4.5))
+    x0 = float(entry.get("x_pct", 4.0))
+    y0 = float(entry.get("y_pct", 6.0))
+    color = entry.get("color", "#4ec9b0")
+    with_labels = bool(entry.get("labels", True))
+
+    out: List[dict] = []
+    for i, ch in enumerate(channels):
+        col, row = i % cols, i // cols
+        out.append({
+            "label": name_for(ch) if with_labels else "",
+            "channel": ch,
+            "xPct": x0 + col * dx,
+            "yPct": y0 + row * dy,
+            "color": color,
+        })
+    return out

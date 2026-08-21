@@ -69,10 +69,46 @@ def _udp_simulator_process(stop_event) -> None:
     modulo 2^32 gerechnet — genau wie micros() auf dem Teensy. Damit lässt
     sich auch die Neustart-Erkennung der GUI mit dem Simulator testen.
     """
-    import time, struct, socket
+    import time, struct, socket, math, random
     import numpy as np
-    from config import (PACKET_HEADER_MAGIC, MAX_FLOATS,
-                         UDP_PORT_NODE1, UDP_PORT_NODE2)
+    from config import (
+        PACKET_HEADER_MAGIC, MAX_FLOATS,
+        UDP_PORT_NODE1, UDP_PORT_NODE2,
+        UDP_AUX_PORT_NODE1, UDP_AUX_PORT_NODE2,
+        PDS_EVENT_MAGIC, PDS_EVENT_HEADER_BYTES,
+        PARAM_ACK_MAGIC, PARAM_ACK_HEADER_BYTES,
+        PARAM_SLOW_FLOAT_COUNT, PARAM_SLOW_BOOL_COUNT, PARAM_FAST_FLOAT_COUNT,
+        NODE_STATUS_MAGIC, NODE_STATUS_STRUCT,
+        NODE_STATUS_FLAG_TEENSY, NODE_STATUS_FLAG_WIFI, NODE_STATUS_FLAG_UNICAST,
+    )
+
+    # Die Kopf-Formate hier muessen zu params.h passen. Ein stiller
+    # Fehlschlag waere besonders aergerlich: der Simulator saehe funktionsfaehig
+    # aus, die GUI wuerde die Pakete aber wortlos verwerfen.
+    assert struct.calcsize("<IIfBBBB") == PDS_EVENT_HEADER_BYTES
+    assert struct.calcsize("<IIIII") == PARAM_ACK_HEADER_BYTES
+
+    def _event_packet(ts_us, kind, level, text, value=0.0):
+        raw = text.encode("utf-8")[:48]
+        return (struct.pack("<IIfBBBB", PDS_EVENT_MAGIC, ts_us, value,
+                             kind, level, len(raw), 0) + raw)
+
+    def _ack_packet(seq, floats, bools, fast):
+        return (struct.pack("<IIIII", PARAM_ACK_MAGIC, seq, seq, 120, 8)
+                 + floats.astype("<f4").tobytes()
+                 + bools.astype(np.uint8).tobytes()
+                 + fast.astype("<f4").tobytes())
+
+    def _status_packet(node_id, uptime, uart_pkts):
+        flags = NODE_STATUS_FLAG_TEENSY | NODE_STATUS_FLAG_WIFI | NODE_STATUS_FLAG_UNICAST
+        return struct.pack(
+            NODE_STATUS_STRUCT, NODE_STATUS_MAGIC, node_id, flags, 0,
+            48.0 + 4.0 * math.sin(uptime / 30.0),      # CPU-Temperatur
+            0.4 + 0.2 * random.random(),               # Last
+            35.0 + 5.0 * random.random(),              # Speicher
+            -55.0 - 10.0 * random.random(),            # WLAN-Pegel
+            int(uptime), uart_pkts, 0, uart_pkts,
+        )
 
     logging.basicConfig(level=logging.INFO, format="[Simulator] %(asctime)s %(message)s")
     sim_log = logging.getLogger()
@@ -86,6 +122,16 @@ def _udp_simulator_process(stop_event) -> None:
     data  = np.empty(MAX_FLOATS, dtype=np.float32)
 
     t0, pkt, next_send = time.monotonic(), 0, time.monotonic()
+
+    # Der Simulator bedient auch den Aux-Uplink: ohne Ereignisse,
+    # Parameter-Rueckmeldung und Node-Status waeren der Diagnose-Tab und
+    # die Plotter-Marken ohne echte Hardware gar nicht zu sehen.
+    ack_floats = np.zeros(PARAM_SLOW_FLOAT_COUNT, dtype=np.float32)
+    ack_bools = np.zeros(PARAM_SLOW_BOOL_COUNT, dtype=bool)
+    ack_fast = np.zeros(PARAM_FAST_FLOAT_COUNT, dtype=np.float32)
+    aux_ports = {1: UDP_AUX_PORT_NODE1, 2: UDP_AUX_PORT_NODE2}
+    next_status = next_ack = next_event = time.monotonic()
+    event_seq = 0
 
     while not stop_event.is_set():
         t  = time.monotonic() - t0
@@ -102,6 +148,25 @@ def _udp_simulator_process(stop_event) -> None:
         pkt += 2
         if pkt % 2000 == 0:
             sim_log.info(f"{pkt} Pakete gesendet | t={t:.1f}s")
+
+        now = time.monotonic()
+        if now >= next_status:
+            next_status = now + 1.0
+            for node_id, port in aux_ports.items():
+                sock.sendto(_status_packet(node_id, t, pkt // 2), ("127.0.0.1", port))
+        if now >= next_ack:
+            next_ack = now + 0.5
+            for node_id, port in aux_ports.items():
+                sock.sendto(_ack_packet(pkt, ack_floats, ack_bools, ack_fast),
+                             ("127.0.0.1", port))
+        if now >= next_event:
+            next_event = now + 4.0
+            event_seq += 1
+            level = event_seq % 3
+            sock.sendto(
+                _event_packet(ts, event_seq % 2, level,
+                               f"Testereignis {event_seq}", float(event_seq)),
+                ("127.0.0.1", aux_ports[1]))
 
         # Feste 100-Hz-Phase statt sleep(0.01): sonst driftet die Rate mit der
         # Rechenzeit nach unten (real waren es eher 70-80 Hz).

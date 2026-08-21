@@ -173,6 +173,10 @@ except Exception:         # pragma: no cover
         def set_network(self, connected: bool) -> None: ...
         def blink_data(self) -> None: ...
 
+# Muss mit teensy_firmware/src/params.h (PDS_WIRE_VERSION) uebereinstimmen.
+# tools/check_wire_format.py prueft das.
+PDS_WIRE_VERSION = 2
+
 # ── Konfiguration: Telemetrie ────────────────────────────────────────────────
 NODE_ID      = int(os.environ.get("NODE_ID", "1"))
 RPI5_IP      = os.environ.get("RPI5_IP", "192.168.42.1")

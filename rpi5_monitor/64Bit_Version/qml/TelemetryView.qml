@@ -26,7 +26,7 @@ Item {
                 id: filterField
                 width: parent.width - resetBtn.width - Theme.spacingS
                 height: Theme.touchTargetMin
-                placeholderText: "Filter (Variablenname)…"
+                placeholderText: "Filter (Name oder Kanalnummer)…"
                 color: Theme.text
                 background: Rectangle {
                     color: Theme.bgInput
@@ -80,9 +80,11 @@ Item {
                 required property var maxVal
                 required property var delta
                 required property string valueColor
+                required property string unit
+                required property int channel
 
                 implicitWidth: table.width
-                implicitHeight: 40
+                implicitHeight: Math.round(40 * Theme.fontScale)
                 color: Theme.bg
                 radius: Theme.radiusS
                 border.color: Theme.border
@@ -91,8 +93,17 @@ Item {
                 Row {
                     anchors.fill: parent
                     anchors.margins: 8
-                    spacing: 60
+                    spacing: 24
 
+                    Text {
+                        text: channel
+                        color: Theme.textDim
+                        font.family: Theme.fontMono
+                        width: 34
+                        horizontalAlignment: Text.AlignRight
+                        font.pixelSize: Theme.fontSizeSmall
+                        anchors.verticalCenter: parent.verticalCenter
+                    }
                     Text {
                         text: varName
                         color: Theme.textjulius
@@ -102,13 +113,25 @@ Item {
                         font.pixelSize: Theme.fontSizeBase
                         anchors.verticalCenter: parent.verticalCenter
                     }
+                    // Wert und Einheit bewusst getrennt: so bleiben die Zahlen
+                    // linksbuendig untereinander, auch wenn nur ein Teil der
+                    // Kanaele eine Einheit hat.
                     Text {
                         text: current.toFixed(4)
                         color: valueColor
                         font.family: Theme.fontMono
                         font.bold: true
                         width: 90
+                        horizontalAlignment: Text.AlignRight
                         font.pixelSize: Theme.fontSizeBase
+                        anchors.verticalCenter: parent.verticalCenter
+                    }
+                    Text {
+                        text: unit
+                        color: Theme.textDim
+                        font.family: Theme.fontMono
+                        width: 38
+                        font.pixelSize: Theme.fontSizeSmall
                         anchors.verticalCenter: parent.verticalCenter
                     }
                     Text {
