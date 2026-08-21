@@ -38,6 +38,8 @@ class TelemetryTableModel(QAbstractTableModel):
     MaxRole     = Qt.ItemDataRole.UserRole + 4
     DeltaRole   = Qt.ItemDataRole.UserRole + 5
     ColorRole   = Qt.ItemDataRole.UserRole + 6
+    UnitRole    = Qt.ItemDataRole.UserRole + 7
+    ChannelRole = Qt.ItemDataRole.UserRole + 8
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -53,10 +55,15 @@ class TelemetryTableModel(QAbstractTableModel):
         # gefilterte Liste war deshalb voller Lücken.
         self._visible: list[int] = []
         self._filter = ""
+        # Einheit je Kanal ("V", "cm", ...), vom Teensy gemeldet.
+        # Nur ein Anzeige-Zusatz, aendert nie einen Wert.
+        self._units: dict[int, str] = {}
 
     # ── Filter ───────────────────────────────────────────────────────────
     def _matches(self, ch: int) -> bool:
-        return self._filter in self._names[ch].lower()
+        # Auch die Kanalnummer durchsuchbar: "42" findet Kanal 42, auch
+        # wenn er noch "Var_042" heisst.
+        return self._filter in self._names[ch].lower() or self._filter == str(ch)
 
     def _rebuild_visible(self) -> list[int]:
         if not self._filter:
@@ -99,6 +106,8 @@ class TelemetryTableModel(QAbstractTableModel):
             self.MaxRole:     b"maxVal",
             self.DeltaRole:   b"delta",
             self.ColorRole:   b"valueColor",
+            self.UnitRole:    b"unit",
+            self.ChannelRole: b"channel",
         }
 
     def data(self, index: QModelIndex, role: int = Qt.ItemDataRole.DisplayRole):
@@ -111,6 +120,10 @@ class TelemetryTableModel(QAbstractTableModel):
 
         if role == self.NameRole:
             return self._names[ch]
+        if role == self.ChannelRole:
+            return ch
+        if role == self.UnitRole:
+            return self._units.get(ch, "")
         if role == self.CurrentRole:
             return float(self._current[ch])
         if role == self.MinRole:
@@ -169,6 +182,18 @@ class TelemetryTableModel(QAbstractTableModel):
         self._min[:] = np.inf
         self._max[:] = -np.inf
         self._emit_value_change()
+
+    def set_units(self, units: dict[int, str]) -> None:
+        """Einheiten aus dem Teensy-Deskriptor uebernehmen."""
+        if units == self._units:
+            return
+        self._units = dict(units)
+        if self._visible:
+            self.dataChanged.emit(
+                self.index(0, 0),
+                self.index(len(self._visible) - 1, 0),
+                [self.UnitRole],
+            )
 
     def set_names(self, names: dict[int, str]) -> None:
         """Aktualisiert Kanalnamen live (z. B. nach Empfang des Teensy-
@@ -269,3 +294,6 @@ class TelemetryBridge(QObject):
     def set_names(self, names: dict[int, str]) -> None:
         self.table_model.set_names(names)
         self._sync_counts()
+
+    def set_units(self, units: dict[int, str]) -> None:
+        self.table_model.set_units(units)

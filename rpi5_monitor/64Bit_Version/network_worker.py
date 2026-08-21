@@ -20,8 +20,10 @@ from config import (
     PACKET_SIZE_BYTES, DUMMY_VALUE,
     UDP_RECV_BUFFER, DATA_QUEUE_MAXSIZE,
     UDP_CHANNEL_DESC_PORT_NODE1, UDP_CHANNEL_DESC_PORT_NODE2,
+    UDP_AUX_PORT_NODE1, UDP_AUX_PORT_NODE2,
 )
 from channel_registry import descriptor_receiver_process
+from aux_receiver import aux_receiver_process
 
 log = logging.getLogger(__name__)
 
@@ -164,6 +166,8 @@ class NetworkManager:
         ("_proc2",      udp_receiver_process,        UDP_PORT_NODE2,              2, "queue_node2",      "UDP-Node2"),
         ("_desc_proc1", descriptor_receiver_process, UDP_CHANNEL_DESC_PORT_NODE1, 1, "queue_desc_node1", "Desc-Node1"),
         ("_desc_proc2", descriptor_receiver_process, UDP_CHANNEL_DESC_PORT_NODE2, 2, "queue_desc_node2", "Desc-Node2"),
+        ("_aux_proc1",  aux_receiver_process,        UDP_AUX_PORT_NODE1,          1, "queue_aux_node1",  "Aux-Node1"),
+        ("_aux_proc2",  aux_receiver_process,        UDP_AUX_PORT_NODE2,          2, "queue_aux_node2",  "Aux-Node2"),
     )
 
     def __init__(self) -> None:
@@ -178,6 +182,14 @@ class NetworkManager:
         # sonst unbemerkt bis der Speicher voll ist.
         self.queue_desc_node1: mp.Queue = mp.Queue(maxsize=16)
         self.queue_desc_node2: mp.Queue = mp.Queue(maxsize=16)
+
+        # Aux-Uplink: Ereignisse, Param-Rueckmeldung, Node-Status.
+        # Grosszuegiger dimensioniert als die Deskriptor-Queue, weil hier
+        # Ereignisse in Buendeln ankommen koennen (bis 20/s je Node), aber
+        # weiterhin begrenzt: eine unbegrenzte Queue, die niemand leert,
+        # waechst sonst bis der Speicher voll ist.
+        self.queue_aux_node1: mp.Queue = mp.Queue(maxsize=256)
+        self.queue_aux_node2: mp.Queue = mp.Queue(maxsize=256)
 
         self._restarts: dict[str, int] = {}
         self._procs: dict[str, mp.Process] = {}
@@ -260,7 +272,8 @@ class NetworkManager:
         # GUI-Prozesses den Interpreter beim Beenden gelegentlich fest.
         # Reihenfolge: erst cancel_join_thread(), dann close().
         for q in (self.queue_node1, self.queue_node2,
-                  self.queue_desc_node1, self.queue_desc_node2):
+                  self.queue_desc_node1, self.queue_desc_node2,
+                  self.queue_aux_node1, self.queue_aux_node2):
             try:
                 q.cancel_join_thread()
                 q.close()
@@ -275,6 +288,10 @@ class NetworkManager:
     def get_desc_queue(self, node_id: int) -> mp.Queue:
         """Gibt die Deskriptor-Queue (Namen/Overlays) für den angegebenen Node zurück."""
         return self.queue_desc_node1 if node_id == 1 else self.queue_desc_node2
+
+    def get_aux_queue(self, node_id: int) -> mp.Queue:
+        """Ereignisse/Param-Ack/Node-Status des angegebenen Nodes."""
+        return self.queue_aux_node1 if node_id == 1 else self.queue_aux_node2
 
     @property
     def is_running(self) -> bool:

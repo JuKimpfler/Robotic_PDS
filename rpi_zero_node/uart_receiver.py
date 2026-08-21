@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-uart_receiver.py — RPi Zero 2 W Node  (v7)
+uart_receiver.py — RPi Zero 2 W Node  (v8)
 ==========================================================
 Liest Binärpakete vom Teensy 4.0 über UART und leitet sie sofort als
 UDP-Datagramm an den RPi 5 weiter. Empfängt außerdem zwei Param-Downlink-
@@ -8,7 +8,27 @@ Streams (Slow + Fast) vom RPi 5 und reicht sie unverändert über UART_DBG-TX
 an den Teensy weiter.
 
 ────────────────────────────────────────────────────────────────────────────
-WAS v7 GEGENÜBER v6 ÄNDERT:
+WAS v8 GEGENÜBER v7 ÄNDERT:
+────────────────────────────────────────────────────────────────────────────
+I. AUX-UPLINK (Port 502X). Der Teensy schickt jetzt zwei weitere Pakettypen:
+   Ereignisse/Logzeilen (0xE7E5C0DE) und die Parameter-Rueckmeldung
+   (0xACC0FEED). Beide werden aus demselben UART-Rohstrom gefischt und auf
+   EINEN gemeinsamen UDP-Port weitergereicht — die GUI trennt sie am Magic.
+   Ein eigener Port je Typ waere reine Verwaltung ohne Nutzen.
+
+J. NODE-STATUS (ebenfalls Port 502X, 1 Hz). CPU-Temperatur, Last, freier
+   Speicher, WLAN-Pegel und Uptime des Pi Zero selbst. Ohne das war bei
+   Aussetzern nicht zu unterscheiden, ob der Node ueberlastet, das WLAN
+   schwach oder der Teensy stumm war.
+
+K. DISCOVERY MIT ECHO. Das Discovery-Paket traegt jetzt eine laufende Nummer
+   und den Sendezeitpunkt der GUI (12 statt 4 Byte). Der Node schickt es
+   unveraendert an den Absender zurueck; daraus misst die GUI die echte
+   Round-Trip-Zeit. Das alte 4-Byte-Format wird weiterhin angenommen (dann
+   ohne Echo), damit ein noch nicht aktualisierter Node nichts kaputt macht.
+
+────────────────────────────────────────────────────────────────────────────
+WAS v7 GEGENÜBER v6 GEÄNDERT HAT:
 ────────────────────────────────────────────────────────────────────────────
 A. DISCOVERY/KEEPALIVE (Port 703X). Die GUI schickt Param-Pakete nur an den
    gerade ausgewaehlten Node — der andere hat deshalb nie eine Zieladresse
@@ -103,7 +123,13 @@ Param-Downlink (vom RPi 5, Gegenrichtung):
     Slow-Kanal   (Port 700X): 50 Floats + 50 Bools, 2 Hz  (Magic 0xCAFEFEED, 258 B)
     Fast-Kanal   (Port 701X): 5 Floats, 100 Hz            (Magic 0xFA57DA7A,  28 B)
     Desc-Request (Port 702X): Kanalnamen anfordern        (Magic 0xDE5C00F0,   4 B)
-    Discovery    (Port 703X): nur Adresse lernen, 1 Hz    (Magic 0xD15C0BE5,   4 B)
+    Discovery    (Port 703X): Adresse lernen + Ping, 1 Hz (Magic 0xD15C0BE5,  12 B)
+
+Aux-Uplink (Node -> RPi 5, Port 502X, gemeinsamer Port fuer drei Typen):
+    Ereignis/Log      (Magic 0xE7E5C0DE, 16..64 B)  vom Teensy
+    Parameter-Ack     (Magic 0xACC0FEED,    290 B)  vom Teensy, 2 Hz
+    Node-Status       (Magic 0x0DE57A75,     40 B)  vom Node selbst, 1 Hz
+    Discovery-Echo    (Magic 0xD15CEC40,     16 B)  Antwort auf Port 703X
 
 Verdrahtung (Teensy-Seite = UART_DBG, per Default Serial3 -> Pin 14/15;
 siehe teensy_firmware/src/params.h):
@@ -217,8 +243,43 @@ UDP_CHANNEL_DESC_REQUEST_PORT     = 7020 + NODE_ID   # 7021 / 7022
 # — es kann also nie Parameter in den falschen Roboter schreiben.
 DISCOVERY_MAGIC        = 0xD15C0BE5
 DISCOVERY_MAGIC_BYTES  = struct.pack("<I", DISCOVERY_MAGIC)
-DISCOVERY_PACKET_BYTES = 4
+DISCOVERY_PACKET_BYTES = 12               # magic(4) + seq(4) + t_send_ms(4)
+DISCOVERY_LEGACY_BYTES = 4                # v7: nur der Magic, ohne Echo
 UDP_DISCOVERY_PORT     = 7030 + NODE_ID   # 7031 / 7032
+
+# Antwort auf ein Discovery-Paket, unveraendert an den Absender zurueck.
+# Die GUI rechnet daraus die Round-Trip-Zeit aus (siehe bridge/diag_bridge.py).
+DISCOVERY_ECHO_MAGIC        = 0xD15CEC40
+DISCOVERY_ECHO_MAGIC_BYTES  = struct.pack("<I", DISCOVERY_ECHO_MAGIC)
+DISCOVERY_ECHO_PACKET_BYTES = 16          # magic(4) + node_id(4) + seq(4) + t_send_ms(4)
+
+# ── Konfiguration: Aux-Uplink (Node -> RPi 5) ────────────────────────────────
+# EIN Port fuer alle kleinen Uplink-Pakete. Die GUI unterscheidet sie am
+# Magic; ein eigener Port (und damit ein eigener Empfaengerprozess) je Typ
+# waere reine Verwaltung ohne Gegenwert.
+UDP_AUX_PORT = 5020 + NODE_ID   # 5021 / 5022
+
+# Ereignisse/Logzeilen vom Teensy (PDS.event/PDS.log), variable Laenge.
+PDS_EVENT_MAGIC        = 0xE7E5C0DE
+PDS_EVENT_MAGIC_BYTES  = struct.pack("<I", PDS_EVENT_MAGIC)
+PDS_EVENT_HEADER_BYTES = 16   # magic(4) micros(4) value(4) kind(1) level(1) len(1) rsv(1)
+PDS_EVENT_TEXT_MAX     = 48
+
+# Parameter-Rueckmeldung vom Teensy: was haelt er wirklich? (feste Laenge)
+PARAM_ACK_MAGIC        = 0xACC0FEED
+PARAM_ACK_MAGIC_BYTES  = struct.pack("<I", PARAM_ACK_MAGIC)
+PARAM_ACK_HEADER_BYTES = 20
+PARAM_ACK_PACKET_BYTES = (PARAM_ACK_HEADER_BYTES + PARAM_SLOW_FLOAT_COUNT * 4
+                          + PARAM_SLOW_BOOL_COUNT + PARAM_FAST_FLOAT_COUNT * 4)   # 290
+
+# Zustand des Nodes selbst (nicht des Teensy) — siehe collect_node_status().
+NODE_STATUS_MAGIC        = 0x0DE57A75
+NODE_STATUS_STRUCT       = "<IBBHffffIIII"     # 40 Bytes
+NODE_STATUS_PACKET_BYTES = struct.calcsize(NODE_STATUS_STRUCT)
+NODE_STATUS_INTERVAL     = 1.0                 # s
+NODE_STATUS_FLAG_TEENSY  = 0x01
+NODE_STATUS_FLAG_WIFI    = 0x02
+NODE_STATUS_FLAG_UNICAST = 0x04
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -285,54 +346,57 @@ class TelemetryFrameAssembler:
 #  ChunkFrameAssembler — wie TelemetryFrameAssembler, aber variable Laenge
 # ══════════════════════════════════════════════════════════════════════════════
 
-class ChunkFrameAssembler:
+class MagicFrameAssembler:
     """
-    Setzt Namens-/Overlay-Deskriptor-Chunks (variable Laenge, siehe
-    channel_config.h/PDS.cpp auf dem Teensy) aus dem UART-Bytestrom zusammen.
+    Fischt Pakete EINES Magic-Typs aus dem UART-Rohstrom.
 
-    Anders als TelemetryFrameAssembler (feste Paketgroesse) traegt hier der
-    Header selbst die Payload-Laenge (payload_len-Byte an Offset 6), da der
-    letzte Chunk eines Deskriptors fast immer kuerzer ist als die anderen.
+    Deckt beide Bauformen ab:
+      * feste Gesamtlaenge  (fixed_len)   -> Parameter-Rueckmeldung, 290 B
+      * Laenge im Header    (len_offset)  -> Deskriptor-Chunks, Ereignisse
 
-    Läuft unabhängig neben TelemetryFrameAssembler auf demselben Rohbyte-Strom
-    (beide bekommen denselben ser.read()-Chunk): Bytes, die nicht zum eigenen
-    Magic gehören, werden verworfen -- das ist unproblematisch, da
-    Telemetrie-Header (0xDEADBEEF) und Deskriptor-Header (0xDE5C0001, gefolgt
-    von reinem ASCII-JSON) sich nicht überschneiden können.
+    Laeuft unabhaengig neben den anderen Assemblern auf DEMSELBEN
+    ser.read()-Chunk. Bytes, die nicht zum eigenen Magic gehoeren, werden
+    verworfen; die Magic-Werte sind so gewaehlt, dass sie sich nicht
+    ueberschneiden koennen.
 
-    Optimierung: Solange KEIN Deskriptor unterwegs ist (der Normalfall — der
-    Teensy sendet ihn nur beim Boot und auf Anfrage), landet der komplette
-    80-kB/s-Telemetriestrom hier trotzdem an. Statt ihn wie bisher in einen
+    Optimierung fuer den Normalfall: Solange KEIN Paket dieses Typs unterwegs
+    ist (Deskriptor kommt nur beim Boot, Ereignisse selten), landet der
+    komplette 80-kB/s-Telemetriestrom hier trotzdem an. Statt ihn in einen
     wachsenden bytearray zu kopieren und anschliessend wieder zu beschneiden,
-    wird jetzt nur noch direkt auf dem Eingangs-Chunk gesucht und lediglich
-    dessen letzte 3 Bytes gemerkt (ein Magic koennte ueber die Chunk-Grenze
-    hinweg zerschnitten sein). Erst wenn wirklich ein Magic auftaucht, wird
-    gepuffert.
+    wird nur direkt auf dem Eingangs-Chunk gesucht und lediglich dessen letzte
+    3 Bytes gemerkt (ein Magic koennte ueber die Chunk-Grenze zerschnitten
+    sein). Erst wenn wirklich ein Magic auftaucht, wird gepuffert.
     """
 
-    def __init__(self) -> None:
-        self._buf = bytearray()   # nur belegt, solange ein Chunk unvollstaendig ist
+    def __init__(self, magic_bytes: bytes, header_bytes: int, *,
+                 fixed_len: int | None = None, len_offset: int | None = None,
+                 max_payload: int = 0, validator=None) -> None:
+        if (fixed_len is None) == (len_offset is None):
+            raise ValueError("genau eines von fixed_len/len_offset angeben")
+        self._magic = magic_bytes
+        self._header = header_bytes
+        self._fixed_len = fixed_len
+        self._len_offset = len_offset
+        self._max_payload = max_payload
+        self._validator = validator
+        self._buf = bytearray()   # nur belegt, solange ein Paket unvollstaendig ist
         self._tail = b""          # letzte <=3 Bytes des vorherigen Blocks
         self.packets_out = 0
         self.false_magics = 0     # Zufallstreffer im Telemetriestrom
 
-    @staticmethod
-    def _header_plausible(buf) -> bool:
-        """Plausibilitaetspruefung des Chunk-Headers.
+    def _plausible(self, buf) -> bool:
+        """Plausibilitaetspruefung des Headers.
 
-        Der Deskriptor-Assembler laeuft auf demselben Rohbyte-Strom wie die
-        Telemetrie. Deren Nutzdaten sind beliebige Float-Bytes — mit kleiner,
-        aber nicht verschwindender Wahrscheinlichkeit steht darin irgendwann
-        zufaellig die 4-Byte-Folge des Deskriptor-Magic. Ohne diese Pruefung
-        haette der Node daraufhin ein Muellpaket an die GUI geschickt, das
-        dort einen gerade laufenden Deskriptor-Zusammenbau zerstoert.
-        chunk_idx < chunk_count und payload_len <= MAX sortieren praktisch
-        alle Zufallstreffer aus.
+        Die Assembler laufen auf demselben Rohbyte-Strom wie die Telemetrie.
+        Deren Nutzdaten sind beliebige Float-Bytes — mit kleiner, aber nicht
+        verschwindender Wahrscheinlichkeit steht darin irgendwann zufaellig die
+        4-Byte-Folge eines Magic. Ohne diese Pruefung haette der Node daraufhin
+        ein Muellpaket an die GUI geschickt.
         """
-        chunk_idx, chunk_count, payload_len = buf[4], buf[5], buf[6]
-        return (chunk_count > 0
-                and chunk_idx < chunk_count
-                and payload_len <= CHANNEL_DESC_CHUNK_PAYLOAD_MAX)
+        if self._len_offset is not None:
+            if buf[self._len_offset] > self._max_payload:
+                return False
+        return self._validator(buf) if self._validator else True
 
     def feed(self, chunk: bytes) -> list[bytes]:
         if not chunk:
@@ -341,7 +405,7 @@ class ChunkFrameAssembler:
         if not self._buf:
             # Suchmodus: nur pruefen, ob ueberhaupt ein Magic im Strom ist.
             probe = (self._tail + chunk) if self._tail else chunk
-            idx = probe.find(CHANNEL_DESC_MAGIC_BYTES)
+            idx = probe.find(self._magic)
             if idx < 0:
                 self._tail = probe[-3:]
                 return []
@@ -353,7 +417,7 @@ class ChunkFrameAssembler:
         packets: list[bytes] = []
 
         while True:
-            idx = self._buf.find(CHANNEL_DESC_MAGIC_BYTES)
+            idx = self._buf.find(self._magic)
             if idx < 0:
                 # Nur noch Fremdbytes im Puffer -> zurueck in den Suchmodus
                 self._tail = bytes(self._buf[-3:])
@@ -363,26 +427,66 @@ class ChunkFrameAssembler:
             if idx > 0:
                 del self._buf[:idx]
 
-            if len(self._buf) < CHANNEL_DESC_HEADER_BYTES:
-                break   # Header noch nicht vollständig da
+            if len(self._buf) < self._header:
+                break   # Header noch nicht vollstaendig da
 
-            if not self._header_plausible(self._buf):
+            if not self._plausible(self._buf):
                 # Zufallstreffer: ein Byte weiterruecken und neu suchen.
                 self.false_magics += 1
                 del self._buf[:1]
                 continue
 
-            payload_len = self._buf[6]
-            total_len = CHANNEL_DESC_HEADER_BYTES + payload_len
+            if self._fixed_len is not None:
+                total_len = self._fixed_len
+            else:
+                total_len = self._header + self._buf[self._len_offset]
 
             if len(self._buf) < total_len:
-                break   # Chunk noch nicht vollständig angekommen
+                break   # Paket noch nicht vollstaendig angekommen
 
             packets.append(bytes(self._buf[:total_len]))
             del self._buf[:total_len]
             self.packets_out += 1
 
         return packets
+
+
+def _desc_header_plausible(buf) -> bool:
+    """chunk_idx < chunk_count sortiert praktisch alle Zufallstreffer aus."""
+    chunk_idx, chunk_count = buf[4], buf[5]
+    return chunk_count > 0 and chunk_idx < chunk_count
+
+
+def _event_header_plausible(buf) -> bool:
+    """kind<=1, level<=2 und reserved==0 (siehe params.h) — zusammen mit dem
+    Magic praktisch nicht zufaellig zu treffen."""
+    return buf[12] <= 1 and buf[13] <= 2 and buf[15] == 0
+
+
+class ChunkFrameAssembler(MagicFrameAssembler):
+    """Namens-/Overlay-Deskriptor-Chunks (variable Laenge, Laenge im Header)."""
+
+    def __init__(self) -> None:
+        super().__init__(CHANNEL_DESC_MAGIC_BYTES, CHANNEL_DESC_HEADER_BYTES,
+                         len_offset=6, max_payload=CHANNEL_DESC_CHUNK_PAYLOAD_MAX,
+                         validator=_desc_header_plausible)
+
+
+class EventFrameAssembler(MagicFrameAssembler):
+    """Ereignisse/Logzeilen vom Teensy (PDS.event / PDS.log)."""
+
+    def __init__(self) -> None:
+        super().__init__(PDS_EVENT_MAGIC_BYTES, PDS_EVENT_HEADER_BYTES,
+                         len_offset=14, max_payload=PDS_EVENT_TEXT_MAX,
+                         validator=_event_header_plausible)
+
+
+class ParamAckFrameAssembler(MagicFrameAssembler):
+    """Parameter-Rueckmeldung vom Teensy (feste Laenge)."""
+
+    def __init__(self) -> None:
+        super().__init__(PARAM_ACK_MAGIC_BYTES, PARAM_ACK_HEADER_BYTES,
+                         fixed_len=PARAM_ACK_PACKET_BYTES)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -413,6 +517,81 @@ def _wlan_ip(iface: str = "wlan0") -> str | None:
         return None
     finally:
         sock.close()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  Systemzustand des Nodes selbst (fuer den Aux-Uplink, 1 Hz)
+# ══════════════════════════════════════════════════════════════════════════════
+#  Alles ueber /proc bzw. /sys — keine Subprozesse. Ein fork() kostet auf dem
+#  RPi Zero 2 W zig Millisekunden mitten im 100-Hz-Weiterleitungsbetrieb
+#  (derselbe Grund wie bei _wlan_ip()). Nicht lesbare Werte werden zu NaN und
+#  in der GUI als "—" angezeigt, statt eine Null vorzutaeuschen.
+
+_NAN = float("nan")
+
+
+def _read_float(path: str, scale: float = 1.0) -> float:
+    try:
+        with open(path, "r") as fh:
+            return float(fh.readline().split()[0]) * scale
+    except (OSError, ValueError, IndexError):
+        return _NAN
+
+
+def _wifi_rssi(iface: str = "wlan0") -> float:
+    """Signalpegel in dBm aus /proc/net/wireless (Spalte "level")."""
+    try:
+        with open("/proc/net/wireless", "r") as fh:
+            for line in fh:
+                if line.strip().startswith(iface + ":"):
+                    return float(line.split()[3].rstrip("."))
+    except (OSError, ValueError, IndexError):
+        pass
+    return _NAN
+
+
+def _mem_used_pct() -> float:
+    total = avail = None
+    try:
+        with open("/proc/meminfo", "r") as fh:
+            for line in fh:
+                if line.startswith("MemTotal:"):
+                    total = float(line.split()[1])
+                elif line.startswith("MemAvailable:"):
+                    avail = float(line.split()[1])
+                if total is not None and avail is not None:
+                    break
+    except (OSError, ValueError, IndexError):
+        return _NAN
+    if not total or avail is None:
+        return _NAN
+    return (1.0 - avail / total) * 100.0
+
+
+def _load1() -> float:
+    try:
+        return os.getloadavg()[0]
+    except (OSError, AttributeError):   # AttributeError: Windows
+        return _NAN
+
+
+def build_node_status(flags: int, uart_pkts: int, sync_losses: int,
+                       udp_tx: int) -> bytes:
+    """40-Byte-Statuspaket des Nodes (Wire-Format siehe Modul-Docstring)."""
+    uptime = _read_float("/proc/uptime")
+    # NaN faellt hier auf 0 zurueck: uptime ist als uint32 kodiert, und
+    # int(nan) waere ein ValueError mitten in der Ereignisschleife.
+    uptime_s = 0 if uptime != uptime else max(0, int(uptime))
+    return struct.pack(
+        NODE_STATUS_STRUCT,
+        NODE_STATUS_MAGIC, NODE_ID & 0xFF, flags & 0xFF, 0,
+        _read_float("/sys/class/thermal/thermal_zone0/temp", 0.001),
+        _load1(),
+        _mem_used_pct(),
+        _wifi_rssi(),
+        uptime_s & 0xFFFFFFFF,
+        uart_pkts & 0xFFFFFFFF, sync_losses & 0xFFFFFFFF, udp_tx & 0xFFFFFFFF,
+    )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -517,6 +696,11 @@ def main() -> None:
         f"Request: UDP :{UDP_CHANNEL_DESC_REQUEST_PORT} | "
         f"Discovery: UDP :{UDP_DISCOVERY_PORT}"
     )
+    log.info(
+        f"Aux-Uplink -> UDP :{UDP_AUX_PORT} | Ereignisse, Param-Ack "
+        f"({PARAM_ACK_PACKET_BYTES} B) und Node-Status "
+        f"({NODE_STATUS_PACKET_BYTES} B, {NODE_STATUS_INTERVAL:.0f} Hz)"
+    )
     if FORCE_BROADCAST:
         log.info("v6: Telemetrie-Ziel = Broadcast (PDS_TELEMETRY_BROADCAST=1 erzwungen)")
     elif FORCED_DEST:
@@ -571,6 +755,8 @@ def main() -> None:
 
     assembler = TelemetryFrameAssembler()
     desc_assembler = ChunkFrameAssembler()
+    event_assembler = EventFrameAssembler()
+    ack_assembler = ParamAckFrameAssembler()
     target = TelemetryTarget()
 
     # ── Status-LEDs (optional, siehe status_leds.py) ───────────────────────────
@@ -588,11 +774,21 @@ def main() -> None:
     fwd_stale     = 0   # ueberholte Fast-Pakete, bewusst verworfen
     fwd_desc_req  = 0
     discovery_rx  = 0
+    discovery_echo = 0
     desc_pkt_sent = 0
+    event_pkt_sent = 0
+    ack_pkt_sent  = 0
     last_sync_losses = 0
+
+    # Kumulativ (fuer das Node-Statuspaket, das absolute Zahlen meldet —
+    # die Zaehler oben werden in jedem Statistikfenster zurueckgesetzt).
+    total_udp_tx = 0
+    wlan_ip: str | None = None
+    t_last_teensy = 0.0
 
     t_stat_start     = time.monotonic()
     t_last_netcheck  = time.monotonic()
+    t_last_status    = time.monotonic()
     t_last_uart_retry = 0.0
 
     # Ein einziger Fehlerzustand fuer die UART: sobald Lesen oder Schreiben
@@ -669,33 +865,76 @@ def main() -> None:
                         try:
                             sent = udp_out.sendto(raw, (dest, UDP_PORT))
                             pkt_sent += 1
+                            total_udp_tx += 1
                             bytes_sent += sent
+                            t_last_teensy = time.monotonic()
                         except OSError as exc:
                             log.warning(f"UDP-Sendefehler: {exc}")
                             send_errors += 1
 
-                    # Deskriptor-Chunks laufen unabhängig über denselben Rohstrom
-                    # (siehe ChunkFrameAssembler-Docstring).
+                    # Deskriptor-Chunks, Ereignisse und die Parameter-Rueckmeldung
+                    # laufen unabhaengig ueber denselben Rohstrom (siehe
+                    # MagicFrameAssembler-Docstring). Ereignisse und Ack teilen
+                    # sich einen Port; die GUI trennt sie am Magic.
                     for raw in desc_assembler.feed(chunk):
                         try:
                             udp_out.sendto(raw, (dest, UDP_CHANNEL_DESC_PORT))
                             desc_pkt_sent += 1
+                            total_udp_tx += 1
                         except OSError as exc:
                             log.warning(f"UDP-Sendefehler (Deskriptor): {exc}")
                             send_errors += 1
 
+                    for raw in event_assembler.feed(chunk):
+                        try:
+                            udp_out.sendto(raw, (dest, UDP_AUX_PORT))
+                            event_pkt_sent += 1
+                            total_udp_tx += 1
+                        except OSError as exc:
+                            log.warning(f"UDP-Sendefehler (Ereignis): {exc}")
+                            send_errors += 1
+
+                    for raw in ack_assembler.feed(chunk):
+                        try:
+                            udp_out.sendto(raw, (dest, UDP_AUX_PORT))
+                            ack_pkt_sent += 1
+                            total_udp_tx += 1
+                        except OSError as exc:
+                            log.warning(f"UDP-Sendefehler (Param-Ack): {exc}")
+                            send_errors += 1
+
                 elif key.data == "discovery":
-                    # Nur die Absenderadresse auswerten, NICHT weiterleiten.
-                    data, addr, _stale, bad = drain_latest(
-                        discovery_sock,
-                        DISCOVERY_PACKET_BYTES + 64,
-                        DISCOVERY_MAGIC_BYTES,
-                        DISCOVERY_PACKET_BYTES,
-                    )
-                    fwd_bad += bad
-                    if data is not None:
-                        target.note_sender(addr)
+                    # Nur die Absenderadresse auswerten, NIE an den Teensy
+                    # weiterleiten. Das 12-Byte-Format wird zusaetzlich
+                    # unveraendert an den Absender zurueckgeschickt — daraus
+                    # misst die GUI die Round-Trip-Zeit. Hier bewusst KEIN
+                    # drain_latest(): fuer die Antwort wird die vollstaendige
+                    # Absenderadresse inklusive Port gebraucht, und jedes
+                    # einzelne Paket soll beantwortet werden.
+                    while True:
+                        try:
+                            data, addr = discovery_sock.recvfrom(
+                                DISCOVERY_PACKET_BYTES + 64)
+                        except (BlockingIOError, InterruptedError):
+                            break
+                        except OSError:
+                            break
+                        if (data[:4] != DISCOVERY_MAGIC_BYTES
+                                or len(data) not in (DISCOVERY_PACKET_BYTES,
+                                                     DISCOVERY_LEGACY_BYTES)):
+                            fwd_bad += 1
+                            continue
+                        target.note_sender(addr[0])
                         discovery_rx += 1
+                        if len(data) == DISCOVERY_PACKET_BYTES:
+                            seq, t_send = struct.unpack_from("<II", data, 4)
+                            echo = struct.pack("<IIII", DISCOVERY_ECHO_MAGIC,
+                                                NODE_ID, seq, t_send)
+                            try:
+                                discovery_sock.sendto(echo, addr)
+                                discovery_echo += 1
+                            except OSError:
+                                pass   # Antwort ist Kuer, nie kritisch
 
                 elif key.data == "desc_request":
                     data, addr, _stale, bad = drain_latest(
@@ -769,6 +1008,8 @@ def main() -> None:
                         # halbe Paket, an dem der Fehler aufgetreten ist.
                         assembler = TelemetryFrameAssembler()
                         desc_assembler = ChunkFrameAssembler()
+                        event_assembler = EventFrameAssembler()
+                        ack_assembler = ParamAckFrameAssembler()
                         log.info(f"UART {UART_PORT} nach Fehler wieder geöffnet.")
                     except (serial.SerialException, OSError) as exc:
                         log.warning(f"UART {UART_PORT} noch nicht verfügbar: {exc}")
@@ -789,9 +1030,13 @@ def main() -> None:
                     f"({fwd_fast_ok / elapsed:.1f} Pkt/s) überholt={fwd_stale} "
                     f"ungültig={fwd_bad} || "
                     f"Deskriptor: Chunks_ok={desc_pkt_sent} Requests_fwd={fwd_desc_req} "
-                    f"Discovery={discovery_rx}"
+                    f"Discovery={discovery_rx} (Echo {discovery_echo}) || "
+                    f"Aux: Ereignisse={event_pkt_sent} Param-Ack={ack_pkt_sent}"
                     + (f" Fehlalarme={desc_assembler.false_magics}"
-                       if desc_assembler.false_magics else "")
+                       f"/{event_assembler.false_magics}"
+                       f"/{ack_assembler.false_magics}"
+                       if (desc_assembler.false_magics or event_assembler.false_magics
+                           or ack_assembler.false_magics) else "")
                 )
                 if pkt_sent == 0:
                     log.warning(
@@ -800,16 +1045,36 @@ def main() -> None:
                     )
                 pkt_sent = bytes_sent = send_errors = 0
                 fwd_slow_ok = fwd_fast_ok = fwd_bad = fwd_stale = 0
-                desc_pkt_sent = fwd_desc_req = discovery_rx = 0
+                desc_pkt_sent = fwd_desc_req = discovery_rx = discovery_echo = 0
+                event_pkt_sent = ack_pkt_sent = 0
                 last_sync_losses = assembler.sync_losses
                 t_stat_start = now
 
             if now - t_last_netcheck >= NET_CHECK_INTERVAL:
-                ip = _wlan_ip()
-                if ip is None:
+                wlan_ip = _wlan_ip()
+                if wlan_ip is None:
                     log.warning("WLAN nicht verbunden (keine IP-Adresse auf wlan0)")
-                leds.set_network(ip is not None)
+                leds.set_network(wlan_ip is not None)
                 t_last_netcheck = now
+
+            # ── Node-Status an die GUI (1 Hz) ──────────────────────────────
+            #  Bewusst auch dann, wenn gerade keine Telemetrie fliesst: genau
+            #  dann ist die Information am wertvollsten (laeuft der Node noch?
+            #  ist das WLAN weg? ist der Teensy stumm?).
+            if now - t_last_status >= NODE_STATUS_INTERVAL:
+                t_last_status = now
+                flags = 0
+                if now - t_last_teensy < 2.0:      flags |= NODE_STATUS_FLAG_TEENSY
+                if wlan_ip is not None:            flags |= NODE_STATUS_FLAG_WIFI
+                if not target.is_broadcast:        flags |= NODE_STATUS_FLAG_UNICAST
+                try:
+                    udp_out.sendto(
+                        build_node_status(flags, assembler.packets_out,
+                                           assembler.sync_losses, total_udp_tx),
+                        (target.resolve(), UDP_AUX_PORT),
+                    )
+                except OSError as exc:
+                    log.debug("Node-Status konnte nicht gesendet werden: %s", exc)
 
     except KeyboardInterrupt:
         log.info("Gestoppt (KeyboardInterrupt).")

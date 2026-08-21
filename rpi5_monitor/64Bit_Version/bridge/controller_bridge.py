@@ -27,10 +27,18 @@ wartet dann volle 10 ms auf den nächsten Sendeslot. Im Mittel kostete das
 5 ms, im Maximum 10 ms, und zwar schwankend (Jitter fühlt sich subjektiv
 schlimmer an als eine konstante Verzögerung).
 
-Jetzt ruft ParamBridge._send_fast_tick() direkt vor dem Packen poll() auf
+Jetzt ruft ParamBridge._worker_tick() direkt vor dem Packen poll() auf
 (siehe param_bridge.py). Damit ist der gesendete Stand garantiert der
-zuletzt gelesene, und es läuft nur noch EIN 100-Hz-Timer im GUI-Thread
-statt zwei.
+zuletzt gelesene.
+
+Und zwar aus einem EIGENEN THREAD, nicht mehr aus dem GUI-Thread: ein
+QTimer feuert erst, wenn die Ereignisschleife wieder drankommt, also erst
+nachdem der Plotter neu gezeichnet, die Tabelle neu berechnet und das Bild
+gerendert wurde. Der Abtastzeitpunkt des Controllers ist dadurch
+unregelmäßig gewandert — genau das fühlt sich als "die Joystick-Abfrage
+stockt" an. Deshalb wird pygame/SDL hier auch erst beim ersten poll()
+initialisiert: das Joystick-Subsystem muss aus demselben Thread gepumpt
+werden, aus dem es aufgesetzt wurde.
 
 Kalibrierung: Achsen-/Button-Indizes können je nach OS/SDL-Version
 abweichen. Zwei Möglichkeiten ohne Code-Änderung:
@@ -165,6 +173,13 @@ class ControllerBridge(QObject):
 
         self._last_debug_dump = 0.0
 
+        # Hot-Plug-Erkennung braucht keine 100 Hz. get_count() geht in SDL
+        # ueber die Geraeteliste; einmal je halbe Sekunde reicht voellig und
+        # spart 98 % der Aufrufe im Regeltakt.
+        self._init_done = False
+        self._last_count_check = 0.0
+        self._count_cache = 0
+
         if pygame is None:
             log.warning(
                 "pygame nicht verfuegbar (%s) — Controller-Unterstuetzung ist "
@@ -173,14 +188,27 @@ class ControllerBridge(QObject):
                 "noch kein pygame-Wheel, dort stattdessen: pip install pygame-ce)",
                 _PYGAME_IMPORT_ERROR,
             )
-            return
 
+    def _ensure_init(self) -> bool:
+        """pygame beim ERSTEN poll() aufsetzen — also im Sende-Thread.
+
+        SDL verlangt, dass das Joystick-Subsystem aus demselben Thread
+        gepumpt wird, in dem es initialisiert wurde. Wuerde das noch im
+        Konstruktor (GUI-Thread) passieren, waere jedes spaetere
+        get_axis() aus dem Sende-Thread ein Thread-Wechsel mitten in SDL.
+        """
+        if self._init_done:
+            return self._available
+        self._init_done = True
+        if pygame is None:
+            return False
         try:
             pygame.init()
             pygame.joystick.init()
             self._available = True
         except pygame.error as exc:
             log.error("pygame/SDL konnte nicht initialisiert werden: %s", exc)
+        return self._available
 
     # ── Properties (für QML) ─────────────────────────────────────────────
     @pyqtProperty(bool, notify=connectedChanged)
@@ -211,28 +239,34 @@ class ControllerBridge(QObject):
     @safe_slot
     def poll(self) -> None:
         """Einen Abtastzyklus ausführen. Wird von ParamBridge unmittelbar vor
-        dem Packen des Fast-Pakets aufgerufen (100 Hz)."""
-        if not self._available:
-            return
-
-        try:
-            pygame.event.pump()
-            count = pygame.joystick.get_count()
-        except pygame.error as exc:
-            log.warning("pygame-Event-Pump fehlgeschlagen: %s", exc)
+        dem Packen des Fast-Pakets aufgerufen (100 Hz, Sende-Thread)."""
+        if not self._ensure_init():
             return
 
         # SDL legt bei jeder Achsenbewegung Events in eine Warteschlange. Wir
         # lesen den Zustand direkt über get_axis()/get_button() und brauchen
         # die Events nicht — ohne dieses clear() läuft die Queue mit rund
         # 1000 Events/s voll, die niemand abholt.
-        # Bewusst in eigenem try: schlägt das Leeren fehl (z. B. weil das
-        # Event-Subsystem in einer exotischen SDL-Konfiguration fehlt), ist
-        # das nur ein Effizienzproblem und darf das Auslesen nicht verhindern.
+        # clear() pumpt intern selbst; ein zusätzliches event.pump() davor
+        # wäre ein zweiter kompletter Durchlauf der Warteschlange pro Zyklus.
         try:
             pygame.event.clear()
-        except pygame.error:
-            pass
+        except pygame.error as exc:
+            log.warning("pygame-Event-Verarbeitung fehlgeschlagen: %s", exc)
+            return
+
+        # Hot-Plug nur alle 500 ms prüfen (siehe __init__). Solange ein
+        # Controller verbunden ist, meldet ein Lesefehler das Abziehen
+        # ohnehin sofort.
+        now = time.monotonic()
+        if self._joystick is None or (now - self._last_count_check) >= 0.5:
+            self._last_count_check = now
+            try:
+                self._count_cache = pygame.joystick.get_count()
+            except pygame.error as exc:
+                log.warning("Controller-Abfrage fehlgeschlagen: %s", exc)
+                return
+        count = self._count_cache
 
         if count == 0:
             if self._connected:
@@ -261,6 +295,8 @@ class ControllerBridge(QObject):
     def _set_disconnected(self) -> None:
         self._connected = False
         self._joystick = None
+        self._count_cache = 0
+        self._last_count_check = 0.0   # beim naechsten poll() sofort neu pruefen
         self._name = ""
         self._warmup = 0
         # Beim Trennen bewusst auf 0 zurückfallen statt den letzten Stand

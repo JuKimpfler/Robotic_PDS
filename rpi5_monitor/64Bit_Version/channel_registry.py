@@ -51,10 +51,16 @@ _REQUEST_BYTES = struct.pack("<I", CHANNEL_DESC_REQUEST_MAGIC)
 @dataclass
 class ChannelRegistry:
     channel_names:          dict[int, str] = field(default_factory=dict)
+    channel_units:          dict[int, str] = field(default_factory=dict)
     param_slow_float_names: dict[int, str] = field(default_factory=dict)
     param_slow_bool_names:  dict[int, str] = field(default_factory=dict)
     param_fast_float_names: dict[int, str] = field(default_factory=dict)
     overlays:               list[dict]     = field(default_factory=list)
+    # Vollstaendige Widget-Konfiguration des Parameter-Tabs, so wie sie in
+    # channel_config.h steht (siehe runtime_config.param_config_from_descriptor).
+    param_cfg:              dict           = field(default_factory=dict)
+    # {"pds": "2.1", "fw": "...", "build": "...", "wire": 2, "channels": 200}
+    meta:                   dict           = field(default_factory=dict)
     received:               bool           = False
 
     @classmethod
@@ -82,19 +88,44 @@ class ChannelRegistry:
         overlays = [o for o in raw_overlays if isinstance(o, dict)] \
             if isinstance(raw_overlays, list) else []
 
+        raw_meta = data.get("meta", {})
+        meta = {k: v for k, v in raw_meta.items()
+                if isinstance(k, str) and isinstance(v, (str, int, float, bool))} \
+            if isinstance(raw_meta, dict) else {}
+
+        raw_cfg = data.get("param_cfg", {})
+        param_cfg = raw_cfg if isinstance(raw_cfg, dict) else {}
+
         return cls(
             channel_names=_int_keyed(data.get("channels", {})),
+            channel_units=_int_keyed(data.get("units", {})),
             param_slow_float_names=_int_keyed(data.get("param_slow_floats", {})),
             param_slow_bool_names=_int_keyed(data.get("param_slow_bools", {})),
             param_fast_float_names=_int_keyed(data.get("param_fast_floats", {})),
             overlays=overlays,
+            param_cfg=param_cfg,
+            meta=meta,
             received=True,
         )
 
     def is_empty(self) -> bool:
         return not (self.channel_names or self.param_slow_float_names
                     or self.param_slow_bool_names or self.param_fast_float_names
-                    or self.overlays)
+                    or self.overlays or self.param_cfg)
+
+    def firmware_label(self) -> str:
+        """Kurztext fuer die Statuszeile, z. B. "fw 1.4.2 - PDS 2.1"."""
+        parts = []
+        if self.meta.get("fw"):
+            parts.append(f"fw {self.meta['fw']}")
+        if self.meta.get("pds"):
+            parts.append(f"PDS {self.meta['pds']}")
+        if self.meta.get("build"):
+            parts.append(str(self.meta["build"]))
+        return " - ".join(parts)
+
+    def unit_for_channel(self, idx: int) -> str:
+        return self.channel_units.get(idx, "")
 
     def name_for_channel(self, idx: int, fallback: str) -> str:
         return self.channel_names.get(idx, fallback)
@@ -299,6 +330,26 @@ def _teensy_overlay_to_entry(ov: dict) -> tuple[str, dict]:
             "color": "#4ec9b0",
         }
 
+    if t == "textgrid":
+        # Ein einziger Eintrag erzeugt beliebig viele Textfelder — genau
+        # dafuer gedacht, dass man bei 30 Messwerten nicht 30 Overlays mit
+        # je eigener Position pflegen muss. Die Aufloesung in Einzelfelder
+        # passiert erst in der GUI (visuals_bridge.expand_textgrid), damit
+        # die gespeicherte Konfiguration kompakt und lesbar bleibt.
+        kv = _parse_extra_kv(ov.get("extra", ""))
+        return "overlays", {
+            "type": "textgrid",
+            "label": label,
+            "channels": kv.get("channels", ""),
+            "cols": int(float(kv.get("cols", 1))),
+            "dx_pct": float(kv.get("dx", 20.0)),
+            "dy_pct": float(kv.get("dy", 4.5)),
+            "labels": kv.get("labels", "1") not in ("0", "false", "False"),
+            "x_pct": float(ov.get("x_pct", 4.0)),
+            "y_pct": float(ov.get("y_pct", 6.0)),
+            "color": "#4ec9b0",
+        }
+
     if t == "gauge":
         return "graphics", {
             "type": "gauge",
@@ -337,18 +388,30 @@ def _teensy_overlay_to_entry(ov: dict) -> tuple[str, dict]:
             return {
                 "label": kv.get(f"{prefix}_label", prefix),
                 "color": kv.get(f"{prefix}_color", "#4ec9b0"),
-                "diameter": float(kv.get(f"{prefix}_diameter", 0.3)),
+                "diameter": float(kv.get(f"{prefix}_diameter", 18.0)),
                 "channel_x": int(kv.get(f"{prefix}_channel_x", -1)),
                 "channel_y": int(kv.get(f"{prefix}_channel_y", -1)),
                 "channel_angle": int(kv.get(f"{prefix}_channel_angle", -1)),
                 "channel_diameter": int(kv.get(f"{prefix}_channel_diameter", -1)),
             }
 
+        # Feldmasse in ZENTIMETERN, im Feldkoordinatensystem:
+        #   x = 0..field_x_cm nach Osten, y = 0..field_y_cm nach Norden.
+        # Die Darstellung dreht das Feld um 90 Grad nach Osten (Querformat) —
+        # siehe components/BodiesField.qml. field_width/field_height (Meter)
+        # werden als Altformat weiterhin angenommen und umgerechnet.
+        if "field_x_cm" in kv or "field_y_cm" in kv:
+            field_x = float(kv.get("field_x_cm", 180.0))
+            field_y = float(kv.get("field_y_cm", 240.0))
+        else:
+            field_x = float(kv.get("field_width", 1.8)) * 100.0
+            field_y = float(kv.get("field_height", 2.4)) * 100.0
+
         return "graphics", {
             "type": "bodies",
             "label": label,
-            "field_width": float(kv.get("field_width", 2.0)),
-            "field_height": float(kv.get("field_height", 1.5)),
+            "field_x_cm": field_x,
+            "field_y_cm": field_y,
             "body1": _body("body1"),
             "body2": _body("body2"),
         }
@@ -356,12 +419,20 @@ def _teensy_overlay_to_entry(ov: dict) -> tuple[str, dict]:
     return "graphics", {"type": t, "label": label}
 
 
-def apply_overlay_defaults(local_config: dict, registry: ChannelRegistry) -> bool:
+def apply_overlay_defaults(local_config: dict, registry: ChannelRegistry,
+                           overwrite: bool = False) -> bool:
     """
-    Befüllt Gruppen aus local_config (visuals_overlays.json-Rohformat, siehe
-    tab_visuals.py::load_config()/save_config()), deren 'overlays' UND
-    'graphics' noch leer sind, aus registry.overlays. Bereits lokal befüllte
-    Gruppen (manuell editiert oder früher schon gemerged) bleiben unangetastet.
+    Übernimmt registry.overlays in local_config (visuals_overlays.json-
+    Rohformat, siehe tab_visuals.py::load_config()/save_config()).
+
+    overwrite=False (Standard): nur Gruppen befüllen, deren 'overlays' UND
+    'graphics' noch leer sind. Bereits lokal befüllte Gruppen (manuell
+    editiert oder früher schon gemerged) bleiben unangetastet.
+
+    overwrite=True: auch befüllte Gruppen ersetzen. Wird genau dann benutzt,
+    wenn sich der Fingerabdruck der Teensy-Overlays geändert hat — dann ist
+    eine neue Firmware geflasht worden und ihre Anordnung ist die gewollte
+    (siehe runtime_config.py, Abschnitt "Wer gewinnt bei einem Konflikt?").
 
     Gibt True zurück, wenn mindestens eine Gruppe verändert wurde (Aufrufer
     ist dann für save_config() zuständig).
@@ -375,7 +446,7 @@ def apply_overlay_defaults(local_config: dict, registry: ChannelRegistry) -> boo
 
     changed = False
     for group in local_config.get("groups", []):
-        if group.get("overlays") or group.get("graphics"):
+        if not overwrite and (group.get("overlays") or group.get("graphics")):
             continue   # bereits befuellt -- nicht ueberschreiben
 
         entries = by_group.get(int(group.get("image_idx", 1)))

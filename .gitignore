@@ -15,3 +15,7 @@ rpi5_monitor/64Bit_Version/controller_config.json
 
 # Reste eines abgebrochenen atomaren Schreibvorgangs (visuals_bridge.py)
 *.json.tmp
+
+# Vom Teensy uebernommene, lokal gespeicherte Laufzeit-Konfiguration.
+# Geraetespezifisch (je Pi anders) und wird zur Laufzeit erzeugt.
+rpi5_monitor/64Bit_Version/runtime_config/

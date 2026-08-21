@@ -80,11 +80,20 @@ CONTROLLER_UI_NOTIFY_MS = 40    # 25 Hz
 #  Teensy weiter. Damit kann es auch nie versehentlich Parameter in den
 #  falschen Roboter schreiben.
 #  Muss mit rpi_zero_node/uart_receiver.py übereinstimmen.
+#  Seit Wire-Format 2 traegt das Paket zusaetzlich eine laufende Nummer und
+#  den Sendezeitpunkt. Der Node schickt beides unveraendert zurueck
+#  (DISCOVERY_ECHO_MAGIC) — daraus misst die GUI die echte Round-Trip-Zeit
+#  zum Node, ohne dafuer ein eigenes Ping-Protokoll zu brauchen.
 DISCOVERY_MAGIC             = 0xD15C_0BE5
-DISCOVERY_PACKET_BYTES      = 4
+DISCOVERY_PACKET_BYTES      = 12    # magic(4) + seq(4) + t_send_ms(4)
+DISCOVERY_STRUCT            = "<III"
 UDP_DISCOVERY_PORT_NODE1    = 7031
 UDP_DISCOVERY_PORT_NODE2    = 7032
 DISCOVERY_SEND_INTERVAL_MS  = 1000
+
+DISCOVERY_ECHO_MAGIC        = 0xD15C_EC40
+DISCOVERY_ECHO_PACKET_BYTES = 16    # magic(4) + node_id(4) + seq(4) + t_send_ms(4)
+DISCOVERY_ECHO_STRUCT       = "<IIII"
 
 # ── Namens-/Overlay-Deskriptor (Teensy -> GUI, einmalig beim Boot + auf Anfrage) ─
 # Muss exakt mit params.h (Teensy) und rpi_zero_node/uart_receiver.py übereinstimmen!
@@ -99,11 +108,81 @@ UDP_CHANNEL_DESC_PORT_NODE2         = 5012
 UDP_CHANNEL_DESC_REQUEST_PORT_NODE1 = 7021
 UDP_CHANNEL_DESC_REQUEST_PORT_NODE2 = 7022
 
+# ── Aux-Uplink (Node -> GUI): Ereignisse, Param-Ack, Node-Status ──────────────
+#  EIN Port fuer alle kleinen Uplink-Pakete; die GUI trennt sie am Magic
+#  (siehe network_worker.py::aux_receiver_process). Ein eigener Port je Typ
+#  waere ein weiterer Empfaengerprozess ohne jeden Gegenwert.
+#  Muss mit rpi_zero_node/uart_receiver.py und teensy_firmware/src/params.h
+#  uebereinstimmen.
+UDP_AUX_PORT_NODE1 = 5021
+UDP_AUX_PORT_NODE2 = 5022
+
+# Ereignisse und Logzeilen vom Teensy (PDS.event / PDS.log)
+PDS_EVENT_MAGIC        = 0xE7E5_C0DE
+PDS_EVENT_HEADER_BYTES = 16    # magic(4) micros(4) value(4) kind level len rsv
+PDS_EVENT_TEXT_MAX     = 48
+PDS_EVENT_KIND_EVENT   = 0
+PDS_EVENT_KIND_LOG     = 1
+PDS_EVENT_LEVEL_NAMES  = {0: "Info", 1: "Warnung", 2: "Fehler"}
+
+# Parameter-Rueckmeldung vom Teensy (2 Hz): was haelt er tatsaechlich?
+PARAM_ACK_MAGIC        = 0xACC0_FEED
+PARAM_ACK_HEADER_BYTES = 20
+PARAM_ACK_PACKET_BYTES = (PARAM_ACK_HEADER_BYTES + PARAM_SLOW_FLOAT_COUNT * 4
+                          + PARAM_SLOW_BOOL_COUNT + PARAM_FAST_FLOAT_COUNT * 4)   # 290
+
+# Systemzustand des Pi-Zero-Nodes selbst (1 Hz)
+NODE_STATUS_MAGIC        = 0x0DE5_7A75
+NODE_STATUS_STRUCT       = "<IBBHffffIIII"
+NODE_STATUS_PACKET_BYTES = 40
+NODE_STATUS_FLAG_TEENSY  = 0x01
+NODE_STATUS_FLAG_WIFI    = 0x02
+NODE_STATUS_FLAG_UNICAST = 0x04
+
+# Wie viele Ereignisse/Logzeilen das Logbuch der GUI vorhaelt.
+EVENT_LOG_MAXLEN = 500
+
 # ── Param-Downlink: Konfigurations- & Persistenzdateien ────────────────────────
 from pathlib import Path as _Path
 PARAM_CONFIG_PATH      = _Path(__file__).parent / "param_config.json"
 PARAM_DEFAULTS_H_PATH  = _Path(__file__).parent / "param_defaults.h"
 CONTROLLER_CONFIG_PATH = _Path(__file__).parent / "controller_config.json"
+
+# ── Vom Teensy uebernommene Konfiguration (reboot-fest) ───────────────────────
+#  Der Teensy ist die Quelle der Wahrheit fuer Kanalnamen, Parameter-Widgets
+#  und Overlays. Was im Deskriptor ankommt, wird HIER dauerhaft abgelegt —
+#  je Node getrennt, weil die beiden Roboter unterschiedliche Firmware haben
+#  koennen. Nach einem Neustart des Pi steht damit sofort wieder alles da,
+#  auch ohne eingeschalteten Roboter.
+#
+#  Die Dateien im Repository (param_config.json, visuals_overlays.json)
+#  bleiben die Vorlage/der Rueckfall und werden NIE ueberschrieben — so
+#  nimmt ein `git pull` einem nichts weg, und ein Zuruecksetzen ist ein
+#  simples Loeschen des runtime_config-Ordners.
+RUNTIME_CONFIG_DIR = _Path(__file__).parent / "runtime_config"
+
+
+def runtime_config_path(node_id: int, name: str) -> "_Path":
+    """Pfad einer node-spezifischen, dauerhaft gespeicherten Konfigurationsdatei."""
+    return RUNTIME_CONFIG_DIR / f"node{int(node_id)}" / name
+
+
+# Oberflaechen-Einstellungen (Theme, Schriftgroesse, Akku-Warnung, ...).
+# Nicht node-spezifisch — das ist die Einstellung des Bedieners, nicht des
+# Roboters.
+UI_SETTINGS_PATH = RUNTIME_CONFIG_DIR / "ui_settings.json"
+
+# Startwerte der Akku-Warnung (C3). Kanal -1 = aus; ueber den Tab
+# "Diagnose" zur Laufzeit einstellbar und in UI_SETTINGS_PATH gespeichert.
+BATTERY_ALARM_DEFAULTS = {
+    "enabled": False,
+    "channel": -1,
+    "warn_below": 11.5,
+    "critical_below": 10.8,
+    # So lange muss der Wert am Stueck darunter liegen, bevor gewarnt wird.
+    # Ohne das loest jeder Anlaufstrom-Einbruch eines Motors Alarm aus.
+    "hold_seconds": 2.0,
+}
 
 # ── Paket-Format ──────────────────────────────────────────────────────────────
 # MAX_FLOATS ist Wire-Format und muss mit teensy_firmware/src/PDS.cpp

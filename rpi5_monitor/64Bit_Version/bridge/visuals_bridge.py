@@ -1,25 +1,38 @@
 """
 bridge/visuals_bridge.py — Tab 3 (Systemansicht)
 ====================================================
-Migrationsplan Abschnitt 4.5: Das bisherige ~1700-Zeilen QPainter-Overlay-
-System wird durch deklarative QML-Bindings ersetzt (Image + Repeater +
-Anchors, siehe SystemView.qml). Diese Bridge lädt visuals_overlays.json
-unverändert (gleiches Format) und reicht sie nur noch aufbereitet durch:
+Lädt die Overlay-Konfiguration und reicht sie aufbereitet an SystemView.qml:
 
   - je Gruppe: Bildpfad + Liste der Text-Overlays (x_pct/y_pct/label/channel)
-  - je Gruppe: Liste der "Grafiken" (gauge/rotation/vector/table), inkl.
-    aufgelöster Kanal-Listen (parse_channels) für den table-Typ
+  - je Gruppe: Liste der "Grafiken" (gauge/rotation/vector/table/bodies),
+    inkl. aufgelöster Kanal-Listen (parse_channels) für den table-Typ
 
 Die eigentliche Positionierung/Skalierung übernimmt QML über Bindings an
-`Image.paintedWidth/paintedHeight` — das war im Original mehrere Dutzend
-Zeilen manueller Resize-Event-Handling-Code (siehe alte tab_visuals.py),
-in QML ist es "kostenlos" durch Anchor-Bindings.
+`Image.paintedWidth/paintedHeight`.
 
-Hinweis: Für den ersten Migrationsschritt werden die Bilder direkt per
-`file://`-URL referenziert (einfachster Weg). Ein eigener
-QQuickImageProvider (Caching, evtl. Vorskalierung fürs RPi5-Display) ist
-als spätere Ausbaustufe im Plan vorgesehen (Abschnitt 4.5), aber für die
-Funktionsfähigkeit nicht zwingend erforderlich.
+────────────────────────────────────────────────────────────────────────────
+"textgrid" — VIELE WERTE MIT EINER ZEILE AUFS BILD
+────────────────────────────────────────────────────────────────────────────
+Ein Text-Overlay je Messwert bedeutete: 30 Einträge mit je eigener x/y-
+Position von Hand pflegen, und bei jeder Verschiebung alle nachziehen. Der
+Typ "textgrid" beschreibt stattdessen einen ganzen BLOCK:
+
+    channels=0-11,20;cols=2;dx=24;dy=5
+
+Angegeben wird nur die linke obere Ecke; die Aufteilung in Zeilen und
+Spalten rechnet expand_textgrid() aus. In der gespeicherten Konfiguration
+bleibt es EIN Eintrag — die Auflösung passiert erst beim Laden, damit die
+Datei kompakt und von Hand editierbar bleibt.
+
+────────────────────────────────────────────────────────────────────────────
+WOHER DIE KONFIGURATION KOMMT
+────────────────────────────────────────────────────────────────────────────
+Vorrang hat die vom Teensy gemeldete und je Node gespeicherte Fassung
+(runtime_config/nodeN/visuals_overlays.json). Erst wenn es die nicht gibt,
+gilt visuals_overlays.json aus dem Repository als Vorlage. Ändert sich der
+Fingerabdruck der Teensy-Overlays (neue Firmware), wird die gespeicherte
+Fassung ersetzt; sonst bleiben lokale Bearbeitungen stehen. Siehe
+runtime_config.py, Abschnitt "Wer gewinnt bei einem Konflikt?".
 """
 from __future__ import annotations
 
@@ -30,14 +43,17 @@ from pathlib import Path
 
 from PyQt6.QtCore import QObject, pyqtSignal, pyqtProperty, pyqtSlot
 
+import runtime_config
 from bridge.utils import parse_channels
 from config import VARIABLE_NAMES
 from channel_registry import apply_overlay_defaults, ChannelRegistry
 
 log = logging.getLogger("bridge.visuals")
 
-_BILD_DIR    = Path(__file__).resolve().parent.parent / "bild"
-_CONFIG_FILE = Path(__file__).resolve().parent.parent / "visuals_overlays.json"
+_BILD_DIR      = Path(__file__).resolve().parent.parent / "bild"
+_TEMPLATE_FILE = Path(__file__).resolve().parent.parent / "visuals_overlays.json"
+
+_HASH_KEY = "_teensy_hash"
 
 
 def _image_url(image_idx: int) -> str:
@@ -45,29 +61,73 @@ def _image_url(image_idx: int) -> str:
     return path.resolve().as_uri() if path.exists() else ""
 
 
-def _load_groups() -> list[dict]:
-    if not _CONFIG_FILE.exists():
-        log.warning("visuals_overlays.json nicht gefunden — Systemansicht bleibt leer.")
+def _config_file(node_id: int) -> Path:
+    """Gespeicherte Fassung dieses Nodes, sonst die Vorlage im Repository."""
+    stored = runtime_config.runtime_config_path(node_id, runtime_config.VISUALS_NAME)
+    return stored if stored.exists() else _TEMPLATE_FILE
+
+
+def expand_textgrid(entry: dict) -> list[dict]:
+    """Einen "textgrid"-Eintrag in einzelne Text-Overlays auflösen.
+
+    Reine Funktion ohne Qt — damit in tools/selftest.py ohne GUI prüfbar.
+    """
+    channels = parse_channels(entry.get("channels", ""))
+    if not channels:
+        return []
+    cols = max(1, int(entry.get("cols", 1)))
+    dx = float(entry.get("dx_pct", 20.0))
+    dy = float(entry.get("dy_pct", 4.5))
+    x0 = float(entry.get("x_pct", 4.0))
+    y0 = float(entry.get("y_pct", 6.0))
+    color = entry.get("color", "#4ec9b0")
+    with_labels = bool(entry.get("labels", True))
+
+    out: list[dict] = []
+    for i, ch in enumerate(channels):
+        col, row = i % cols, i // cols
+        out.append({
+            "label": VARIABLE_NAMES.get(ch, f"Var_{ch:03d}") if with_labels else "",
+            "channel": ch,
+            "xPct": x0 + col * dx,
+            "yPct": y0 + row * dy,
+            "color": color,
+        })
+    return out
+
+
+def _overlay_to_entry(o: dict) -> list[dict]:
+    """Ein gespeichertes Overlay in die QML-Struktur bringen. Gibt eine LISTE
+    zurück, weil ein textgrid zu vielen Einträgen wird."""
+    if o.get("type") == "textgrid":
+        return expand_textgrid(o)
+    return [{
+        "label": o.get("label", ""),
+        "channel": o.get("channel_idx", o.get("channel", 0)),
+        "xPct": float(o.get("x_pct", 5.0)),
+        "yPct": float(o.get("y_pct", 8.0)),
+        "color": o.get("color", "#4ec9b0"),
+    }]
+
+
+def _load_groups(path: Path) -> list[dict]:
+    if not path.exists():
+        log.warning("%s nicht gefunden — Systemansicht bleibt leer.", path.name)
         return []
     try:
-        raw = json.loads(_CONFIG_FILE.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        log.error("visuals_overlays.json ist kein gültiges JSON: %s", exc)
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        log.error("%s ist nicht lesbar: %s", path.name, exc)
         return []
 
     groups: list[dict] = []
     for g in raw.get("groups", []):
         image_idx = g.get("image_idx", 1)
-        overlays = [
-            {
-                "label": o.get("label", ""),
-                "channel": o.get("channel_idx", 0),
-                "xPct": float(o.get("x_pct", 5.0)),
-                "yPct": float(o.get("y_pct", 8.0)),
-                "color": o.get("color", "#4ec9b0"),
-            }
-            for o in g.get("overlays", [])
-        ]
+
+        overlays: list[dict] = []
+        for o in g.get("overlays", []):
+            if isinstance(o, dict):
+                overlays.extend(_overlay_to_entry(o))
 
         graphics: list[dict] = []
         for gr in g.get("graphics", []):
@@ -83,10 +143,6 @@ def _load_groups() -> list[dict]:
                 entry.update({
                     "channel": gr.get("channel", 0),
                     # Max erwartete Drehrate für die Pfeillängen-Skalierung.
-                    # Kein eigener JSON-Key bisher vorgesehen -> optionaler
-                    # "max_val", sonst Fallback auf den gleichen Bereich wie
-                    # die Motor-Gauges (-5..5), da "Rad FL/FR/RL/RR" i.d.R.
-                    # dieselbe Größenordnung wie die Motor-Speed-Kanäle hat.
                     "maxVal": float(gr.get("max_val", 5.0)),
                 })
             elif gtype == "vector":
@@ -107,15 +163,25 @@ def _load_groups() -> list[dict]:
                     return {
                         "label": b.get("label", ""),
                         "color": b.get("color", "#4ec9b0"),
-                        "diameter": float(b.get("diameter", 0.3)),
+                        "diameter": float(b.get("diameter", 18.0)),
                         "channelX": int(b.get("channel_x", -1)),
                         "channelY": int(b.get("channel_y", -1)),
                         "channelAngle": int(b.get("channel_angle", -1)),
                         "channelDiameter": int(b.get("channel_diameter", -1)),
                     }
+                # Feldmaße in ZENTIMETERN im Feldkoordinatensystem:
+                #   x = 0..fieldXCm nach Osten, y = 0..fieldYCm nach Norden.
+                # field_width/field_height (Meter) sind das Altformat und
+                # werden weiterhin angenommen.
+                if "field_x_cm" in gr or "field_y_cm" in gr:
+                    fx = float(gr.get("field_x_cm", 180.0))
+                    fy = float(gr.get("field_y_cm", 240.0))
+                else:
+                    fx = float(gr.get("field_width", 1.8)) * 100.0
+                    fy = float(gr.get("field_height", 2.4)) * 100.0
                 entry.update({
-                    "fieldWidth": float(gr.get("field_width", 2.0)),
-                    "fieldHeight": float(gr.get("field_height", 1.5)),
+                    "fieldXCm": fx,
+                    "fieldYCm": fy,
                     "body1": _body(gr.get("body1", {})),
                     "body2": _body(gr.get("body2", {})),
                 })
@@ -131,39 +197,37 @@ def _load_groups() -> list[dict]:
     return groups
 
 
-def _load_raw_config() -> dict:
-    """Liest visuals_overlays.json im Rohformat (Gruppen-Dicts, unaufbereitet)
-    — dasselbe Format, das gui/tab_visuals.py::load_config()/save_config()
-    verwendet. Bewusst eigenständig (kein Import von gui/tab_visuals.py),
-    damit bridge/ frei von QtWidgets-Abhängigkeiten bleibt."""
-    if not _CONFIG_FILE.exists():
+def _load_raw_config(path: Path) -> dict:
+    """Liest die Overlay-Konfiguration im Rohformat (unaufbereitet)."""
+    if not path.exists():
         return {"groups": []}
     try:
-        return json.loads(_CONFIG_FILE.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        log.error("visuals_overlays.json ist kein gültiges JSON: %s", exc)
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        log.error("%s ist nicht lesbar: %s", path.name, exc)
         return {"groups": []}
+    return data if isinstance(data, dict) else {"groups": []}
 
 
-def _save_raw_config(config: dict) -> bool:
+def _save_raw_config(path: Path, config: dict) -> bool:
     """Atomar schreiben: erst in eine Temp-Datei daneben, dann umbenennen.
 
-    Beim direkten write_text() haette ein Absturz (oder ein Strom-Aus am
-    RPi 5) mitten im Schreiben eine halb geschriebene, unlesbare
-    visuals_overlays.json hinterlassen — und damit die komplette
-    Systemansicht dauerhaft leer.
+    Beim direkten write_text() hätte ein Absturz (oder ein Strom-Aus am
+    RPi 5) mitten im Schreiben eine halb geschriebene, unlesbare Datei
+    hinterlassen — und damit die komplette Systemansicht dauerhaft leer.
 
-    Gibt False zurueck, wenn nicht geschrieben werden konnte (z. B.
-    schreibgeschuetztes Installationsverzeichnis). Das darf die GUI NICHT
-    abbrechen: die Overlays sind dann eben nur bis zum naechsten Start da.
+    Gibt False zurück, wenn nicht geschrieben werden konnte. Das darf die
+    GUI NICHT abbrechen: die Overlays sind dann eben nur bis zum nächsten
+    Start da.
     """
-    tmp = _CONFIG_FILE.with_suffix(_CONFIG_FILE.suffix + ".tmp")
+    tmp = path.with_suffix(path.suffix + ".tmp")
     try:
+        path.parent.mkdir(parents=True, exist_ok=True)
         tmp.write_text(json.dumps(config, indent=2, ensure_ascii=False), encoding="utf-8")
-        os.replace(tmp, _CONFIG_FILE)
+        os.replace(tmp, path)
         return True
     except OSError as exc:
-        log.warning("visuals_overlays.json konnte nicht geschrieben werden: %s", exc)
+        log.warning("%s konnte nicht geschrieben werden: %s", path.name, exc)
         try:
             tmp.unlink(missing_ok=True)
         except OSError:
@@ -172,45 +236,87 @@ def _save_raw_config(config: dict) -> bool:
 
 
 class VisualsBridge(QObject):
-    groupsChanged       = pyqtSignal()
-    activeGroupChanged  = pyqtSignal()
+    groupsChanged      = pyqtSignal()
+    activeGroupChanged = pyqtSignal()
+    sourceChanged      = pyqtSignal()
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
-        self._groups = _load_groups()
+        self._node_id = 1
+        self._path = _config_file(self._node_id)
+        self._groups = _load_groups(self._path)
         self._active_index = 0
 
-    # ── Vom Teensy empfangene Namen/Overlays (siehe app_bridge.py) ─────────
+    # ── Node-Wechsel ──────────────────────────────────────────────────────
+    def set_node(self, node_id: int) -> None:
+        if node_id == self._node_id:
+            return
+        self._node_id = node_id
+        self.refresh()
+
+    @pyqtProperty(str, notify=sourceChanged)
+    def configSource(self):
+        """Woher die angezeigte Konfiguration stammt (Einstellungs-Tab)."""
+        if self._path == _TEMPLATE_FILE:
+            return f"Vorlage: {_TEMPLATE_FILE.name}"
+        return f"vom Teensy: {self._path}"
+
+    # ── Neu einlesen ──────────────────────────────────────────────────────
     def refresh(self) -> None:
-        """Liest visuals_overlays.json neu ein (z. B. nachdem Namen/Overlays
+        """Liest die Konfiguration neu ein (z. B. nachdem Namen/Overlays
         aktualisiert wurden). Anders als bei ParamBridge unproblematisch,
         da SystemView.qml keine editierbaren Regler-Zustände hält — nur
         reine Anzeige-Widgets, die ohnehin aus telemetry.latestValues
         neu gezeichnet werden."""
-        self._groups = _load_groups()
+        self._path = _config_file(self._node_id)
+        self._groups = _load_groups(self._path)
         # Gruppenzahl kann beim Neuladen kleiner geworden sein -> Index
         # nachziehen, sonst wirft activeGroup einen IndexError.
         if self._active_index >= len(self._groups):
             self._active_index = max(0, len(self._groups) - 1)
         self.groupsChanged.emit()
         self.activeGroupChanged.emit()
+        self.sourceChanged.emit()
 
-    def apply_overlay_defaults_from_registry(self, registry: ChannelRegistry) -> None:
-        """Befüllt noch leere Gruppen aus dem vom Teensy empfangenen Overlay-
-        Mapping (siehe channel_registry.apply_overlay_defaults). Bereits
-        lokal editierte Gruppen (z. B. über die Widgets-GUI) bleiben
-        unangetastet.
+    def apply_overlay_defaults_from_registry(
+        self, registry: ChannelRegistry, node_id: int = 1
+    ) -> None:
+        """Overlay-Mapping des Teensy übernehmen und dauerhaft speichern.
 
         Läuft im GUI-Poll-Timer — hier darf nichts durchschlagen, sonst
         reißt ein kaputtes JSON oder ein schreibgeschütztes Verzeichnis die
-        gesamte Datenpipeline mit."""
+        gesamte Datenpipeline mit.
+        """
+        self._node_id = node_id
         try:
-            raw = _load_raw_config()
-            if apply_overlay_defaults(raw, registry):
-                _save_raw_config(raw)
+            self._merge_and_store(registry, node_id)
         except Exception as exc:            # noqa: BLE001 — bewusst breit
             log.warning("Overlay-Defaults konnten nicht übernommen werden: %s", exc)
-        self.refresh()   # Namens-Aenderungen (VARIABLE_NAMES) sollen so oder so durch
+        self.refresh()   # Namens-Änderungen (VARIABLE_NAMES) sollen so oder so durch
+
+    def _merge_and_store(self, registry: ChannelRegistry, node_id: int) -> None:
+        if not registry.overlays:
+            return
+        stored_path = runtime_config.runtime_config_path(
+            node_id, runtime_config.VISUALS_NAME)
+        digest = runtime_config.teensy_hash(registry.overlays)
+
+        if stored_path.exists():
+            raw = _load_raw_config(stored_path)
+            if raw.get(_HASH_KEY) == digest:
+                return          # unverändert -> lokale Bearbeitung behalten
+            overwrite = True    # neue Firmware -> ihre Anordnung gilt
+        else:
+            # Erstbefüllung: von der Vorlage ausgehen, damit Gruppennamen und
+            # Bildzuordnung erhalten bleiben, und nur leere Gruppen füllen.
+            raw = _load_raw_config(_TEMPLATE_FILE)
+            overwrite = False
+
+        if apply_overlay_defaults(raw, registry, overwrite=overwrite) or overwrite:
+            raw[_HASH_KEY] = digest
+            if _save_raw_config(stored_path, raw):
+                log.info("Overlays von Node %d übernommen und gespeichert (%s).",
+                          node_id, stored_path)
 
     @pyqtProperty("QVariantList", notify=groupsChanged)
     def groupNames(self):
