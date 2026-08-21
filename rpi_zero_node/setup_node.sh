@@ -42,7 +42,7 @@
 #    Funktioniert nur, wenn die aktuell auf dem Teensy laufende Firmware den
 #    USB-Typ "Serial" (oder eine Kombination mit Serial) nutzt; andernfalls
 #    bleibt der manuelle Knopfdruck als Fallback nötig (siehe Fehlermeldung
-#    von bt_flash_receiver.py / check_teensy_present()).
+#    von bt_flash_receiver.py / check_teensy_connected()).
 #
 #  WLAN-Zugang:
 #    SSID:     RoboDebug          ← muss mit RPi 5 AP übereinstimmen

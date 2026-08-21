@@ -94,9 +94,12 @@ static float debugData[MAX_FLOATS];
 #endif
 PDS_SLOWMEM static char _descBuf[PDS_DESC_BUF_BYTES];
 
-// Reserve fuer die schliessenden Klammern, damit der Deskriptor auch bei
-// Ueberlauf gueltiges JSON bleibt (siehe buildDescriptorJson()).
-static constexpr size_t DESC_CLOSE_RESERVE = 64;
+// Reserve fuer die STRUKTURZEICHEN des JSON (Abschnittstrenner + schliessende
+// Klammern, zusammen 97 Bytes), damit der Deskriptor auch bei vollem Puffer
+// gueltiges JSON bleibt: die variablen Inhalte (Namen, Overlays) duerfen nur
+// bis buf-Groesse minus dieser Reserve wachsen, die Struktur passt danach
+// garantiert noch hinein. Siehe JsonBuilder::raw() vs. put().
+static constexpr size_t DESC_STRUCT_RESERVE = 128;
 
 static elapsedMillis DBGTimer;
 static elapsedMillis DescChunkTimer;
@@ -260,12 +263,14 @@ namespace {
 
 struct JsonBuilder {
     char*  buf;
-    size_t cap;      // nutzbare Kapazitaet OHNE die Schluss-Reserve
+    size_t total;    // komplette Puffergroesse
+    size_t cap;      // nutzbare Kapazitaet fuer VARIABLE Inhalte
     size_t pos = 0;
     bool   overflow = false;
 
     JsonBuilder(char* b, size_t bytes)
-        : buf(b), cap(bytes > DESC_CLOSE_RESERVE ? bytes - DESC_CLOSE_RESERVE : 0) {}
+        : buf(b), total(bytes),
+          cap(bytes > DESC_STRUCT_RESERVE ? bytes - DESC_STRUCT_RESERVE : 0) {}
 
     /// Passen `need` weitere Bytes noch in den Nutzbereich?
     bool fits(size_t need) {
@@ -301,9 +306,13 @@ struct JsonBuilder {
         }
     }
 
-    /// Schluss-Zeichen dürfen die Reserve nutzen und passen daher immer.
-    void close(const char* s) {
-        while (*s) buf[pos++] = *s++;
+    /// Strukturzeichen (Abschnittstrenner, schliessende Klammern). Sie
+    /// duerfen die Reserve nutzen und passen deshalb IMMER — auch wenn die
+    /// variablen Inhalte den Puffer bereits ausgeschoepft haben. Genau das
+    /// haelt das JSON bei Ueberlauf gueltig: dann fehlen zwar Eintraege,
+    /// aber die Klammerstruktur bleibt vollstaendig.
+    void raw(const char* s) {
+        while (*s && pos + 1 < total) buf[pos++] = *s++;
     }
 };
 
@@ -325,37 +334,37 @@ bool putNameEntry(JsonBuilder& j, bool& first, int index, const char* name) {
 void PowerDebugger::buildDescriptorJson() {
     JsonBuilder j(_descBuf, sizeof(_descBuf));
 
-    j.put("{\"channels\":{");
+    j.raw("{\"channels\":{");
     bool first = true;
     for (int i = 0; i < ACTIVE_CHANNELS; i++) {
         if (!putNameEntry(j, first, i, _names[i])) break;
     }
 
-    j.put("},\"param_slow_floats\":{");
+    j.raw("},\"param_slow_floats\":{");
     first = true;
     for (int i = 0; i < PARAM_SLOW_FLOAT_COUNT; i++) {
         if (!putNameEntry(j, first, i, PARAM_SLOW_FLOAT_NAMES[i])) break;
     }
 
-    j.put("},\"param_slow_bools\":{");
+    j.raw("},\"param_slow_bools\":{");
     first = true;
     for (int i = 0; i < PARAM_SLOW_BOOL_COUNT; i++) {
         if (!putNameEntry(j, first, i, PARAM_SLOW_BOOL_NAMES[i])) break;
     }
 
-    j.put("},\"param_fast_floats\":{");
+    j.raw("},\"param_fast_floats\":{");
     first = true;
     for (int i = 0; i < PARAM_FAST_FLOAT_COUNT; i++) {
         if (!putNameEntry(j, first, i, PARAM_FAST_FLOAT_NAMES[i])) break;
     }
 
-    j.put("},\"overlays\":[");
+    j.raw("},\"overlays\":[");
     bool firstOverlay = true;
     for (size_t i = 0; i < CHANNEL_OVERLAYS_COUNT; i++) {
         const OverlayDef& ov = CHANNEL_OVERLAYS[i];
         const size_t need = strlen(ov.label ? ov.label : "") * 2
                           + strlen(ov.extra ? ov.extra : "") * 2
-                          + strlen(ov.type  ? ov.type  : "") + 160;
+                          + strlen(ov.type  ? ov.type  : "") + 200;
         if (!j.fits(need)) break;
         if (!firstOverlay) j.put(",");
         firstOverlay = false;
@@ -375,7 +384,7 @@ void PowerDebugger::buildDescriptorJson() {
         }
         j.put("}");
     }
-    j.close("]}");
+    j.raw("]}");
 
     _descJsonLen  = j.pos;
     _descOverflow = j.overflow;

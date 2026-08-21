@@ -29,7 +29,7 @@ Kernentscheidungen vorab:
 - Das UART-Overlay (`dtoverlay=disable-bt`, `enable_uart=1`, `dtoverlay=uart0`) reserviert die PL011-UART für die Teensy-Telemetrie und **deaktiviert dabei den onboard Bluetooth-Chip vollständig** (`systemctl disable hciuart.service bluetooth.service`). Das muss für dieses Feature rückgängig gemacht bzw. umgebaut werden.
 - Die Firmware (`platformio.ini`) wird mit `-DUSB_SERIAL` gebaut → der Teensy hängt am USB als CDC-Serial-Gerät. Das ist Voraussetzung dafür, dass `teensy_loader_cli` das Board **automatisch** (ohne Tastendruck) in den HalfKay-Bootloader zwingen kann.
 - `uart_receiver.py` läuft als systemd-Dienst `uart-receiver` und liest die UART-Telemetrie in einer Single-Thread-Event-Loop. Ein Flash-Vorgang unterbricht diesen Datenstrom kurz (Teensy-Reset) — das ist unkritisch, sofern der Empfänger Verbindungsabbrüche toleriert (in Phase 1 zu verifizieren, siehe Abschnitt 9).
-- `status_leds.py` hat aktuell die GPIO-Ansteuerung auskommentiert (kein Hardware-Zugriff aktiv) — LED-Feedback für den Flash-Vorgang ist optional und ohne Risiko nachrüstbar.
+- `status_leds.py` steuert die LEDs inzwischen wieder aktiv an (gpiozero, optional) und wird von `uart_receiver.py` mitbedient — LED-Feedback für den Flash-Vorgang ist damit ohne Risiko nachrüstbar.
 ---
 
 ## 2. Architekturübersicht
@@ -284,3 +284,26 @@ Konkrete Anpassungen (in der bestehenden Struktur des Skripts):
 ---
 
 *Dieser Plan wurde auf Basis der hochgeladenen Projektdateien (`Robotic_PDS-julius`) erstellt und verweist auf konkrete, bestehende Skripte (`setup_node.sh`, `uart_receiver.py`, `status_leds.py`, `platformio.ini`). Er beschreibt die Architektur, Protokolle und Umsetzungsschritte; die eigentliche Implementierung (Code) ist der nächste Schritt und kann auf Wunsch direkt begonnen werden.*
+
+---
+
+## Nachtrag: Reihenfolge beim Flashen (Stand nach dem Robustheits-Durchgang)
+
+Der Node versetzt den Teensy **erst dann** in den HalfKay-Bootloader, wenn die
+`.hex`-Datei vollständig übertragen und ihr SHA-256 verifiziert ist. Bei
+`FLASH_START` wird nur noch geprüft, ob überhaupt ein Teensy am USB hängt
+(`check_teensy_connected()`).
+
+Vorher passierte der Sprung in den Bootloader schon bei `FLASH_START`, also
+*vor* der Übertragung. Brach diese danach ab — Funkloch, falscher Hash, das
+Fenster auf dem PC geschlossen — blieb der Roboter ohne laufende Firmware
+stehen und musste von Hand wieder in Gang gebracht werden. Das Zeitfenster
+ohne Firmware ist jetzt nur noch so lang wie der eigentliche Flash-Vorgang.
+
+Zusätzlich abgesichert:
+
+| Prüfung | Wirkung |
+|---|---|
+| `MAX_HEX_BYTES` (16 MB) | ein fehlerhafter Sender kann den Speicher des Nodes nicht vollschreiben |
+| Metadaten von `FLASH_START` | fehlende/unbrauchbare Felder werden mit einer klaren Meldung abgelehnt statt in einem `KeyError` zu enden |
+| mehr Daten als angekündigt | Übertragung wird abgebrochen |
