@@ -101,9 +101,14 @@ def _exercise(bridge: AppBridge) -> None:
     bridge._settings.setDark(True)
     bridge._settings.setFontScale(1.0)
 
+    # hold_seconds=0: sonst wuerde die Haltezeit den Alarm im kurzen Testlauf
+    # unterdruecken und der Alarmrahmen nie gezeichnet.
     bridge._diag.setBatteryConfig({"enabled": True, "channel": 0,
-                                    "warn_below": 1e9, "critical_below": 1e9})
+                                    "warn_below": 1e9, "critical_below": 1e9,
+                                    "hold_seconds": 0.0})
     bridge._diag.note_values(block[-1])
+    bridge._diag.note_values(block[-1])
+    bridge._diag.setBatteryConfig({"enabled": False})
     bridge._diag.setEventFilter(1)
     bridge._diag.setEventFilter(0)
 

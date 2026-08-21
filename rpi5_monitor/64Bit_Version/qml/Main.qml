@@ -75,11 +75,16 @@ ApplicationWindow {
         }
     }
 
+    // Der Auffaenger UMSCHLIESST die Ansichten. Tasten-Ereignisse steigen in
+    // QML nur den ELTERN-Pfad des fokussierten Elements hoch — als Geschwister
+    // der SwipeView haette er nie etwas gesehen, sobald irgendein Bedienelement
+    // den Fokus hat. So bleibt ausserdem das erwuenschte Verhalten erhalten,
+    // dass ein Textfeld die Buchstaben zuerst bekommt und WASD dort ganz
+    // normal getippt werden kann.
     Item {
         id: keyCatcher
         anchors.fill: parent
         focus: true
-        z: -1                       // fängt nur Tasten, nie Klicks ab
 
         Keys.onPressed: (event) => {
             if (event.isAutoRepeat) { event.accepted = false; return }
@@ -102,6 +107,27 @@ ApplicationWindow {
             keys.held &= ~b
             keys.push()
             event.accepted = true
+        }
+
+        SwipeView {
+            id: swipeView
+            anchors.fill: parent
+            // Zwei-Wege-Kopplung TabBar <-> SwipeView nach dem Qt-Standardmuster:
+            // BEIDE Seiten binden aneinander, es gibt bewusst KEINE zusätzliche
+            // imperative Zuweisung mehr. Eine solche Zuweisung auf
+            // swipeView.currentIndex hat dessen Binding beim ersten Tab-Wechsel
+            // zerstört (klassischer QML-Bindungsschleifen-Fehler).
+            currentIndex: tabBar.currentIndex
+            // Während ein Touch-Widget wie der Joystick exklusiv einen Drag
+            // braucht (siehe UiState.qml / Joystick.qml), darf das Wischen
+            // zwischen den Tabs nicht mitlaufen.
+            interactive: !UiState.navigationLocked
+
+            TelemetryView {}
+            PlotterView {}
+            SystemView {}
+            ParamsView {}
+            DiagnosticsView {}
         }
     }
 
@@ -203,26 +229,6 @@ ApplicationWindow {
         batteryValue: appBridge.diag.batteryValue
     }
 
-    SwipeView {
-        id: swipeView
-        anchors.fill: parent
-        // Zwei-Wege-Kopplung TabBar <-> SwipeView nach dem Qt-Standardmuster:
-        // BEIDE Seiten binden aneinander, es gibt bewusst KEINE zusätzliche
-        // imperative Zuweisung mehr. Eine solche Zuweisung auf
-        // swipeView.currentIndex hat dessen Binding beim ersten Tab-Wechsel
-        // zerstört (klassischer QML-Bindungsschleifen-Fehler).
-        currentIndex: tabBar.currentIndex
-        // Während ein Touch-Widget wie der Joystick exklusiv einen Drag
-        // braucht (siehe UiState.qml / Joystick.qml), darf das Wischen
-        // zwischen den Tabs nicht mitlaufen.
-        interactive: !UiState.navigationLocked
-
-        TelemetryView {}
-        PlotterView {}
-        SystemView {}
-        ParamsView {}
-        DiagnosticsView {}
-    }
 
     // ── Akku-Alarm (C3): rein optisch, es wird NICHTS am Roboter verändert ─
     Rectangle {
@@ -255,12 +261,21 @@ ApplicationWindow {
             }
         }
 
-        SequentialAnimation on opacity {
+        // Blinken ueber eine gebundene Property statt "Animation on opacity":
+        // eine Animation UEBERNIMMT die Property, und die Zuweisung beim
+        // Anhalten kollidiert damit. Ausserdem bliebe die Deckkraft sonst auf
+        // dem zuletzt animierten Wert stehen, wenn der Alarm von kritisch auf
+        // Warnung zurueckfaellt.
+        property bool blinkOn: true
+        opacity: (appBridge.diag.alarmLevel >= 2 && !blinkOn) ? 0.3 : 1.0
+        Behavior on opacity { NumberAnimation { duration: 250 } }
+
+        Timer {
+            interval: 500
+            repeat: true
             running: alarmFrame.visible && appBridge.diag.alarmLevel >= 2
-            loops: Animation.Infinite
-            NumberAnimation { to: 0.25; duration: 500 }
-            NumberAnimation { to: 1.0;  duration: 500 }
-            onRunningChanged: if (!running) alarmFrame.opacity = 1.0
+            onTriggered: alarmFrame.blinkOn = !alarmFrame.blinkOn
+            onRunningChanged: if (!running) alarmFrame.blinkOn = true
         }
     }
 }

@@ -283,18 +283,21 @@ class VisualsBridge(QObject):
             raw = _load_raw_config(stored_path)
             if raw.get(_HASH_KEY) == digest:
                 return          # unverändert -> lokale Bearbeitung behalten
-            overwrite = True    # neue Firmware -> ihre Anordnung gilt
         else:
             # Erstbefüllung: von der Vorlage ausgehen, damit Gruppennamen und
-            # Bildzuordnung erhalten bleiben, und nur leere Gruppen füllen.
+            # Bildzuordnung erhalten bleiben.
             raw = _load_raw_config(_TEMPLATE_FILE)
-            overwrite = False
 
-        if apply_overlay_defaults(raw, registry, overwrite=overwrite) or overwrite:
-            raw[_HASH_KEY] = digest
-            if _save_raw_config(stored_path, raw):
-                log.info("Overlays von Node %d übernommen und gespeichert (%s).",
-                          node_id, stored_path)
+        # overwrite=True auch bei der Erstbefüllung: die Vorlage im Repository
+        # ist in aller Regel schon befüllt, und mit overwrite=False käme die
+        # Anordnung des Teensy dann NIE an — genau das, was hier gewollt ist.
+        # Gruppen ohne passenden Teensy-Eintrag bleiben unangetastet.
+        changed = apply_overlay_defaults(raw, registry, overwrite=True)
+        raw[_HASH_KEY] = digest
+        if _save_raw_config(stored_path, raw):
+            log.info("Overlays von Node %d übernommen und gespeichert "
+                      "(%s, %s).", node_id, stored_path,
+                      "Gruppen ersetzt" if changed else "nur Fingerabdruck")
 
     @pyqtProperty("QVariantList", notify=groupsChanged)
     def groupNames(self):

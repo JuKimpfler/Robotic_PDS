@@ -135,8 +135,8 @@ class ControllerBridge(QObject):
     """Erkennt PS4-Controller (Hot-Plug-fähig durch Polling) und schreibt
     dessen Werte in den ParamStore der übergebenen ParamBridge.
 
-    poll() wird von ParamBridge._send_fast_tick() mit 100 Hz aufgerufen —
-    siehe Modul-Docstring, Abschnitt LATENZ."""
+    poll() wird von ParamBridge._worker_tick() mit 100 Hz aufgerufen, und zwar
+    aus dem Sende-Thread — siehe Modul-Docstring, Abschnitt LATENZ."""
 
     connectedChanged = pyqtSignal()
     valuesChanged = pyqtSignal()

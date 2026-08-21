@@ -123,6 +123,7 @@ class DiagBridge(QObject):
         self._batt = dict(BATTERY_ALARM_DEFAULTS)
         self._batt_value = float("nan")
         self._batt_below_since = 0.0
+        self._last_shown_value = float("nan")
         self._alarm_level = 0            # 0 = ok, 1 = Warnung, 2 = kritisch
 
         # Marken an den Plotter durchreichen (wird von AppBridge gesetzt).
@@ -214,8 +215,16 @@ class DiagBridge(QObject):
 
         if level != self._alarm_level:
             self._alarm_level = level
+            self._last_shown_value = value
             if level > 0:
                 log.warning("Akku-Alarm Stufe %d: Kanal %d = %.2f", level, chn, value)
+            self.alarmChanged.emit()
+        elif level > 0 and abs(value - self._last_shown_value) > 0.05:
+            # Waehrend eines Alarms steht die Spannung gross im Bild — sie darf
+            # dann nicht auf dem Wert stehenbleiben, bei dem der Alarm ausgeloest
+            # hat. Die Schwelle von 0.05 begrenzt das auf ein paar Signale pro
+            # Sekunde statt der vollen 20 Hz des Poll-Timers.
+            self._last_shown_value = value
             self.alarmChanged.emit()
 
     # ══════════════════════════════════════════════════════════════════════
