@@ -145,16 +145,30 @@ def _load_raw_config() -> dict:
         return {"groups": []}
 
 
-def _save_raw_config(config: dict) -> None:
+def _save_raw_config(config: dict) -> bool:
     """Atomar schreiben: erst in eine Temp-Datei daneben, dann umbenennen.
 
     Beim direkten write_text() haette ein Absturz (oder ein Strom-Aus am
     RPi 5) mitten im Schreiben eine halb geschriebene, unlesbare
     visuals_overlays.json hinterlassen — und damit die komplette
-    Systemansicht dauerhaft leer."""
+    Systemansicht dauerhaft leer.
+
+    Gibt False zurueck, wenn nicht geschrieben werden konnte (z. B.
+    schreibgeschuetztes Installationsverzeichnis). Das darf die GUI NICHT
+    abbrechen: die Overlays sind dann eben nur bis zum naechsten Start da.
+    """
     tmp = _CONFIG_FILE.with_suffix(_CONFIG_FILE.suffix + ".tmp")
-    tmp.write_text(json.dumps(config, indent=2, ensure_ascii=False), encoding="utf-8")
-    os.replace(tmp, _CONFIG_FILE)
+    try:
+        tmp.write_text(json.dumps(config, indent=2, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, _CONFIG_FILE)
+        return True
+    except OSError as exc:
+        log.warning("visuals_overlays.json konnte nicht geschrieben werden: %s", exc)
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return False
 
 
 class VisualsBridge(QObject):
@@ -185,10 +199,17 @@ class VisualsBridge(QObject):
         """Befüllt noch leere Gruppen aus dem vom Teensy empfangenen Overlay-
         Mapping (siehe channel_registry.apply_overlay_defaults). Bereits
         lokal editierte Gruppen (z. B. über die Widgets-GUI) bleiben
-        unangetastet."""
-        raw = _load_raw_config()
-        if apply_overlay_defaults(raw, registry):
-            _save_raw_config(raw)
+        unangetastet.
+
+        Läuft im GUI-Poll-Timer — hier darf nichts durchschlagen, sonst
+        reißt ein kaputtes JSON oder ein schreibgeschütztes Verzeichnis die
+        gesamte Datenpipeline mit."""
+        try:
+            raw = _load_raw_config()
+            if apply_overlay_defaults(raw, registry):
+                _save_raw_config(raw)
+        except Exception as exc:            # noqa: BLE001 — bewusst breit
+            log.warning("Overlay-Defaults konnten nicht übernommen werden: %s", exc)
         self.refresh()   # Namens-Aenderungen (VARIABLE_NAMES) sollen so oder so durch
 
     @pyqtProperty("QVariantList", notify=groupsChanged)

@@ -99,9 +99,14 @@ Item {
                         required property var modelData
                         readonly property real imgX: bgImage.x + (bgImage.width - bgImage.paintedWidth) / 2
                         readonly property real imgY: bgImage.y + (bgImage.height - bgImage.paintedHeight) / 2
+                        // _has fängt auch negative Kanalnummern ab: bei einem
+                        // channel_idx von -1 lief values[-1] auf undefined und
+                        // .toFixed() warf einen TypeError, der das komplette
+                        // Binding (und damit das Overlay) stillgelegt hat.
+                        readonly property bool _has: modelData.channel >= 0 &&
+                                                     modelData.channel < root.values.length
                         readonly property string ovText: modelData.label + ": " +
-                              (modelData.channel < root.values.length
-                                   ? root.values[modelData.channel].toFixed(2) : "—")
+                              (_has ? root.values[modelData.channel].toFixed(2) : "—")
                         x: imgX + bgImage.paintedWidth * modelData.xPct / 100
                         y: imgY + bgImage.paintedHeight * modelData.yPct / 100
                         width: ovLabel.implicitWidth + 12
@@ -171,16 +176,14 @@ Item {
                                     label: modelData.label
                                     minVal: modelData.min
                                     maxVal: modelData.max
-                                    value: modelData.channel < root.values.length
-                                           ? root.values[modelData.channel] : 0
+                                    value: root._chan(modelData.channel, 0)
                                 }
                             }
                             Component {
                                 id: rotationComp
                                 RotationIndicator {
                                     label: modelData.label
-                                    value: modelData.channel < root.values.length
-                                           ? root.values[modelData.channel] : 0
+                                    value: root._chan(modelData.channel, 0)
                                     maxVal: modelData.maxVal
                                 }
                             }
@@ -188,10 +191,8 @@ Item {
                                 id: vectorComp
                                 VectorIndicator {
                                     label: modelData.label
-                                    angleDeg: modelData.channelAngle < root.values.length
-                                              ? root.values[modelData.channelAngle] : 0
-                                    speed: modelData.channelSpeed < root.values.length
-                                           ? root.values[modelData.channelSpeed] : 0
+                                    angleDeg: root._chan(modelData.channelAngle, 0)
+                                    speed: root._chan(modelData.channelSpeed, 0)
                                     maxVal: modelData.maxVal
                                 }
                             }

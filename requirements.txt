@@ -1,0 +1,28 @@
+# ============================================================
+#  Power Debug Monitor — Python-Abhängigkeiten (RPi 5 / PC)
+# ============================================================
+#  Installation:
+#      pip install -r requirements.txt
+#
+#  setup_rpi5.sh benutzt diese Datei automatisch, wenn sie neben dem
+#  Skript liegt (das war bisher nie der Fall — das Skript ist deshalb
+#  immer in seinen Fallback-Zweig gelaufen und hat dort u. a. das gar
+#  nicht mehr verwendete pyqtgraph mitinstalliert).
+#
+#  Der Pi-Zero-Node braucht NICHTS davon — dort reicht pyserial
+#  (siehe rpi_zero_node/setup_node.sh).
+# ============================================================
+
+# ── Pflicht ─────────────────────────────────────────────────
+PyQt6>=6.4.0            # Qt Quick/QML-Oberfläche (objectCreationFailed ab 6.4)
+numpy>=1.24.0           # Telemetrie-Verarbeitung, Plotter-Statistik
+
+# ── Optional ────────────────────────────────────────────────
+#  pygame liefert ausschliesslich die PS4-Controller-Unterstuetzung.
+#  Ohne das Paket startet die GUI normal, die Fast-Params sind dann per
+#  Touch bedienbar (siehe bridge/controller_bridge.py).
+#  Achtung Python 3.14: dafuer gibt es noch kein pygame-Wheel und der
+#  Quell-Build scheitert -> dort stattdessen `pip install pygame-ce`
+#  (gleicher Importname, API-kompatibel).
+pygame>=2.5.0; python_version < "3.14"
+pygame-ce>=2.5.0; python_version >= "3.14"

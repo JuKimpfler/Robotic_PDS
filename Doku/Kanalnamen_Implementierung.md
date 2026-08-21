@@ -1,7 +1,7 @@
 # Implementierung: Kanal-/Param-Namen + Overlay-Mapping (Teensy → GUI)
 
 **Projekt:** Robotic_PDS (RoboCup Junior Soccer 2vs2)
-**Betrifft:** `teensy_firmware/` (Firmware), `rpi_zero_node/spi_receiver.py` (Relay),
+**Betrifft:** `teensy_firmware/` (Firmware), `rpi_zero_node/uart_receiver.py` (Relay),
 `rpi5_monitor/64Bit_Version` (PyQt6: QML-GUI `main_qml.py` sowie die ältere Widgets-GUI `main.py`/`gui/`)
 **Nicht betroffen:** `rpi5_monitor/Old_PySide` (nicht mehr aktiv gepflegt)
 
@@ -38,7 +38,7 @@ Sampling jeden Zyklus) oder weiterhin dynamisch/namenlos wie bisher per
 ### 2.1 Neue Magics/Konstanten
 
 Definiert in `teensy_firmware/src/params.h`, gespiegelt in
-`rpi5_monitor/*/config.py` und `rpi_zero_node/spi_receiver.py`:
+`rpi5_monitor/*/config.py` und `rpi_zero_node/uart_receiver.py`:
 
 ```
 CHANNEL_DESC_MAGIC          = 0xDE5C0001   // Teensy -> GUI, gechunktes JSON
@@ -184,7 +184,7 @@ versendet.
 
 ---
 
-## 4. Pi-Zero-Relay (`rpi_zero_node/spi_receiver.py`)
+## 4. Pi-Zero-Relay (`rpi_zero_node/uart_receiver.py`)
 
 `ChunkFrameAssembler` (analog zu `TelemetryFrameAssembler`, aber variable
 Länge über das `payload_len`-Byte statt fester Paketgröße) läuft unabhängig

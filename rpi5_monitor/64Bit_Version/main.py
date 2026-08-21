@@ -1,29 +1,31 @@
 """
-main.py — Power Debug Monitor  (RPi 5)
-=======================================
-Startet:
-  1. NetworkManager  → 2× UDP-Empfänger-Prozesse
-  2. PyQt6-GUI       → MainWindow mit allen Tabs
+main.py — Power Debug Monitor (RPi 5) — ALTE PyQt6-Widgets-GUI
+=================================================================
+!!! NICHT DIE AUSGELIEFERTE OBERFLAECHE !!!
+
+Der aktuelle Einstiegspunkt ist `main_qml.py` (Qt Quick/QML). Nur der wird
+von setup_rpi5.sh installiert und gestartet, und nur der hat den vollen
+Funktionsumfang (PS4-Controller, Touch-Bedienung, Kanalnamen-Automatik,
+Prozess-Ueberwachung).
+
+Diese Datei und der Ordner gui/ sind der Stand vor der QML-Migration und
+bleiben nur als Referenz erhalten. Bekannte Einschraenkungen:
+  * benoetigt zusaetzlich `pyqtgraph` (nicht in requirements.txt)
+  * keine PS4-Controller-Unterstuetzung
+  * liest nur die Queue des aktiven Nodes -> die des inaktiven laeuft voll
+    (in der QML-Fassung behoben, siehe bridge/app_bridge.py::_poll_data)
 
 Aufruf:
-    python rpi5_monitor/main.py
-
-Optional:
-    python rpi5_monitor/main.py --simulate
-        Startet einen eingebauten UDP-Simulator (kein Teensy nötig),
-        der synthetische Pakete an localhost schickt.
+    python rpi5_monitor/64Bit_Version/main.py [--simulate]
 """
 
 import sys
 import logging
 import argparse
 import multiprocessing as mp
-import platform
-from platform_utils import setup_hotspot
 
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtGui import QPalette, QColor
-from PyQt6.QtCore import Qt
 
 from network_worker import NetworkManager
 from gui.main_window import MainWindow
@@ -246,7 +248,7 @@ def _udp_simulator_process(stop_event: mp.Event) -> None:
     """
     import time, struct, socket
     import numpy as np
-    from config import (PACKET_HEADER_MAGIC, MAX_FLOATS, HEADER_SIZE,
+    from config import (PACKET_HEADER_MAGIC, MAX_FLOATS,
                         UDP_PORT_NODE1, UDP_PORT_NODE2)
 
     logging.basicConfig(level=logging.INFO,
@@ -297,6 +299,11 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    log.warning(
+        "Dies ist die ALTE Widgets-GUI. Die ausgelieferte Oberfläche ist "
+        "main_qml.py — starte im Zweifel:  python main_qml.py"
+    )
+
     # Multiprocessing: freeze_support() für PyInstaller-Kompatibilität
     mp.freeze_support()
 
@@ -315,7 +322,7 @@ def main() -> None:
         log.info("⚡ Simulator-Modus aktiv")
         sim_proc = mp.Process(
             target=_udp_simulator_process,
-            args=(nm._stop_event,),
+            args=(nm.stop_event,),
             daemon=True,
             name="UDP-Simulator",
         )

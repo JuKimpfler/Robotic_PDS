@@ -453,10 +453,33 @@ class ParamBridge(QObject):
         state = "aktiv" if self._enabled else "pausiert"
         ctrl = " - 🎮 Controller" if self._controller.connected else ""
         drops = f" - Verworfen: {self._send_drops}" if self._send_drops else ""
-        self._status = (
+        status = (
             f"{state} -> Node {self._active_node} ({ip}) - "
             f"Slow: {PARAM_SLOW_SEND_HZ:.1f} Hz ({self._pkt_sent_slow} Pkt) - "
             f"Fast: {PARAM_FAST_SEND_HZ:.0f} Hz ({self._pkt_sent_fast} Pkt)"
             f"{drops}{ctrl}"
         )
+        # Nur bei echter Änderung melden: sonst wertet QML das daran hängende
+        # Text-Binding 2x/s neu aus, obwohl sich nichts geändert hat.
+        if status == self._status:
+            return
+        self._status = status
         self.statusChanged.emit()
+
+    # ── Aufräumen (von AppBridge.shutdown aufgerufen) ─────────────────────
+    def shutdown(self) -> None:
+        """Timer stoppen, Controller freigeben, Socket schließen.
+
+        Ohne das lief der 100-Hz-Sendetimer beim Beenden weiter und hat auf
+        einen bereits abgebauten Socket geschrieben — das erzeugte beim
+        Schließen der GUI reproduzierbar eine Handvoll Fehlermeldungen.
+        """
+        for attr in ("_slow_timer", "_fast_timer", "_status_timer", "_fallback_poll_timer"):
+            timer = getattr(self, attr, None)
+            if timer is not None:
+                timer.stop()
+        self._controller.shutdown()
+        try:
+            self._sock.close()
+        except OSError:
+            pass

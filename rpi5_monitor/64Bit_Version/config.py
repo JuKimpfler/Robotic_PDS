@@ -65,7 +65,7 @@ PARAM_FAST_SEND_INTERVAL_MS = int(1000 / PARAM_FAST_SEND_HZ)   # 10
 CONTROLLER_UI_NOTIFY_MS = 40    # 25 Hz
 
 # ── Namens-/Overlay-Deskriptor (Teensy -> GUI, einmalig beim Boot + auf Anfrage) ─
-# Muss exakt mit params.h (Teensy) und rpi_zero_node/spi_receiver.py übereinstimmen!
+# Muss exakt mit params.h (Teensy) und rpi_zero_node/uart_receiver.py übereinstimmen!
 CHANNEL_DESC_MAGIC          = 0xDE5C0001
 CHANNEL_DESC_HEADER_BYTES   = 7    # magic(4) + chunk_idx(1) + chunk_count(1) + payload_len(1)
 
@@ -85,7 +85,7 @@ CONTROLLER_CONFIG_PATH = _Path(__file__).parent / "controller_config.json"
 
 # ── Paket-Format ──────────────────────────────────────────────────────────────
 # MAX_FLOATS ist Wire-Format und muss mit teensy_firmware/src/PDS.cpp
-# (MAX_FLOATS) und rpi_zero_node/spi_receiver.py (MAX_FLOATS) übereinstimmen.
+# (MAX_FLOATS) und rpi_zero_node/uart_receiver.py (MAX_FLOATS) übereinstimmen.
 PACKET_HEADER_MAGIC = 0xDEADBEEF    # Muss mit Teensy übereinstimmen
 HEADER_SIZE         = 8              # uint32 magic + uint32 timestamp
 MAX_FLOATS          = 200           # Maximale Anzahl float32 pro Paket

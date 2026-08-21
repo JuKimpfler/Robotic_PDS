@@ -57,8 +57,18 @@ _QML_DIR = Path(__file__).resolve().parent / "qml"
 
 
 def _udp_simulator_process(stop_event) -> None:
-    """Unverändert aus main.py übernommen — synthetische Telemetrie für
-    beide Nodes, damit die QML-GUI ohne Teensy getestet werden kann."""
+    """Synthetische Telemetrie für beide Nodes, damit die GUI ohne Teensy
+    getestet werden kann.
+
+    Vollständig vektorisiert: die frühere Fassung berechnete jeden der 200
+    Kanäle einzeln in einer Python-Schleife (inkl. np.random.normal pro
+    Kanal) — 40 000 Einzelaufrufe pro Sekunde, die auf einem RPi mehr CPU
+    gekostet haben als die gesamte übrige GUI.
+
+    Der Zeitstempel läuft in echten Mikrosekunden seit Prozessstart und wird
+    modulo 2^32 gerechnet — genau wie micros() auf dem Teensy. Damit lässt
+    sich auch die Neustart-Erkennung der GUI mit dem Simulator testen.
+    """
     import time, struct, socket
     import numpy as np
     from config import (PACKET_HEADER_MAGIC, MAX_FLOATS,
@@ -69,28 +79,38 @@ def _udp_simulator_process(stop_event) -> None:
     sim_log.info("Simulator gestartet (beide Nodes → localhost)")
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    t, pkt = 0.0, 0
+    rng = np.random.default_rng()
+
+    idx   = np.arange(MAX_FLOATS, dtype=np.float32)
+    freqs = 0.5 + idx * 0.002                      # einmalig, nicht pro Paket
+    data  = np.empty(MAX_FLOATS, dtype=np.float32)
+
+    t0, pkt, next_send = time.monotonic(), 0, time.monotonic()
 
     while not stop_event.is_set():
+        t  = time.monotonic() - t0
+        ts = int(t * 1e6) & 0xFFFF_FFFF
+        header = struct.pack("<II", PACKET_HEADER_MAGIC, ts)
+
+        base = np.sin(2 * np.pi * freqs * t, dtype=np.float32) * 3.3
         for node_id, port in ((1, UDP_PORT_NODE1), (2, UDP_PORT_NODE2)):
-            ts = int(t * 1e6) & 0xFFFF_FFFF
-            header = struct.pack("<II", PACKET_HEADER_MAGIC, ts)
-
-            data = np.zeros(MAX_FLOATS, dtype=np.float32)
-            for i in range(min(500, MAX_FLOATS)):
-                freq = 0.5 + i * 0.002
-                data[i] = (np.sin(2 * np.pi * freq * t) * 3.3
-                           + (node_id - 1) * 1.0
-                           + np.random.normal(0, 0.05)) * 20
-            data[min(500, MAX_FLOATS):] = 9898.0
-
+            np.add(base, (node_id - 1) * 1.0, out=data)
+            data += rng.normal(0.0, 0.05, MAX_FLOATS).astype(np.float32)
+            data *= 20.0
             sock.sendto(header + data.tobytes(), ("127.0.0.1", port))
 
-        t += 0.01
         pkt += 2
-        if pkt % 1000 == 0:
+        if pkt % 2000 == 0:
             sim_log.info(f"{pkt} Pakete gesendet | t={t:.1f}s")
-        time.sleep(0.01)
+
+        # Feste 100-Hz-Phase statt sleep(0.01): sonst driftet die Rate mit der
+        # Rechenzeit nach unten (real waren es eher 70-80 Hz).
+        next_send += 0.01
+        delay = next_send - time.monotonic()
+        if delay > 0:
+            time.sleep(delay)
+        else:
+            next_send = time.monotonic()
 
     sock.close()
     sim_log.info("Simulator gestoppt.")
@@ -136,7 +156,7 @@ def main() -> None:
         log.info("Simulator-Modus aktiv")
         sim_proc = mp.Process(
             target=_udp_simulator_process,
-            args=(nm._stop_event,),
+            args=(nm.stop_event,),
             daemon=True,
             name="UDP-Simulator",
         )
@@ -151,17 +171,32 @@ def main() -> None:
     ctx.setContextProperty("appBridge", bridge)
     ctx.setContextProperty("telemetryModel", bridge.telemetry.table_model)
 
+    # QML-Ladefehler explizit melden. Ohne diesen Handler steht bei einem
+    # Tippfehler in einer .qml-Datei nur "Abbruch" im Log, ohne Datei/Zeile.
+    # (objectCreationFailed gibt es erst ab Qt 6.4 — deshalb abgesichert.)
+    if hasattr(engine, "objectCreationFailed"):
+        engine.objectCreationFailed.connect(
+            lambda url: log.error("QML-Objekt konnte nicht erzeugt werden: %s", url.toString())
+        )
+
+    # Backend beim Beenden IMMER herunterfahren — auch wenn das Fenster über
+    # den Fenstermanager statt über Qt.quit() geschlossen wird.
+    app.aboutToQuit.connect(bridge.shutdown)
+
     engine.load(QUrl.fromLocalFile(str(_QML_DIR / "Main.qml")))
     if not engine.rootObjects():
         log.error("QML konnte nicht geladen werden — Abbruch.")
-        nm.stop()
+        bridge.shutdown()
+        if sim_proc and sim_proc.is_alive():
+            sim_proc.terminate()
         sys.exit(-1)
 
     exit_code = app.exec()
 
-    bridge.shutdown()
+    bridge.shutdown()      # idempotent, siehe AppBridge.shutdown()
     if sim_proc and sim_proc.is_alive():
         sim_proc.terminate()
+        sim_proc.join(timeout=2)
 
     sys.exit(exit_code)
 

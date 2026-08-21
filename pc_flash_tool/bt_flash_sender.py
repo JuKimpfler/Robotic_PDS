@@ -38,8 +38,17 @@ import sys
 import time
 from pathlib import Path
 
-# shared/bt_flash_protocol.py liegt zwei Ebenen über diesem Skript
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "shared"))
+# shared/bt_flash_protocol.py liegt EINE Ebene über diesem Skript
+# (<Projektwurzel>/shared/). Hier stand vorher parent.parent.parent, also ein
+# Verzeichnis oberhalb der Projektwurzel — der Import ist deshalb immer auf die
+# Kopie in diesem Ordner zurückgefallen, und eine Änderung in shared/ hätte auf
+# der PC-Seite stillschweigend gefehlt.
+_SHARED_DIR = Path(__file__).resolve().parent.parent / "shared"
+if _SHARED_DIR.is_dir():
+    sys.path.insert(0, str(_SHARED_DIR))
+# Zusätzlich der eigene Ordner: erlaubt es, pc_flash_tool/ allein auf einen
+# anderen PC zu kopieren (dort liegt eine identische Kopie des Protokolls).
+sys.path.insert(1, str(Path(__file__).resolve().parent))
 try:
     from bt_flash_protocol import Cmd, ProtocolError, recv_frame, send_frame
 except ImportError as exc:  # pragma: no cover

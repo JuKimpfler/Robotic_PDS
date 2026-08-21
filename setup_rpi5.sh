@@ -65,15 +65,13 @@ BOOT_CMDLINE="${BOOT_DIR}/cmdline.txt"
 
 # Netzwerk-Konfiguration
 # WICHTIG: SSID/Passwort MÜSSEN mit rpi_zero_node/setup_node.sh (AP_SSID/
-# AP_PASS) und dem Default in rpi5_monitor/64Bit_Version/platform_utils.py
-# (setup_hotspot) übereinstimmen. Wird die GUI stattdessen auf einem
-# Windows-PC betrieben, muss dessen Mobile Hotspot dieselbe SSID/dasselbe
-# Passwort verwenden (siehe README, Abschnitt "PC Setup").
+# AP_PASS) übereinstimmen. Wird die GUI stattdessen auf einem Windows-PC
+# betrieben, muss dessen Mobile Hotspot dieselbe SSID/dasselbe Passwort
+# verwenden (siehe README, Abschnitt "PC Setup").
 AP_SSID="RoboDebug"
 AP_PASS="robodebug123"
 AP_IP="192.168.42.1"
 AP_SUBNET="192.168.42.0/24"
-USB_IP="192.168.7.1"
 WIFI_COUNTRY="DE"   # Regulatory-Domain — ohne diese startet der AP oft nicht
 
 echo ""
@@ -127,17 +125,42 @@ ok "Systempakete installiert."
 # ════════════════════════════════════════════════════════════════════════════════
 step "3/8  Python-Pakete installieren"
 REQ_FILE="${SCRIPT_DIR}/requirements.txt"
+
+# PyQt6 und numpy zuerst aus dem apt-Repo: die Bookworm-Pakete sind fuer
+# den Pi vorkompiliert, waehrend pip auf arm64 im schlechtesten Fall
+# stundenlang aus dem Quelltext baut.
+info "PyQt6/numpy bevorzugt aus dem apt-Repo..."
+apt-get install -y -q python3-pyqt6 python3-pyqt6.qtquick python3-numpy 2>/dev/null \
+    && ok "python3-pyqt6 + python3-numpy via apt installiert." \
+    || warn "apt-Pakete nicht verfügbar — es wird auf pip zurückgegriffen."
+
+# Fehlendes/zu altes PyQt6 ergaenzen. Ein Fehlschlag darf das Setup NICHT
+# abbrechen (set -e): pygame ist optional, und selbst ein fehlgeschlagenes
+# PyQt6 soll die restliche Einrichtung (AP, Autostart) nicht verhindern —
+# die Fehlermeldung steht dann klar im Log.
 if [[ -f "$REQ_FILE" ]]; then
-    pip3 install --break-system-packages -r "$REQ_FILE"
-    ok "Pakete aus requirements.txt installiert."
+    pip3 install --break-system-packages -r "$REQ_FILE" \
+        && ok "Pakete aus requirements.txt installiert." \
+        || warn "pip-Installation aus requirements.txt teilweise fehlgeschlagen — siehe oben."
 else
     warn "requirements.txt nicht gefunden — Pakete direkt installieren."
-    pip3 install --break-system-packages \
-        "PyQt6>=6.4.0" \
-        "pyqtgraph>=0.13.3" \
-        "numpy>=1.24.0" \
-        "pygame>=2.5.0"
+    pip3 install --break-system-packages "PyQt6>=6.4.0" "numpy>=1.24.0" \
+        || warn "PyQt6/numpy konnten nicht per pip installiert werden."
+    # pygame ist OPTIONAL (nur PS4-Controller) — nie ein Abbruchgrund.
+    pip3 install --break-system-packages "pygame>=2.5.0" \
+        || warn "pygame nicht installierbar — GUI läuft ohne Controller-Unterstützung."
 fi
+
+# Endkontrolle: ohne PyQt6 startet die GUI gar nicht, das muss auffallen.
+if python3 -c "import PyQt6.QtQuick" 2>/dev/null; then
+    ok "PyQt6 (inkl. QtQuick) verfügbar."
+else
+    err "PyQt6/QtQuick fehlt — main_qml.py wird nicht starten."
+    err "  Nachinstallieren: sudo apt install python3-pyqt6 python3-pyqt6.qtquick"
+fi
+python3 -c "import pygame" 2>/dev/null \
+    && ok "pygame verfügbar (PS4-Controller einsatzbereit)." \
+    || warn "pygame fehlt — Fast-Params bleiben per Touch bedienbar."
 ok "Python-Abhängigkeiten bereit."
 
 
@@ -205,9 +228,8 @@ for CON in "PowerDebugAP" "RoboDebug" "Hotspot" "WiFi-AP"; do
     nmcli connection delete "$CON" 2>/dev/null && info "  Alt-Verbindung '${CON}' entfernt." || true
 done
 
-# Neuen Hotspot anlegen — SSID/Passwort identisch zu setup_node.sh und
-# platform_utils.setup_hotspot(), damit Zero-Nodes und PC-Testbetrieb
-# ohne Anpassung zusammenpassen.
+# Neuen Hotspot anlegen — SSID/Passwort identisch zu setup_node.sh, damit
+# Zero-Nodes und PC-Testbetrieb ohne Anpassung zusammenpassen.
 nmcli connection add \
     type            wifi \
     ifname          wlan0 \

@@ -7,7 +7,7 @@ Floats + 50 Slow-Bools + 5 Fast-Floats) und für die Overlay-Zuordnung
 in channel_config.h auf dem Teensy, siehe teensy_firmware/src/PDS.cpp für
 den Sende-Mechanismus.
 
-Wire-Format (siehe rpi_zero_node/spi_receiver.py::ChunkFrameAssembler):
+Wire-Format (siehe rpi_zero_node/uart_receiver.py::ChunkFrameAssembler):
   [0..3] magic (CHANNEL_DESC_MAGIC) | [4] chunk_idx | [5] chunk_count |
   [6] payload_len | [7..] UTF-8-JSON-Fragment
 
@@ -25,11 +25,13 @@ Dieses Modul bündelt:
 from __future__ import annotations
 
 import json
+import queue
 import socket
 import struct
 import logging
 import multiprocessing as mp
 from dataclasses import dataclass, field
+from time import monotonic
 
 from config import (
     CHANNEL_DESC_MAGIC, CHANNEL_DESC_HEADER_BYTES,
@@ -57,23 +59,140 @@ class ChannelRegistry:
 
     @classmethod
     def from_json_dict(cls, data: dict) -> "ChannelRegistry":
-        def _int_keyed(d: dict) -> dict[int, str]:
-            return {int(k): v for k, v in d.items()}
+        """Baut die Registry aus dem vom Teensy empfangenen JSON.
+
+        Bewusst defensiv: der Inhalt kommt über eine unzuverlässige
+        UART-/UDP-Strecke. Ein einzelner unplausibler Eintrag darf weder eine
+        Exception im GUI-Poll-Timer auslösen noch den Rest verwerfen.
+        """
+        def _int_keyed(d) -> dict[int, str]:
+            if not isinstance(d, dict):
+                return {}
+            out: dict[int, str] = {}
+            for k, v in d.items():
+                try:
+                    idx = int(k)
+                except (TypeError, ValueError):
+                    continue
+                if idx >= 0 and isinstance(v, str) and v:
+                    out[idx] = v
+            return out
+
+        raw_overlays = data.get("overlays", [])
+        overlays = [o for o in raw_overlays if isinstance(o, dict)] \
+            if isinstance(raw_overlays, list) else []
+
         return cls(
             channel_names=_int_keyed(data.get("channels", {})),
             param_slow_float_names=_int_keyed(data.get("param_slow_floats", {})),
             param_slow_bool_names=_int_keyed(data.get("param_slow_bools", {})),
             param_fast_float_names=_int_keyed(data.get("param_fast_floats", {})),
-            overlays=list(data.get("overlays", [])),
+            overlays=overlays,
             received=True,
         )
+
+    def is_empty(self) -> bool:
+        return not (self.channel_names or self.param_slow_float_names
+                    or self.param_slow_bool_names or self.param_fast_float_names
+                    or self.overlays)
 
     def name_for_channel(self, idx: int, fallback: str) -> str:
         return self.channel_names.get(idx, fallback)
 
 
 # ══════════════════════════════════════════════════════════════════════════
-#  UDP-Empfänger (eigener Prozess) — setzt Chunks zu vollständigem JSON zusammen
+#  DescriptorAssembler — Chunks -> vollständiges JSON
+# ══════════════════════════════════════════════════════════════════════════
+#  Bewusst als eigene, socket-freie Klasse: so ist die knifflige Logik
+#  (Neustart mitten in der Übertragung, Einstieg ohne Chunk 0, Zufallstreffer
+#  im Telemetriestrom) ohne Netzwerk testbar — siehe tools/selftest.py.
+
+# Angefangene, aber nie beendete Übertragung nach dieser Zeit verwerfen.
+DESCRIPTOR_ASSEMBLY_TIMEOUT_S = 5.0
+
+
+class DescriptorAssembler:
+    """Setzt Deskriptor-Chunks zu einem geparsten JSON-Objekt zusammen."""
+
+    def __init__(self) -> None:
+        self._chunks: dict[int, bytes] = {}
+        self._expected: int | None = None
+        self._started_at = 0.0
+        self.rejected = 0        # unplausible/verwaiste Pakete
+        self.completed = 0       # vollständig zusammengesetzte Deskriptoren
+
+    @property
+    def in_progress(self) -> bool:
+        return self._expected is not None
+
+    def reset(self) -> None:
+        self._chunks = {}
+        self._expected = None
+
+    def check_timeout(self, now: float | None = None) -> bool:
+        """True, wenn eine begonnene Übertragung abgelaufen ist (und verworfen
+        wurde). Sonst würde ein abgebrochener Sendevorgang (Teensy-Reset mitten
+        im Deskriptor) mit den Chunks des NÄCHSTEN Versuchs vermischt und ergäbe
+        dauerhaft unlesbares JSON."""
+        if self._expected is None:
+            return False
+        now = monotonic() if now is None else now
+        if now - self._started_at <= DESCRIPTOR_ASSEMBLY_TIMEOUT_S:
+            return False
+        self.reset()
+        return True
+
+    def feed(self, raw: bytes, now: float | None = None) -> dict | None:
+        """Ein UDP-Datagramm einspeisen. Gibt den fertigen Deskriptor zurück,
+        sobald alle Chunks da sind — sonst None."""
+        if len(raw) < CHANNEL_DESC_HEADER_BYTES or raw[:4] != _MAGIC_BYTES:
+            return None
+
+        chunk_idx, chunk_count, payload_len = raw[4], raw[5], raw[6]
+        payload = raw[CHANNEL_DESC_HEADER_BYTES:CHANNEL_DESC_HEADER_BYTES + payload_len]
+        if len(payload) != payload_len or chunk_count == 0 or chunk_idx >= chunk_count:
+            self.rejected += 1
+            return None   # unplausibler Header (z. B. Zufallstreffer im Telemetriestrom)
+
+        # chunk_idx==0 markiert IMMER den Start eines (neuen oder erneuten)
+        # Sendevorgangs -- alten Puffer verwerfen, auch bei identischem
+        # chunk_count (z. B. erneute Anfrage mit unverändertem Deskriptor).
+        if chunk_idx == 0:
+            self._chunks = {}
+            self._expected = chunk_count
+            self._started_at = monotonic() if now is None else now
+        elif self._expected is None:
+            # Mitten in einen laufenden Sendevorgang eingestiegen (GUI später
+            # gestartet als der Teensy): ohne Chunk 0 lässt sich das JSON nicht
+            # zusammensetzen. Verwerfen statt Speicher anzusammeln — der Teensy
+            # wiederholt den Deskriptor von allein (PDS_DESC_REPEAT_MS).
+            self.rejected += 1
+            return None
+        elif chunk_count != self._expected:
+            self.rejected += 1
+            return None   # gehört zu einem anderen Sendevorgang
+
+        self._chunks[chunk_idx] = payload
+        if len(self._chunks) < self._expected:
+            return None
+
+        try:
+            full_json = b"".join(self._chunks[i] for i in range(self._expected)).decode("utf-8")
+            data = json.loads(full_json)
+            if not isinstance(data, dict):
+                raise ValueError("Deskriptor ist kein JSON-Objekt")
+        except (KeyError, ValueError, UnicodeDecodeError) as exc:
+            log.warning("Deskriptor-Parsing fehlgeschlagen: %s", exc)
+            self.reset()
+            return None
+
+        self.reset()
+        self.completed += 1
+        return data
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  UDP-Empfänger (eigener Prozess)
 # ══════════════════════════════════════════════════════════════════════════
 
 def descriptor_receiver_process(
@@ -89,50 +208,37 @@ def descriptor_receiver_process(
     )
     proc_log = logging.getLogger()
 
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    sock.bind(("0.0.0.0", port))
-    sock.settimeout(0.5)
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind(("0.0.0.0", port))
+        sock.settimeout(0.5)
+    except OSError as exc:
+        proc_log.error(f"UDP-Port {port} konnte nicht geöffnet werden: {exc}")
+        return
 
     proc_log.info(f"Lauscht auf :{port}")
-
-    chunks: dict[int, bytes] = {}
-    expected_count: int | None = None
+    assembler = DescriptorAssembler()
 
     while not stop_event.is_set():
         try:
             raw, _addr = sock.recvfrom(CHANNEL_DESC_HEADER_BYTES + 256)
         except socket.timeout:
+            if assembler.check_timeout():
+                proc_log.warning("Unvollständiger Deskriptor verworfen (Zeitüberschreitung).")
             continue
         except OSError:
             break
 
-        if len(raw) < CHANNEL_DESC_HEADER_BYTES or raw[:4] != _MAGIC_BYTES:
+        data = assembler.feed(raw)
+        if data is None:
             continue
-
-        chunk_idx, chunk_count, payload_len = raw[4], raw[5], raw[6]
-        payload = raw[CHANNEL_DESC_HEADER_BYTES:CHANNEL_DESC_HEADER_BYTES + payload_len]
-        if len(payload) != payload_len:
-            continue
-
-        # chunk_idx==0 markiert IMMER den Start eines (neuen oder erneuten)
-        # Sendevorgangs -- alten Puffer verwerfen, auch bei identischem
-        # chunk_count (z. B. erneute Anfrage mit unveraendertem Deskriptor).
-        if chunk_idx == 0:
-            chunks = {}
-            expected_count = chunk_count
-
-        chunks[chunk_idx] = payload
-
-        if expected_count is not None and len(chunks) == expected_count:
-            try:
-                full_json = b"".join(chunks[i] for i in range(expected_count)).decode("utf-8")
-                data = json.loads(full_json)
-                out_queue.put_nowait(data)
-            except (KeyError, ValueError, UnicodeDecodeError) as exc:
-                proc_log.warning(f"Deskriptor-Parsing fehlgeschlagen: {exc}")
-            chunks = {}
-            expected_count = None
+        try:
+            out_queue.put_nowait(data)
+        except queue.Full:
+            # GUI liest gerade nicht — der nächste Deskriptor kommt ohnehin
+            # wieder; keinesfalls den Prozess sterben lassen.
+            proc_log.warning("Deskriptor-Queue voll — Paket verworfen.")
 
     sock.close()
     proc_log.info("Beendet.")
@@ -142,14 +248,22 @@ def descriptor_receiver_process(
 #  Request senden (GUI -> Pi Zero -> Teensy)
 # ══════════════════════════════════════════════════════════════════════════
 
-def send_descriptor_request(node_ip: str, port: int) -> None:
-    """Schickt das 4-Byte-Anforderungspaket fire-and-forget an den Pi-Zero-Node."""
+def send_descriptor_request(node_ip: str, port: int) -> bool:
+    """Schickt das 4-Byte-Anforderungspaket fire-and-forget an den Pi-Zero-Node.
+
+    Gibt True zurück, wenn das Paket abgeschickt werden konnte. Der Socket
+    wird über einen with-Block geschlossen — vorher blieb er bei einem Fehler
+    in sendto() offen, was sich bei wiederholten Fehlversuchen zu einem
+    Handle-Leck aufsummiert hat.
+    """
     try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.sendto(_REQUEST_BYTES, (node_ip, port))
-        sock.close()
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.settimeout(0.5)
+            sock.sendto(_REQUEST_BYTES, (node_ip, port))
+        return True
     except OSError as exc:
         log.warning("Deskriptor-Request an %s:%d fehlgeschlagen: %s", node_ip, port, exc)
+        return False
 
 
 # ══════════════════════════════════════════════════════════════════════════

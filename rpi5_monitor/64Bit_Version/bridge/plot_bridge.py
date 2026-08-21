@@ -95,9 +95,24 @@ class PlotBridge(QObject):
     def statsText(self) -> str:
         return self._stats
 
-    @pyqtProperty("QVariantList", constant=True)
+    @pyqtProperty("QVariantList", notify=variableNamesChanged)
     def variableNames(self):
+        """Auswahlliste des Plotters. War früher `constant=True` — die vom
+        Teensy empfangenen Kanalnamen kamen deshalb nie im Auswahlfeld an,
+        dort stand dauerhaft "Var_000"."""
         return self._names
+
+    def set_names(self, names: dict[int, str]) -> None:
+        """Kanalnamen aus dem Teensy-Deskriptor übernehmen (siehe app_bridge)."""
+        if not names:
+            return
+        changed = False
+        for i, name in names.items():
+            if 0 <= i < len(self._names) and self._names[i] != name:
+                self._names[i] = name
+                changed = True
+        if changed:
+            self.variableNamesChanged.emit()
 
     # ── Slots ──────────────────────────────────────────────────────────────
     @pyqtSlot()

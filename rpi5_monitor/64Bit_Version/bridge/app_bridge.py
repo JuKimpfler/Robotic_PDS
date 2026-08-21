@@ -29,11 +29,29 @@ from bridge.visuals_bridge import VisualsBridge
 log = logging.getLogger("bridge.app")
 
 
+# Wie lange eine Statusmeldung in der Fußzeile stehen bleibt.
+_STATUS_MESSAGE_MS = 6000
+
+# Frühestens so oft dürfen die Kanalnamen automatisch neu angefordert werden.
+# Bewusst träge: jede Anfrage kostet den Teensy ~12 kB UART-Zeit, und auf
+# einer schlechten Funkstrecke soll das nicht im Sekundentakt passieren.
+_NAME_REREQUEST_MIN_INTERVAL_S = 10.0
+
+# Ein Sprung der Teensy-Zeitstempel um mehr als diese Spanne heißt: der Strom
+# war unterbrochen (Funkloch) ODER der Teensy hat neu gestartet.
+_TIMESTAMP_JUMP_US = 1_000_000
+
+# ... und wenn der neue Zeitstempel zusätzlich klein ist, lief micros() gerade
+# erst wieder von vorne los -> echter Neustart, keine bloße Funklücke.
+_TIMESTAMP_FRESH_BOOT_US = 5_000_000
+
+
 class AppBridge(QObject):
     activeNodeChanged = pyqtSignal()
     ppsChanged        = pyqtSignal()
     ledChanged        = pyqtSignal()
     statusMessage      = pyqtSignal(str)
+    statusTextChanged  = pyqtSignal()
 
     def __init__(self, network_manager: NetworkManager, parent=None) -> None:
         super().__init__(parent)
@@ -43,6 +61,24 @@ class AppBridge(QObject):
         self._pps = 0
         self._node_connected = {1: False, 2: False}
         self._node_ips = {1: NODE1_IP, 2: NODE2_IP}
+        self._shutdown_done = False
+
+        # ── Robustheit gegen Neustarts ────────────────────────────────────
+        #  Je Node der zuletzt empfangene Teensy-Zeitstempel und der Zeitpunkt
+        #  der letzten automatischen Namensanfrage (siehe _note_stream_restart).
+        self._last_ts: dict[int, int | None] = {1: None, 2: None}
+        self._last_name_request: dict[int, float] = {1: 0.0, 2: 0.0}
+        # Zuletzt empfangener Deskriptor JE NODE — beim Umschalten wird der
+        # gespeicherte Stand erneut angewendet, statt bis zur nächsten
+        # Übertragung mit den Namen des anderen Nodes weiterzulaufen.
+        self._registry: dict[int, ChannelRegistry | None] = {1: None, 2: None}
+
+        # Statuszeile (Fußzeile): letzte Meldung + Auto-Löschen
+        self._status_text = ""
+        self._status_clear_timer = QTimer(self)
+        self._status_clear_timer.setSingleShot(True)
+        self._status_clear_timer.timeout.connect(self._clear_status_text)
+        self.statusMessage.connect(self._on_status_message)
 
         # ── Sub-Bridges (eine je Tab) ─────────────────────────────────────
         # Bewusst als PRIVATE Attribute (_telemetry etc.) gehalten und über
@@ -113,6 +149,22 @@ class AppBridge(QObject):
     def node2Ip(self):
         return self._node_ips[2]
 
+    @pyqtProperty(str, notify=statusTextChanged)
+    def statusText(self):
+        """Letzte Statusmeldung für die Fußzeile (StatusBar.qml). Vorher wurde
+        `statusMessage` zwar emittiert, aber nirgends angezeigt."""
+        return self._status_text
+
+    # ── Statuszeile ───────────────────────────────────────────────────────
+    def _on_status_message(self, text: str) -> None:
+        self._status_text = text
+        self.statusTextChanged.emit()
+        self._status_clear_timer.start(_STATUS_MESSAGE_MS)
+
+    def _clear_status_text(self) -> None:
+        self._status_text = ""
+        self.statusTextChanged.emit()
+
     # ── Slot: Node-Wechsel (aus NodeSelector.qml) ─────────────────────────
     @pyqtSlot(int)
     def setActiveNode(self, node_id: int) -> None:
@@ -123,6 +175,16 @@ class AppBridge(QObject):
         self._plotter.clearBuffer()
         self._params.set_active_node(node_id)
         self.activeNodeChanged.emit()
+
+        # Namen des jetzt aktiven Nodes wiederherstellen. Liegt noch keiner
+        # vor, einen anfordern — sonst stünden bis zur nächsten regulären
+        # Übertragung die Namen des vorherigen Nodes in der Tabelle.
+        registry = self._registry.get(node_id)
+        if registry is not None:
+            self._apply_registry(registry)
+        else:
+            self._request_channel_names(node_id, reason="Node gewechselt")
+
         self.statusMessage.emit(f"Node {node_id} aktiviert.")
 
     # ── Von main_qml.py / ParamBridge aufgerufen ──────────────────────────
@@ -147,12 +209,13 @@ class AppBridge(QObject):
             q = self._nm.get_queue(nid)
             try:
                 while True:
-                    _nid, _ts, values, sender_ip = q.get_nowait()
+                    _nid, ts, values, sender_ip = q.get_nowait()
                     if nid == self._active_node:
                         batch.append(values)
                     if self._node_ips.get(nid) != sender_ip:
                         self._node_ips[nid] = sender_ip
                         ip_changed = True
+                    self._check_stream_continuity(nid, ts)
                     self._node_last_seen[nid] = now
             except Exception:
                 pass   # Queue leer
@@ -185,28 +248,91 @@ class AppBridge(QObject):
         self._telemetry.update_data(latest)
         self._plotter.append_batch(batch)
 
+    # ── Neustart-/Lückenerkennung ─────────────────────────────────────────
+    def _check_stream_continuity(self, node_id: int, timestamp: int) -> None:
+        """Erkennt am Teensy-Zeitstempel (micros() im Paket-Header), ob der
+        Telemetriestrom unterbrochen war oder der Teensy neu gestartet hat —
+        und fordert dann die Kanalnamen automatisch neu an.
+
+        Die Differenz wird modulo 2^32 gerechnet, damit der reguläre Überlauf
+        von micros() (alle ~71,6 Minuten) NICHT als Neustart durchgeht: dort
+        ist die modulare Differenz weiterhin ~10 000 µs. Nach einem echten
+        Reset beginnt micros() dagegen wieder bei ~0, die modulare Differenz
+        wird dadurch riesig.
+        """
+        prev = self._last_ts.get(node_id)
+        self._last_ts[node_id] = timestamp
+        if prev is None:
+            # Erstes Paket dieses Nodes seit GUI-Start -> Namen anfordern.
+            self._request_channel_names(node_id, reason="Telemetrie gestartet")
+            return
+
+        delta = (timestamp - prev) & 0xFFFF_FFFF
+        if delta <= _TIMESTAMP_JUMP_US:
+            return
+
+        if timestamp < _TIMESTAMP_FRESH_BOOT_US:
+            # micros() läuft wieder bei ~0 los -> der Teensy wurde neu gestartet.
+            # (Er meldet die Namen von sich aus erneut; die Anfrage hier ist die
+            #  zweite Sicherung, falls das Paket auf dem Funkweg verloren geht.)
+            if node_id == self._active_node:
+                # Min/Max und Plotter-Verlauf beziehen sich auf den alten Lauf.
+                self._telemetry.clear_stats()
+                self._plotter.clearBuffer()
+            self._request_channel_names(node_id, reason="Teensy neu gestartet")
+            self.statusMessage.emit(f"Node {node_id}: Teensy neu gestartet.")
+        elif self._registry.get(node_id) is None:
+            # Nur eine Funklücke — Namen aber ohnehin noch nicht bekannt.
+            self._request_channel_names(node_id, reason="Datenlücke, Namen fehlen noch")
+        else:
+            log.debug("Node %d: Telemetrielücke von %.1f s.", node_id, delta / 1e6)
+
+    def _request_channel_names(self, node_id: int, reason: str = "") -> None:
+        """Kanalnamen anfordern, aber höchstens alle paar Sekunden je Node."""
+        now = monotonic()
+        if now - self._last_name_request.get(node_id, 0.0) < _NAME_REREQUEST_MIN_INTERVAL_S:
+            return
+        self._last_name_request[node_id] = now
+        ip = self.get_active_node_ip(node_id)
+        port = (UDP_CHANNEL_DESC_REQUEST_PORT_NODE1 if node_id == 1
+                else UDP_CHANNEL_DESC_REQUEST_PORT_NODE2)
+        send_descriptor_request(ip, port)
+        log.info("Kanalnamen von Node %d (%s) angefordert — %s.", node_id, ip, reason or "manuell")
+
     def _poll_descriptor(self) -> None:
         # Auch hier beide Queues leeren (siehe _poll_data): sonst sammeln
         # sich Deskriptoren des inaktiven Nodes unbegrenzt an und werden beim
         # Umschalten alle auf einmal verarbeitet.
-        data = None
+        received: dict[int, dict] = {}
         for nid in (1, 2):
             q = self._nm.get_desc_queue(nid)
             try:
                 while True:
-                    latest = q.get_nowait()   # nur das neueste Paket interessiert
-                    if nid == self._active_node:
-                        data = latest
+                    received[nid] = q.get_nowait()   # nur das neueste zählt
             except Exception:
                 pass   # Queue leer
 
-        if data is None:
-            return
+        for nid, data in received.items():
+            registry = ChannelRegistry.from_json_dict(data)
+            if registry.is_empty():
+                # Kann bei einem Teensy ohne einen einzigen Namen vorkommen —
+                # dann aber bitte nicht die bereits bekannten Namen löschen.
+                log.debug("Leerer Deskriptor von Node %d ignoriert.", nid)
+                continue
+            self._registry[nid] = registry
+            log.info(
+                "Namens-/Overlay-Deskriptor empfangen (Node %d): "
+                "%d Kanalnamen, %d Overlay-Einträge.",
+                nid, len(registry.channel_names), len(registry.overlays),
+            )
+            if nid == self._active_node:
+                self._apply_registry(registry)
 
-        registry = ChannelRegistry.from_json_dict(data)
-
+    def _apply_registry(self, registry: ChannelRegistry) -> None:
+        """Empfangene Namen/Overlays in alle Tabs übernehmen."""
         VARIABLE_NAMES.update(registry.channel_names)
         self._telemetry.set_names(registry.channel_names)
+        self._plotter.set_names(registry.channel_names)
         self._params.apply_names(
             registry.param_slow_float_names,
             registry.param_slow_bool_names,
@@ -214,20 +340,16 @@ class AppBridge(QObject):
         )
         self._visuals.apply_overlay_defaults_from_registry(registry)
 
-        log.info(
-            "Namens-/Overlay-Deskriptor empfangen (Node %d): %d Kanalnamen, %d Overlay-Einträge.",
-            self._active_node, len(registry.channel_names), len(registry.overlays),
-        )
-
     @pyqtSlot()
     def requestChannelNames(self) -> None:
-        """Von QML aufrufbar (siehe StatusBar.qml/Main.qml) — fordert eine
-        Neuübertragung des Namens-/Overlay-Deskriptors an, da der Teensy ihn
-        sonst nur einmalig beim Boot sendet."""
+        """Von QML aufrufbar (siehe Main.qml) — fordert eine Neuübertragung
+        des Namens-/Overlay-Deskriptors an. Im Normalfall nicht nötig: der
+        Teensy meldet die Namen beim Boot, wiederholt sie solange keine GUI
+        antwortet, und die GUI fragt bei einer Datenlücke selbst nach."""
+        # Beim Klick bewusst ohne Rate-Limit — der Nutzer erwartet eine Aktion.
+        self._last_name_request[self._active_node] = 0.0
+        self._request_channel_names(self._active_node, reason="manuell angefordert")
         ip = self.get_active_node_ip(self._active_node)
-        port = (UDP_CHANNEL_DESC_REQUEST_PORT_NODE1 if self._active_node == 1
-                else UDP_CHANNEL_DESC_REQUEST_PORT_NODE2)
-        send_descriptor_request(ip, port)
         self.statusMessage.emit(f"Kanalnamen von Node {self._active_node} ({ip}) angefordert.")
 
     def _update_pps(self) -> None:
@@ -235,10 +357,21 @@ class AppBridge(QObject):
         self._pkt_count = 0
         self.ppsChanged.emit()
 
+        # Abgestürzte Empfänger-Prozesse neu starten (siehe
+        # NetworkManager.supervise) — ohne das bliebe die Telemetrie eines
+        # Nodes nach einem einzelnen Fehler bis zum GUI-Neustart tot.
+        for name in self._nm.supervise():
+            self.statusMessage.emit(f"Empfänger {name} neu gestartet.")
+
     # ── Aufräumen ──────────────────────────────────────────────────────────
     @pyqtSlot()
     def shutdown(self) -> None:
-        self._params.controller.shutdown()
+        if self._shutdown_done:
+            return
+        self._shutdown_done = True
+        self._poll_timer.stop()
+        self._stat_timer.stop()
+        self._params.shutdown()
         self._nm.stop()
 
     # ── Strg+S in der GUI (siehe Shortcut in qml/Main.qml) ────────────────

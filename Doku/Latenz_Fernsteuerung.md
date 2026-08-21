@@ -9,7 +9,7 @@ Betroffener Pfad (der „Fast-Kanal“, 5 Floats, 100 Hz):
 
 ```
 PS4-Controller ─USB─▶ RPi 5 / PC (GUI) ─WLAN/UDP :7011─▶ RPi Zero 2 W ─UART─▶ Teensy 4.0
-                      controller_bridge     param_bridge      spi_receiver        PDS.cpp
+                      controller_bridge     param_bridge      uart_receiver        PDS.cpp
 ```
 
 ---
@@ -92,7 +92,7 @@ Der Node lernt jetzt die Adresse der GUI aus den eingehenden Param-Paketen
 und sendet danach per Unicast. Solange nichts gelernt wurde (und wenn länger
 als 10 s nichts mehr von der GUI kam), bleibt es beim Broadcast — das
 Verhalten ist also **nie schlechter als vorher**, siehe `TelemetryTarget`
-in `rpi_zero_node/spi_receiver.py`.
+in `rpi_zero_node/uart_receiver.py`.
 
 ### 1.4 Zwei ungekoppelte 10-ms-Timer in der GUI  (mittel)
 
@@ -232,7 +232,7 @@ In dieser Reihenfolge prüfen — von „kostet nichts“ zu „kostet Aufwand�
    irgendwo (`delay()`, langsame I2C-Sensoren), wirkt sich das 1:1 auf die
    Reaktionszeit aus.
 5. **Baudrate erhöhen.** `UART_DBG_BAUD` in `params.h` und `UART_BAUD` in
-   `spi_receiver.py` **gemeinsam** auf 2 Mbps. Der Uplink liegt bei 1 Mbps
+   `uart_receiver.py` **gemeinsam** auf 2 Mbps. Der Uplink liegt bei 1 Mbps
    schon bei ~81 % Auslastung; darüber gibt es keine Reserve mehr für die
    Deskriptor-Chunks.
 
@@ -244,7 +244,7 @@ In dieser Reihenfolge prüfen — von „kostet nichts“ zu „kostet Aufwand�
 |---|---|
 | `teensy_firmware/src/PDS.cpp` | Parser-Fix (1.1), RX-Puffer (1.2), `sampleBoundChannels()` nur noch vor dem Packen, Deskriptor-Chunk nur bei freiem TX-Puffer, Bereichsprüfung in `DBG()`, Überlauf-Fix im JSON-Bau |
 | `teensy_firmware/src/PDS.h` | Diagnose-Zähler + `fastParamAgeMs()`, korrigierter Kopfkommentar (808 statt 1608 Byte), `enum.h` optional |
-| `rpi_zero_node/spi_receiver.py` | Unicast-Ziel (1.3), Coalescing überholter Pakete, `ioctl` statt `subprocess`, Teilschreib-Erkennung, Deskriptor-Assembler ohne Dauerkopieren |
+| `rpi_zero_node/uart_receiver.py` | Unicast-Ziel (1.3), Coalescing überholter Pakete, `ioctl` statt `subprocess`, Teilschreib-Erkennung, Deskriptor-Assembler ohne Dauerkopieren |
 | `.../bridge/controller_bridge.py` | kein eigener Timer mehr (1.4), UI-Drosselung, Event-Queue leeren, Warmup gegen Trigger-Fehlstand, konfigurierbares Mapping |
 | `.../bridge/param_bridge.py` | Poll+Senden im selben Tick (1.4), `PreciseTimer`, nicht-blockierender Socket, Drop-Zähler |
 | `.../bridge/app_bridge.py` | beide Node-Queues leeren, LED-Timeout |

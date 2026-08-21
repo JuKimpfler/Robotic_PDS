@@ -1,6 +1,22 @@
 #pragma once
 #include <Arduino.h>
 
+// ============================================================
+//  params.h — Wire-Format und Verdrahtung des Power Debug System
+// ============================================================
+//  ACHTUNG: Alles in diesem Abschnitt ist WIRE-FORMAT. Jede Aenderung muss
+//  gleichzeitig in
+//      rpi_zero_node/uart_receiver.py            und
+//      rpi5_monitor/64Bit_Version/config.py
+//  nachgezogen werden, sonst verwirft der Node stillschweigend jedes Paket.
+//  Der Test tools/check_wire_format.py prueft genau das automatisch.
+// ============================================================
+
+// Wird bei jeder inkompatiblen Aenderung des Wire-Formats hochgezaehlt und
+// von tools/check_wire_format.py gegen die Python-Seite geprueft.
+#define PDS_WIRE_VERSION 1
+
+// ── Projektspezifische I2C-Zuordnung (nicht Teil des PDS-Protokolls) ──
 #define I2C_BNO Wire1
 #define I2C_IR Wire1
 #define I2C_SW Wire1

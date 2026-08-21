@@ -25,7 +25,7 @@
 ┌───────────────────────────┐  UDP unicast, 2 Hz (Slow)   ┌──────────────────────┐  UART_DBG RX  ┌─────────────────────┐
 │  RPi 5 — GUI (PyQt6)       │ ───────────────────────────▶│  RPi Zero 2 W (Node)  │──────────────▶│  Teensy 4.0          │
 │  tab_params.py             │  Port 7001 / 7002            │  uart_receiver.py     │  1 MBaud       │  PowerDebugger        │
-│  ParamStore (slow + fast)  │                              │  (aus spi_receiver.py)│               │  (PDS.h / PDS.cpp)    │
+│  ParamStore (slow + fast)  │                              │  (aus uart_receiver.py)│               │  (PDS.h / PDS.cpp)    │
 │                             │  UDP unicast, 100 Hz (Fast) │                       │               │                       │
 │                             │ ───────────────────────────▶│  + 2 UDP-Listener-    │──────────────▶│  g_paramFloats[50]    │
 │                             │  Port 7011 / 7012            │    Threads → UART_DBG │               │  g_paramBools[50]     │
@@ -258,9 +258,9 @@ bool PowerDebugger::fastParamsAreFresh() const {
 
 ---
 
-## 5. Phase 2 — RPi Zero 2 W: `spi_receiver.py` (installiert als `uart_receiver.py`)
+## 5. Phase 2 — RPi Zero 2 W: `uart_receiver.py`
 
-Das Umbenennungs-Problem aus Plan v1 ist bei euch bereits gelöst — `setup_node.sh` kopiert `spi_receiver.py` beim Setup automatisch nach `uart_receiver.py`. Die neuen Threads werden direkt in `spi_receiver.py` ergänzt.
+Die Datei hiess frueher `spi_receiver.py` (Altlast aus der SPI-Zeit) und wurde von `setup_node.sh` beim Setup nach `uart_receiver.py` umbenannt. Seit dem Aufraeumen heisst sie im Repository genauso wie auf dem Node.
 
 ### 5.1 Konstanten
 
@@ -1214,7 +1214,7 @@ Erweitert gegenüber Plan v1 um den Fast-Kanal:
 ## 12. Reihenfolge der Umsetzung (aktualisiert, Phase 0 aus v1 entfällt)
 
 1. **Phase 1** — `params.h`: neue Konstanten. `PDS.h`/`PDS.cpp`: `pollParamUart()`, Getter, Watchdogs
-2. **Phase 2** — `spi_receiver.py`: zwei Downlink-Threads + Schreib-Lock, `args=(stop_event,)`-Fix
+2. **Phase 2** — `uart_receiver.py`: zwei Downlink-Threads + Schreib-Lock, `args=(stop_event,)`-Fix
 3. **Phase 3** — `config.py`: neue Konstanten (Ports, Paketgrößen, Dateipfade)
 4. **Phase 4** — `param_config.json` anlegen, `param_io.py`: `load_param_config()` + Dataclasses
 5. **Phase 5** — `param_io.py`: `write_param_defaults_h()` / `read_param_defaults_h()`

@@ -6,13 +6,13 @@
 # ==============================================================================
 #
 #  AUFRUF:
-#    sudo bash setup_node_zero2w.sh 1    → Node 1 einrichten (DHCP via RPi 5 AP)
-#    sudo bash setup_node_zero2w.sh 2    → Node 2 einrichten (DHCP via RPi 5 AP)
+#    sudo bash setup_node.sh 1    → Node 1 einrichten (DHCP via RPi 5 AP)
+#    sudo bash setup_node.sh 2    → Node 2 einrichten (DHCP via RPi 5 AP)
 #
 #  WICHTIGER UNTERSCHIED ZUM PI ZERO W:
 #    • 64-bit OS (arm64/aarch64) statt 32-bit (armhf/armv6)
 #    • python3-rpi.gpio ist deprecated → lgpio wird zusätzlich installiert
-#    • status_leds.py nutzt RPi.GPIO → funktioniert weiterhin, lgpio als Fallback
+#    • status_leds.py nutzt gpiozero (Pin-Factory lgpio)
 #    • Höhere Baudraten (bis 8 Mbps) zuverlässiger auf BCM2710A1
 #    • Quad-Core: Python-Services laufen paralleler ohne GIL-Probleme
 #
@@ -80,7 +80,7 @@ step()  { echo -e "\n${BOLD}══ $* ══${NC}"; }
 # ── Argument prüfen ───────────────────────────────────────────────────────────
 NODE_ID="${1:-}"
 if [[ "$NODE_ID" != "1" && "$NODE_ID" != "2" ]]; then
-    error "Bitte Node-ID angeben: sudo bash setup_node_zero2w.sh 1  ODER  2"
+    error "Bitte Node-ID angeben: sudo bash setup_node.sh 1  ODER  2"
 fi
 
 # ── Prüfen: läuft das Skript auf einem Pi Zero 2 W? ──────────────────────────
@@ -92,7 +92,7 @@ if command -v raspi-config &>/dev/null || [[ -f /proc/device-tree/model ]]; then
     elif echo "$BOARD_MODEL" | grep -qi "Zero W"; then
         warn "Board ist ein Pi Zero W (nicht Zero 2 W)!"
         warn "Dieses Skript ist für den Pi Zero 2 W optimiert."
-        warn "Für Pi Zero W bitte setup_node.sh (32-bit Version) verwenden."
+        warn "Auf dem alten Pi Zero W (armv6) ist der 100-Hz-Durchsatz nicht garantiert."
         warn "Fortfahren in 5 Sekunden... (Strg+C zum Abbrechen)"
         sleep 5
     fi
@@ -118,7 +118,7 @@ SERVICE_RECV="uart-receiver"
 PROJECT_SRC="$(dirname "$(realpath "$0")")"
 
 # ── Root-Check ────────────────────────────────────────────────────────────────
-[[ $EUID -ne 0 ]] && error "Bitte mit sudo ausführen: sudo bash setup_node_zero2w.sh $NODE_ID"
+[[ $EUID -ne 0 ]] && error "Bitte mit sudo ausführen: sudo bash setup_node.sh $NODE_ID"
 
 echo -e "${BOLD}"
 echo "╔══════════════════════════════════════════════════════════╗"
@@ -164,24 +164,24 @@ apt-get install -y --no-install-recommends \
 #   und SPP-Profil stattdessen direkt über D-Bus (python3-dbus/python3-gi),
 #   die auf Legacy- wie auf aktuellen Images identisch verfügbar sind.
 
-# ── RPi.GPIO: auf 64-bit Pi OS Bookworm noch verfügbar, aber deprecated ───────
-# Für status_leds.py wird RPi.GPIO benötigt (direkter GPIO-Zugriff)
-# lgpio ist die moderne Alternative, status_leds.py würde aber Anpassungen brauchen.
-# Wir installieren beide — RPi.GPIO für bestehenden Code, lgpio für zukünftige Änderungen.
-info "Installiere GPIO-Bibliotheken..."
-if apt-get install -y --no-install-recommends python3-rpi.gpio 2>/dev/null; then
-    ok "python3-rpi.gpio installiert (für status_leds.py Kompatibilität)"
+# ── GPIO: status_leds.py nutzt gpiozero (mit lgpio als Pin-Factory) ──────────
+# Beide Pakete sind oben in der apt-Liste enthalten (python3-gpiozero,
+# python3-lgpio). Das frueher hier nachinstallierte, auf 64-bit deprecated
+# RPi.GPIO wird nicht mehr gebraucht — status_leds.py benutzt es nicht.
+if python3 -c "import gpiozero" 2>/dev/null; then
+    ok "gpiozero verfügbar (Status-LEDs einsatzbereit)"
 else
-    warn "python3-rpi.gpio nicht im apt-Repo gefunden (auf 64-bit deprecated)"
-    warn "Versuche Installation via pip..."
-    pip3 install --break-system-packages RPi.GPIO && ok "RPi.GPIO via pip installiert" \
-        || warn "RPi.GPIO nicht installierbar — status_leds.py-LEDs werden deaktiviert"
+    warn "gpiozero nicht verfügbar — die Status-LEDs bleiben dunkel."
+    warn "  Nachinstallieren: sudo apt install python3-gpiozero python3-lgpio"
 fi
 
-# pip-Pakete die nicht als apt-Paket verfügbar sind
+# pip-Pakete die nicht als apt-Paket verfügbar sind.
+# Ein Fehlschlag darf das Setup NICHT abbrechen (set -e): python3-serial ist
+# oben bereits per apt installiert, der pip-Aufruf ist nur die Absicherung
+# fuer den Fall einer sehr alten apt-Version.
 info "Installiere Python-Pakete via pip..."
-pip3 install --break-system-packages \
-    pyserial
+pip3 install --break-system-packages pyserial \
+    || warn "pip-Installation von pyserial fehlgeschlagen — apt-Version (python3-serial) wird verwendet."
 
 ok "Pakete installiert"
 
@@ -199,8 +199,8 @@ fi
 
 # ── Paketversionen zur Diagnose ausgeben ──────────────────────────────────────
 python3 -c "import serial; print(f'   pyserial:  {serial.VERSION}')" 2>/dev/null || true
-python3 -c "import RPi.GPIO as G; print(f'   RPi.GPIO:  {G.VERSION}')" 2>/dev/null || \
-    python3 -c "import lgpio; print(f'   lgpio:     (verfügbar)')" 2>/dev/null || true
+python3 -c "import gpiozero; print(f'   gpiozero:  {gpiozero.__version__}')" 2>/dev/null || true
+python3 -c "import lgpio; print('   lgpio:     (verfuegbar)')" 2>/dev/null || true
 
 # ══════════════════════════════════════════════════════════════════════════════
 step "2 | UART freischalten (PL011 auf GPIO14/15)"
@@ -217,9 +217,9 @@ step "2 | UART freischalten (PL011 auf GPIO14/15)"
 #                            → Pi Zero 2 W unterstützt zuverlässig auch 4 Mbps+
 #  dtoverlay=uart0:         GPIO14/15 als UART0/PL011 konfigurieren
 #
-#  Hinweis Verdrahtung (Baudrate muss in spi_receiver.py UND main.cpp übereinstimmen):
-#    Teensy Serial3 TX (Pin 14) → RPi GPIO15 (Pin 10, UART RX)  ← aktuell Serial3!
-#    Teensy Serial3 RX (Pin 15) ← RPi GPIO14 (Pin 8,  UART TX)  ← optional
+#  Hinweis Verdrahtung (Baudrate: UART_BAUD in uart_receiver.py == UART_DBG_BAUD in params.h):
+#    Teensy TX3 (Pin 14) → RPi GPIO15 (Pin 10, UART RX)   [UART_DBG, siehe params.h]
+#    Teensy RX3 (Pin 15) ← RPi GPIO14 (Pin 8,  UART TX)   [PFLICHT fuer den Param-Downlink]
 #    GND                        ─  RPi GND   (Pin 6)
 #
 CONFIG="/boot/firmware/config.txt"
@@ -348,24 +348,29 @@ mkdir -p "$INSTALL_DIR"
 mkdir -p "$INSTALL_DIR/rpi_zero_node"
 touch "$INSTALL_DIR/rpi_zero_node/__init__.py"
 
-# status_leds.py — GPIO-Controller (RPi.GPIO)
+# status_leds.py — GPIO-Status-LEDs (gpiozero)
+# WICHTIG: liegt NEBEN uart_receiver.py, nicht darunter — uart_receiver.py
+# importiert es direkt ("from status_leds import StatusLEDs"), und der
+# Dienst startet mit WorkingDirectory=$INSTALL_DIR. Frueher wurde es nur
+# nach $INSTALL_DIR/rpi_zero_node/ kopiert (zweimal sogar, identisches
+# Ziel) — der Import ist deshalb immer stillschweigend fehlgeschlagen und
+# die im README beschriebenen LEDs blieben dunkel.
 if [[ -f "$PROJECT_SRC/status_leds.py" ]]; then
-    cp "$PROJECT_SRC/status_leds.py" "$INSTALL_DIR/rpi_zero_node/"
-    cp "$PROJECT_SRC/status_leds.py" "$INSTALL_DIR/rpi_zero_node/status_leds.py"
+    cp "$PROJECT_SRC/status_leds.py" "$INSTALL_DIR/status_leds.py"
     ok "status_leds.py installiert"
 else
     warn "status_leds.py nicht gefunden — LEDs deaktiviert"
 fi
 
-# UART-Receiver (spi_receiver.py)
-if [[ -f "$PROJECT_SRC/spi_receiver.py" ]]; then
-    cp "$PROJECT_SRC/spi_receiver.py" "$INSTALL_DIR/uart_receiver.py"
-    ok "uart_receiver.py installiert (aus spi_receiver.py)"
-elif [[ -f "$PROJECT_SRC/uart_receiver.py" ]]; then
+# UART-Receiver (hiess vor dem Aufraeumen spi_receiver.py)
+if [[ -f "$PROJECT_SRC/uart_receiver.py" ]]; then
     cp "$PROJECT_SRC/uart_receiver.py" "$INSTALL_DIR/uart_receiver.py"
     ok "uart_receiver.py installiert"
+elif [[ -f "$PROJECT_SRC/spi_receiver.py" ]]; then
+    cp "$PROJECT_SRC/spi_receiver.py" "$INSTALL_DIR/uart_receiver.py"
+    ok "uart_receiver.py installiert (aus altem spi_receiver.py)"
 else
-    warn "uart_receiver.py / spi_receiver.py nicht gefunden!"
+    error "uart_receiver.py nicht gefunden — ohne sie hat der Node keine Funktion."
 fi
 
 
@@ -405,11 +410,21 @@ ok "Projektdateien installiert"
 step "5 | Systemdienst: uart-receiver"
 # ══════════════════════════════════════════════════════════════════════════════
 
+# Hinweise zu den Optionen:
+#   * Restart=always statt on-failure — der Dienst soll auch nach einem
+#     sauberen Beenden (SIGTERM durch ein Update, Exit 0) wieder anlaufen.
+#   * StartLimitIntervalSec/StartLimitBurst gehoeren in den [Unit]-Abschnitt.
+#     Im [Service]-Abschnitt (so stand es vorher hier) ignoriert systemd sie
+#     und schreibt bei jedem Start eine Warnung ins Journal.
+#   * RestartSec=2s: der Node ist der einzige Weg zur Telemetrie, eine
+#     kurze Wiederanlaufzeit ist wichtiger als Log-Ruhe.
 cat > /etc/systemd/system/${SERVICE_RECV}.service << SVCEOF
 [Unit]
 Description=Power Debug UART Receiver (Node ${NODE_ID}) — RPi Zero 2 W
 After=network-online.target
 Wants=network-online.target
+StartLimitIntervalSec=60s
+StartLimitBurst=10
 
 [Service]
 Type=simple
@@ -419,10 +434,8 @@ Environment="NODE_ID=${NODE_ID}"
 Environment="RPI5_IP=${RPI5_IP}"
 Environment="PYTHONUNBUFFERED=1"
 ExecStart=/usr/bin/python3 ${INSTALL_DIR}/uart_receiver.py
-Restart=on-failure
-RestartSec=5s
-StartLimitInterval=60s
-StartLimitBurst=5
+Restart=always
+RestartSec=2s
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=uart-receiver
@@ -455,6 +468,8 @@ Description=Power Debug Bluetooth Flash Receiver (Node ${NODE_ID}) — RPi Zero 
 After=bluetooth.target bluetooth.service dbus.service
 Wants=bluetooth.target
 Requires=dbus.service
+StartLimitIntervalSec=60s
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -465,10 +480,8 @@ Environment="INSTALL_DIR=${INSTALL_DIR}"
 Environment="BT_FLASH_CHANNEL=${BT_CHANNEL}"
 Environment="PYTHONUNBUFFERED=1"
 ExecStart=/usr/bin/python3 ${INSTALL_DIR}/rpi_zero_node/bt_flash_receiver.py
-Restart=on-failure
+Restart=always
 RestartSec=5s
-StartLimitInterval=60s
-StartLimitBurst=5
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=bt-flash-receiver
@@ -503,7 +516,10 @@ step "7 | Verifizierung"
 
 echo ""
 info "──── $CONFIG (relevante Einträge) ────"
-grep -E "dtoverlay|enable_uart|dtparam=spi|uart0|init_uart_clock" "$CONFIG" | \
+# In geschweifte Klammern + "|| true": findet grep nichts, wuerde die Pipeline
+# unter "set -o pipefail" fehlschlagen und "set -e" das Skript kurz vor der
+# Abschlussmeldung abbrechen.
+{ grep -E "dtoverlay|enable_uart|dtparam=spi|uart0|init_uart_clock" "$CONFIG" || true; } |
     while IFS= read -r line; do echo "   $line"; done
 
 echo ""
@@ -518,9 +534,9 @@ echo ""
 info "──── Python-Pakete ────"
 python3 -c "import serial; print(f'   ✅ pyserial {serial.VERSION}')" 2>/dev/null || \
     echo "   ❌ pyserial fehlt"
-python3 -c "import RPi.GPIO as G; print(f'   ✅ RPi.GPIO {G.VERSION}')" 2>/dev/null || \
-    echo "   ⚠️  RPi.GPIO nicht gefunden (LEDs deaktiviert)"
-python3 -c "import lgpio; print('   ✅ lgpio (moderne GPIO-Alternative)')" 2>/dev/null || \
+python3 -c "import gpiozero; print(f'   ✅ gpiozero {gpiozero.__version__}')" 2>/dev/null || \
+    echo "   ⚠️  gpiozero nicht gefunden (Status-LEDs deaktiviert)"
+python3 -c "import lgpio; print('   ✅ lgpio (Pin-Factory für gpiozero)')" 2>/dev/null || \
     echo "   ⚠️  lgpio nicht gefunden"
 
 echo ""
@@ -560,12 +576,12 @@ fi
 
 echo ""
 info "──── Verdrahtung (Teensy ↔ RPi Zero 2 W) ────"
-echo "   ACHTUNG: main.cpp nutzt Serial3 (nicht Serial1)!"
+echo "   Teensy nutzt UART_DBG (Default Serial3, siehe params.h)"
 echo "   Teensy Pin 14 (TX3) → RPi GPIO15 (Pin 10, UART RX)"
-echo "   Teensy Pin 15 (RX3) ← RPi GPIO14 (Pin 8,  UART TX)  [optional]"
+echo "   Teensy Pin 15 (RX3) ← RPi GPIO14 (Pin 8,  UART TX)  [PFLICHT]"
 echo "   GND                 ─  RPi GND   (Pin 6)"
 echo ""
-echo "   Baudrate in spi_receiver.py und main.cpp: 1.000.000 Baud (1 Mbps)"
+echo "   Baudrate: UART_BAUD (uart_receiver.py) == UART_DBG_BAUD (params.h) = 1 Mbps"
 echo "   Pi Zero 2 W unterstützt zuverlässig bis 4 Mbps (Kabel < 20 cm)"
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -596,8 +612,8 @@ echo "║     Bootloader versetzt (siehe bt_flash_receiver.py).    ║"
 echo "║     Klappt nur bei Sketches mit USB-Typ 'Serial'.        ║"
 echo "║                                                          ║"
 echo "║   Hinweis Verdrahtung:                                   ║"
-echo "║     Teensy nutzt Serial3 (Pin 14/15), nicht Serial1!     ║"
-echo "║     Baudrate: 1 Mbps (in spi_receiver.py + main.cpp)     ║"
+echo "║     Teensy nutzt Serial3 (Pin 14/15) = UART_DBG          ║"
+echo "║     Baudrate: 1 Mbps (uart_receiver.py + params.h)       ║"
 echo "║                                                          ║"
 echo "╚══════════════════════════════════════════════════════════╝"
 echo -e "${NC}"

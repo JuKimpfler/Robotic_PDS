@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-spi_receiver.py — RPi Zero W Node  (v6 — Unicast-Telemetrie + Fast-Coalescing)
+uart_receiver.py — RPi Zero W Node  (v6 — Unicast-Telemetrie + Fast-Coalescing)
 ==========================================================
 Liest Binärpakete vom Teensy 4.0 über UART und leitet sie sofort als
 UDP-Datagramm an den RPi 5 weiter. Empfängt außerdem zwei Param-Downlink-
@@ -109,6 +109,19 @@ except ImportError:       # pragma: no cover  (erlaubt Import/Lint unter Windows
 
 import serial
 
+# status_leds.py liegt im selben Verzeichnis. Fehlt es (oder fehlt gpiozero),
+# liefert der Import-Fallback eine funktionslose Attrappe — die Weiterleitung
+# darf niemals an den LEDs scheitern.
+try:
+    from status_leds import StatusLEDs
+except Exception:         # pragma: no cover
+    class StatusLEDs:     # type: ignore[no-redef]
+        def start(self) -> None: ...
+        def stop(self) -> None: ...
+        def startup_sequence(self) -> None: ...
+        def set_network(self, connected: bool) -> None: ...
+        def blink_data(self) -> None: ...
+
 # ── Konfiguration: Telemetrie ────────────────────────────────────────────────
 NODE_ID      = int(os.environ.get("NODE_ID", "1"))
 RPI5_IP      = os.environ.get("RPI5_IP", "192.168.42.1")
@@ -157,6 +170,7 @@ UDP_PARAM_FAST_PORT     = 7010 + NODE_ID   # 7011 / 7012
 CHANNEL_DESC_MAGIC          = 0xDE5C0001
 CHANNEL_DESC_MAGIC_BYTES    = struct.pack("<I", CHANNEL_DESC_MAGIC)
 CHANNEL_DESC_HEADER_BYTES   = 7    # magic(4) + chunk_idx(1) + chunk_count(1) + payload_len(1)
+CHANNEL_DESC_CHUNK_PAYLOAD_MAX = 250   # muss mit params.h uebereinstimmen
 UDP_CHANNEL_DESC_PORT       = 5010 + NODE_ID   # 5011 / 5012
 
 CHANNEL_DESC_REQUEST_MAGIC        = 0xDE5C00F0
@@ -258,6 +272,25 @@ class ChunkFrameAssembler:
         self._buf = bytearray()   # nur belegt, solange ein Chunk unvollstaendig ist
         self._tail = b""          # letzte <=3 Bytes des vorherigen Blocks
         self.packets_out = 0
+        self.false_magics = 0     # Zufallstreffer im Telemetriestrom
+
+    @staticmethod
+    def _header_plausible(buf) -> bool:
+        """Plausibilitaetspruefung des Chunk-Headers.
+
+        Der Deskriptor-Assembler laeuft auf demselben Rohbyte-Strom wie die
+        Telemetrie. Deren Nutzdaten sind beliebige Float-Bytes — mit kleiner,
+        aber nicht verschwindender Wahrscheinlichkeit steht darin irgendwann
+        zufaellig die 4-Byte-Folge des Deskriptor-Magic. Ohne diese Pruefung
+        haette der Node daraufhin ein Muellpaket an die GUI geschickt, das
+        dort einen gerade laufenden Deskriptor-Zusammenbau zerstoert.
+        chunk_idx < chunk_count und payload_len <= MAX sortieren praktisch
+        alle Zufallstreffer aus.
+        """
+        chunk_idx, chunk_count, payload_len = buf[4], buf[5], buf[6]
+        return (chunk_count > 0
+                and chunk_idx < chunk_count
+                and payload_len <= CHANNEL_DESC_CHUNK_PAYLOAD_MAX)
 
     def feed(self, chunk: bytes) -> list[bytes]:
         if not chunk:
@@ -290,6 +323,12 @@ class ChunkFrameAssembler:
 
             if len(self._buf) < CHANNEL_DESC_HEADER_BYTES:
                 break   # Header noch nicht vollständig da
+
+            if not self._header_plausible(self._buf):
+                # Zufallstreffer: ein Byte weiterruecken und neu suchen.
+                self.false_magics += 1
+                del self._buf[:1]
+                continue
 
             payload_len = self._buf[6]
             total_len = CHANNEL_DESC_HEADER_BYTES + payload_len
@@ -390,6 +429,34 @@ class TelemetryTarget:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+#  UART öffnen / nach einem Fehler neu öffnen
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _open_uart() -> "serial.Serial":
+    ser = serial.Serial(
+        port         = UART_PORT,
+        baudrate     = UART_BAUD,
+        bytesize     = serial.EIGHTBITS,
+        parity       = serial.PARITY_NONE,
+        stopbits     = serial.STOPBITS_ONE,
+        timeout      = 0,      # nicht-blockierend: read() liefert sofort, was da ist
+        # write_timeout war 0 (nicht-blockierend). pyserial gibt dann bei
+        # einem vollen Kernel-Puffer die Zahl der TATSAECHLICH geschriebenen
+        # Bytes zurueck, ohne Fehler -- ein halb geschriebenes Param-Paket
+        # bringt den Teensy-Parser aus dem Tritt. Der Downlink ist mit
+        # ~3.3 kB/s gegen 100 kB/s Leitungskapazitaet so schmal, dass dieser
+        # Fall praktisch nie eintritt; falls doch, wartet write() jetzt lieber
+        # kurz, statt den Bytestrom zu zerreissen.
+        write_timeout = 0.05,
+        xonxoff      = False,
+        rtscts       = False,
+        dsrdtr       = False,
+    )
+    ser.reset_input_buffer()
+    return ser
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 #  Hauptfunktion — einthreadige Event-Loop
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -417,33 +484,13 @@ def main() -> None:
 
     # ── UART öffnen (nicht-blockierend lesen: timeout=0 -> read() kehrt sofort zurück) ──
     try:
-        ser = serial.Serial(
-            port         = UART_PORT,
-            baudrate     = UART_BAUD,
-            bytesize     = serial.EIGHTBITS,
-            parity       = serial.PARITY_NONE,
-            stopbits     = serial.STOPBITS_ONE,
-            timeout      = 0,      # nicht-blockierend: read() liefert sofort, was da ist
-            # write_timeout war 0 (nicht-blockierend). pyserial gibt dann bei
-            # einem vollen Kernel-Puffer die Zahl der TATSAECHLICH
-            # geschriebenen Bytes zurueck, ohne Fehler -- ein halb
-            # geschriebenes Param-Paket bringt den Teensy-Parser aus dem
-            # Tritt. Der Downlink ist mit ~3.3 kB/s gegen 100 kB/s
-            # Leitungskapazitaet so schmal, dass dieser Fall praktisch nie
-            # eintritt; falls doch, wartet write() jetzt lieber kurz, statt
-            # den Bytestrom zu zerreissen.
-            write_timeout = 0.05,
-            xonxoff      = False,
-            rtscts       = False,
-            dsrdtr       = False,
-        )
+        ser = _open_uart()
     except serial.SerialException as exc:
         log.error(f"UART {UART_PORT} konnte nicht geöffnet werden: {exc}")
-        log.error("→ Prüfe: dtoverlay=disable-bt in /boot/firmware/config.txt?")
+        log.error("→ Prüfe: dtoverlay=miniuart-bt in /boot/firmware/config.txt?")
         log.error("→ Prüfe: console=serial0,... in cmdline.txt entfernt?")
         raise SystemExit(1)
 
-    ser.reset_input_buffer()
     log.info(f"UART {UART_PORT} geöffnet — warte auf ersten Teensy-Frame...")
 
     # ── UDP Socket (Telemetrie, Broadcast an RPi 5) ─────────────────────────────
@@ -465,7 +512,7 @@ def main() -> None:
     desc_request_sock.setblocking(False)
     desc_request_sock.bind(("0.0.0.0", UDP_CHANNEL_DESC_REQUEST_PORT))
 
-    # ── Event-Loop: alle fünf Quellen (UART, 4× UDP) über EINEN Selector ───────
+    # ── Event-Loop: alle vier Quellen (UART, 3× UDP) über EINEN Selector ──────
     sel = selectors.DefaultSelector()
     sel.register(ser.fileno(), selectors.EVENT_READ, data="uart")
     sel.register(slow_sock, selectors.EVENT_READ, data="param_slow")
@@ -475,6 +522,11 @@ def main() -> None:
     assembler = TelemetryFrameAssembler()
     desc_assembler = ChunkFrameAssembler()
     target = TelemetryTarget()
+
+    # ── Status-LEDs (optional, siehe status_leds.py) ───────────────────────────
+    leds = StatusLEDs()
+    leds.start()
+    leds.startup_sequence()
 
     # ── Statistik ────────────────────────────────────────────────────────────
     pkt_sent      = 0
@@ -488,17 +540,25 @@ def main() -> None:
     desc_pkt_sent = 0
     last_sync_losses = 0
 
-    t_stat_start   = time.monotonic()
-    t_last_netcheck = time.monotonic()
+    t_stat_start     = time.monotonic()
+    t_last_netcheck  = time.monotonic()
+    t_last_uart_retry = 0.0
+
+    # Ein einziger Fehlerzustand fuer die UART: sobald Lesen oder Schreiben
+    # fehlschlaegt, wird die Schnittstelle in der Hauptschleife geschlossen
+    # und neu geoeffnet, statt den Prozess sterben zu lassen (systemd haette
+    # ihn zwar neu gestartet, aber mit mehreren Sekunden Ausfall).
+    state = {"ser": ser, "broken": False}
 
     def uart_write(data: bytes, tag: str) -> bool:
         """Schreibt ein komplettes Paket auf die UART. Ein Teilschreibvorgang
         wuerde den Paketstrom fuer den Teensy-Parser zerreissen, deshalb wird
         er als Fehler behandelt und geloggt statt still hingenommen."""
         try:
-            written = ser.write(data)
-        except serial.SerialException as exc:
+            written = state["ser"].write(data)
+        except (serial.SerialException, OSError) as exc:
             log.warning(f"[{tag}] UART-Schreibfehler: {exc}")
+            state["broken"] = True
             return False
         if written is not None and written != len(data):
             log.warning(f"[{tag}] UART-Teilschreibvorgang: {written}/{len(data)} Bytes")
@@ -544,8 +604,15 @@ def main() -> None:
             for key, _mask in events:
                 if key.data == "uart":
                     # Nicht-blockierend: liefert sofort 0..N verfügbare Bytes
-                    chunk = ser.read(4096)
+                    try:
+                        chunk = state["ser"].read(4096)
+                    except (serial.SerialException, OSError) as exc:
+                        log.warning(f"UART-Lesefehler: {exc}")
+                        state["broken"] = True
+                        continue
                     dest = target.resolve()
+                    if chunk:
+                        leds.blink_data()
 
                     for raw in assembler.feed(chunk):
                         try:
@@ -610,6 +677,31 @@ def main() -> None:
                         if uart_write(data, "Fast"):
                             fwd_fast_ok += 1
 
+            # ── UART nach einem Fehler wiederherstellen ────────────────────────
+            #  Ohne das war jeder einzelne Lese-/Schreibfehler (Wackler am
+            #  Stecker, Teensy zieht kurz Strom weg) das Ende des Prozesses.
+            if state["broken"]:
+                now = time.monotonic()
+                if now - t_last_uart_retry >= 1.0:
+                    t_last_uart_retry = now
+                    try:
+                        sel.unregister(state["ser"].fileno())
+                    except (KeyError, OSError, ValueError):
+                        pass
+                    try:
+                        state["ser"].close()
+                    except (serial.SerialException, OSError):
+                        pass
+                    try:
+                        state["ser"] = _open_uart()
+                        sel.register(state["ser"].fileno(), selectors.EVENT_READ, data="uart")
+                        state["broken"] = False
+                        assembler = TelemetryFrameAssembler()
+                        desc_assembler = ChunkFrameAssembler()
+                        log.info(f"UART {UART_PORT} nach Fehler wieder geöffnet.")
+                    except (serial.SerialException, OSError) as exc:
+                        log.warning(f"UART {UART_PORT} noch nicht verfügbar: {exc}")
+
             # ── Periodische Aufgaben (statt eigener Threads) ────────────────────
             now = time.monotonic()
 
@@ -626,7 +718,14 @@ def main() -> None:
                     f"({fwd_fast_ok / elapsed:.1f} Pkt/s) überholt={fwd_stale} "
                     f"ungültig={fwd_bad} || "
                     f"Deskriptor: Chunks_ok={desc_pkt_sent} Requests_fwd={fwd_desc_req}"
+                    + (f" Fehlalarme={desc_assembler.false_magics}"
+                       if desc_assembler.false_magics else "")
                 )
+                if pkt_sent == 0:
+                    log.warning(
+                        "Keine Telemetrie vom Teensy — Verkabelung (Pin 14 -> GPIO15), "
+                        "Baudrate (%d) und MAX_FLOATS (%d) prüfen.", UART_BAUD, MAX_FLOATS
+                    )
                 pkt_sent = bytes_sent = send_errors = 0
                 fwd_slow_ok = fwd_fast_ok = fwd_bad = fwd_stale = 0
                 desc_pkt_sent = fwd_desc_req = 0
@@ -634,15 +733,21 @@ def main() -> None:
                 t_stat_start = now
 
             if now - t_last_netcheck >= NET_CHECK_INTERVAL:
-                if _wlan_ip() is None:
+                ip = _wlan_ip()
+                if ip is None:
                     log.warning("WLAN nicht verbunden (keine IP-Adresse auf wlan0)")
+                leds.set_network(ip is not None)
                 t_last_netcheck = now
 
     except KeyboardInterrupt:
         log.info("Gestoppt (KeyboardInterrupt).")
     finally:
+        leds.stop()
         sel.close()
-        ser.close()
+        try:
+            state["ser"].close()
+        except (serial.SerialException, OSError):
+            pass
         udp_out.close()
         slow_sock.close()
         fast_sock.close()

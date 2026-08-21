@@ -84,14 +84,23 @@ ApplicationWindow {
         }
     }
 
+    // appBridge.statusText traegt die letzte Meldung (Node gewechselt,
+    // Kanalnamen angefordert, Empfaenger neu gestartet, ...). Vorher wurde
+    // das Signal zwar gesendet, aber nirgends angezeigt.
     footer: StatusBar {
         pps: appBridge.packetsPerSecond
-        message: ""
+        message: appBridge.statusText
+        anyNodeConnected: appBridge.node1Connected || appBridge.node2Connected
     }
 
     SwipeView {
         id: swipeView
         anchors.fill: parent
+        // Zwei-Wege-Kopplung TabBar <-> SwipeView nach dem Qt-Standardmuster:
+        // BEIDE Seiten binden aneinander, es gibt bewusst KEINE zusaetzliche
+        // imperative Zuweisung mehr. Die vorherige Connections-Zuweisung auf
+        // swipeView.currentIndex hat dessen Binding beim ersten Tab-Wechsel
+        // zerstoert (klassischer QML-Bindungsschleifen-Fehler).
         currentIndex: tabBar.currentIndex
         // Während ein Touch-Widget wie der Joystick exklusiv einen Drag
         // braucht (siehe UiState.qml / Joystick.qml), darf das Wischen
@@ -102,10 +111,5 @@ ApplicationWindow {
         PlotterView {}
         SystemView {}
         ParamsView {}
-    }
-
-    Connections {
-        target: tabBar
-        function onCurrentIndexChanged() { swipeView.currentIndex = tabBar.currentIndex }
     }
 }
