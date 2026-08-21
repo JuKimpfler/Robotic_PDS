@@ -26,10 +26,17 @@
  *  Kanalnummern muss man nur noch vergeben, wenn man WILL: plot()/track()
  *  vergeben sie automatisch und melden die Namen an die GUI.
  *
- *  ── Die drei Wege, einen Wert in die GUI zu bekommen ───────────────────
- *    1) PDS.plot("Ball_X", ballX);        Auto-Kanal, Name geht an die GUI
- *    2) PDS.track("Akku", &akkuVolt);     einmal in setup(), danach nie wieder
- *    3) PDS.Channel(12, wert);            fester Kanal (klassisch, wie bisher)
+ *  ── Die vier Wege, einen Wert in die GUI zu bekommen ───────────────────
+ *    1) PDS.plot("Ball_X", ballX);          Auto-Kanal, Name geht an die GUI
+ *    2) PDS.track("Akku", &akkuVolt);       Auto-Kanal, einmal in setup()
+ *    3) PDS.bind("Akku", &akkuVolt, 12);    FESTER Kanal 12, einmal in setup()
+ *    4) PDS.Channel(12, wert);              fester Kanal, klassisch
+ *
+ *  ── Einheiten, Ereignisse, Logzeilen ───────────────────────────────────
+ *    PDS.plot("Akku", v, "V");        Einheit erscheint in Tabelle/Plotter
+ *    PDS.event("Ball verloren");      senkrechte Marke im Plotter
+ *    PDS.log("Kalibrierung fertig");  Zeile im Logbuch der GUI
+ *    PDS.warn("Akku schwach: %.1f V", v);
  *
  *  ── Fernsteuerung / Parameter von der GUI ──────────────────────────────
  *    PDS.fastParam(0)      5 Floats, 100 Hz   (Joystick, PS4-Controller)
@@ -38,6 +45,10 @@
  *    PDS.param("Kp")       dasselbe per Name (Namen aus channel_config.h)
  *    PDS.linkOk()          true, solange die GUI sendet -> Not-Aus-Kriterium
  *
+ *  ── Watchdog (optional, Teensy 4.x) ────────────────────────────────────
+ *    PDS.enableWatchdog(2000);        in setup(): Reset, wenn update() 2 s
+ *                                     lang nicht mehr aufgerufen wird.
+ *
  *  ── Verkabelung ────────────────────────────────────────────────────────
  *    Teensy Pin 14 (TX3) ──→ RPi Zero Pin 10 (GPIO15, UART RX)
  *    Teensy Pin 15 (RX3) ←── RPi Zero Pin  8 (GPIO14, UART TX)   PFLICHT
@@ -45,10 +56,11 @@
  *    Andere UART-Instanz? -> UART_DBG in params.h aendern, sonst nichts.
  *
  *  ── Wire-Format (mit uart_receiver.py + config.py abgestimmt) ───────────
- *    [0..3]   uint32 Magic 0xDEADBEEF
- *    [4..7]   uint32 micros()
- *    [8..807] float32[200]                        = 808 Bytes @ 100 Hz
- *    Baudraten-Budget bei 1 Mbps: Uplink ~81 %, Downlink ~3 %.
+ *    Uplink   Telemetrie  0xDEADBEEF  808 B @ 100 Hz   ~81 % der Leitung
+ *             Deskriptor  0xDE5C0001  257 B, nur auf Anfrage/beim Boot
+ *             Ereignis    0xE7E5C0DE  <=64 B, max. 20/s
+ *             Param-Ack   0xACC0FEED  290 B @ 2 Hz
+ *    Downlink Slow/Fast/Request/Discovery — siehe params.h
  *
  *  Keine externen Bibliotheken noetig.
  * ============================================================
@@ -69,7 +81,16 @@
 #endif
 
 // Versionsnummer der Bibliothek (fuer Doku/Diagnose, siehe printStatus()).
-#define PDS_VERSION "2.0"
+#define PDS_VERSION "2.1"
+
+// Version der ROBOTER-Firmware. Wird im Deskriptor an die GUI gemeldet, damit
+// dort sichtbar ist, welcher Stand auf welchem Roboter laeuft. Per Build-Flag
+// setzen (-DPDS_FW_VERSION='"1.4.2"') oder zur Laufzeit ueber
+// PDS.setFirmwareVersion("..."). Ohne Angabe meldet der Teensy den
+// Compilier-Zeitpunkt, der dafuer auch schon reicht.
+#ifndef PDS_FW_VERSION
+#define PDS_FW_VERSION ""
+#endif
 
 // Wie viele der MAX_FLOATS Kanaele Namen/Bindungen tragen koennen. Nur ein
 // RAM-Limit — das Wire-Format bleibt immer 200 Kanaele breit.
@@ -91,6 +112,24 @@
 #define PDS_NAME_CACHE_SIZE 128
 #endif
 
+// Wie viele Kanaele eine Einheit tragen koennen ("V", "cm", "°/s", ...).
+// Bewusst eine kleine Seitentabelle statt eines Feldes ueber alle 200 Kanaele:
+// Einheiten hat man typischerweise nur an einer Handvoll Werten.
+#ifndef PDS_MAX_UNITS
+#define PDS_MAX_UNITS 32
+#endif
+#ifndef PDS_UNIT_MAXLEN
+#define PDS_UNIT_MAXLEN 8      // inkl. Nullterminator
+#endif
+
+// Wie viele Ereignisse/Logzeilen zwischengepuffert werden, bis update() sie
+// nacheinander abschickt. Laeuft der Puffer ueber, gewinnt der AELTERE
+// Eintrag (eine Fehlermeldung soll nicht von nachfolgendem Rauschen
+// verdraengt werden) — siehe eventDropCount().
+#ifndef PDS_EVENT_QUEUE_SIZE
+#define PDS_EVENT_QUEUE_SIZE 8
+#endif
+
 // Solange die GUI noch nie (bzw. gerade nicht) sendet, wiederholt der Teensy
 // den Namens-/Overlay-Deskriptor in diesem Abstand. Damit findet eine erst
 // spaeter gestartete GUI die Kanalnamen von allein, ohne dass jemand
@@ -110,16 +149,28 @@
 // Der Abstand verdoppelt sich nach jeder unbeantworteten Wiederholung bis zu
 // diesem Wert. Im Wettkampfbetrieb (Roboter laeuft ohne GUI) faellt die
 // Namensmeldung dadurch nach kurzer Zeit auf ein Minimum zurueck, statt
-// dauerhaft ~2.4 kB/s des UART-Budgets zu verbrauchen. Sobald die GUI sendet,
-// wird wieder auf PDS_DESC_REPEAT_MS zurueckgesetzt.
+// dauerhaft Bandbreite zu verbrauchen. Sobald die GUI sendet, wird wieder auf
+// PDS_DESC_REPEAT_MS zurueckgesetzt.
 #ifndef PDS_DESC_REPEAT_MAX_MS
 #define PDS_DESC_REPEAT_MAX_MS 60000
 #endif
 
 // Bindungs-Typ eines per bind()/track() registrierten Kanals (Auto-Sampling).
+//
+// Bewusst nach den FUNDAMENTALEN C++-Typen benannt, nicht nach int8_t/int32_t:
+// die Festbreiten-Typen sind nur Aliase, und welcher fundamentale Typ dahinter
+// steckt, haengt vom Compiler ab. Auf dem Teensy ist int32_t z. B. "long" --
+// eine Ueberladung fuer int32_t* hat deshalb ein ganz gewoehnliches
+//     int heading;  PDS.track("Heading", &heading);
+// NICHT angenommen, sondern eine seitenlange Fehlermeldung erzeugt. Mit den
+// fundamentalen Typen ist jeder Ganzzahltyp genau einmal abgedeckt.
 enum class BoundChannelType : uint8_t {
     NONE = 0, FLOAT_PTR, DOUBLE_PTR, BOOL_PTR,
-    I8_PTR, U8_PTR, I16_PTR, U16_PTR, I32_PTR, U32_PTR
+    SCHAR_PTR, UCHAR_PTR,     // signed char / unsigned char   (= int8_t/uint8_t)
+    SHORT_PTR, USHORT_PTR,    // short       / unsigned short  (= int16_t/uint16_t)
+    INT_PTR,   UINT_PTR,      // int         / unsigned int
+    LONG_PTR,  ULONG_PTR,     // long        / unsigned long
+    LLONG_PTR, ULLONG_PTR     // long long   / unsigned long long
 };
 
 class PowerDebugger {
@@ -136,7 +187,8 @@ class PowerDebugger {
         void init() { begin(); }
 
         /// Einmal pro loop() aufrufen. Nicht blockierend: liest den
-        /// Param-Downlink und sendet alle 10 ms ein Telemetriepaket.
+        /// Param-Downlink, sendet alle 10 ms ein Telemetriepaket und
+        /// fuettert (falls aktiviert) den Hardware-Watchdog.
         void update();
 
         // ══════════════════════════════════════════════════════════════
@@ -147,13 +199,19 @@ class PowerDebugger {
         /// Aufruf automatisch vergeben und der Name an die GUI gemeldet.
         /// Gibt den benutzten Kanal zurueck (meist ignorierbar).
         ///   PDS.plot("Ball_X", ballX);
+        ///   PDS.plot("Akku", volt, "V");    // mit Einheit
         /// `name` sollte ein String-Literal sein (dann ist der Aufruf durch
         /// den internen Cache praktisch kostenlos).
         uint8_t plot(const char* name, float value);
+        uint8_t plot(const char* name, float value, const char* unit);
 
         template <class T>
         uint8_t plot(const char* name, T value) {
             return plot(name, static_cast<float>(value));
+        }
+        template <class T>
+        uint8_t plot(const char* name, T value, const char* unit) {
+            return plot(name, static_cast<float>(value), unit);
         }
 
         /// Kanalnummer zu einem Namen (vergibt beim ersten Aufruf eine neue).
@@ -182,25 +240,91 @@ class PowerDebugger {
         // ══════════════════════════════════════════════════════════════
         //  Der gebundene Zeiger wird unmittelbar vor jedem Sendevorgang
         //  ausgelesen (100 Hz) — im loop() ist danach kein Aufruf mehr noetig.
+        //
+        //    PDS.bind(12, &akkuVolt, "Akku");     // Kanal zuerst
+        //    PDS.bind("Akku", &akkuVolt, 12);     // Name zuerst — identisch
+        //    PDS.track("Akku", &akkuVolt);        // Kanal automatisch
 
-        void bind(uint8_t chn, float*    ptr, const char* name = nullptr);
-        void bind(uint8_t chn, double*   ptr, const char* name = nullptr);
-        void bind(uint8_t chn, bool*     ptr, const char* name = nullptr);
-        void bind(uint8_t chn, int8_t*   ptr, const char* name = nullptr);
-        void bind(uint8_t chn, uint8_t*  ptr, const char* name = nullptr);
-        void bind(uint8_t chn, int16_t*  ptr, const char* name = nullptr);
-        void bind(uint8_t chn, uint16_t* ptr, const char* name = nullptr);
-        void bind(uint8_t chn, int32_t*  ptr, const char* name = nullptr);
-        void bind(uint8_t chn, uint32_t* ptr, const char* name = nullptr);
+        void bind(uint8_t chn, float*              ptr, const char* name = nullptr);
+        void bind(uint8_t chn, double*             ptr, const char* name = nullptr);
+        void bind(uint8_t chn, bool*               ptr, const char* name = nullptr);
+        void bind(uint8_t chn, signed char*        ptr, const char* name = nullptr);
+        void bind(uint8_t chn, unsigned char*      ptr, const char* name = nullptr);
+        void bind(uint8_t chn, short*              ptr, const char* name = nullptr);
+        void bind(uint8_t chn, unsigned short*     ptr, const char* name = nullptr);
+        void bind(uint8_t chn, int*                ptr, const char* name = nullptr);
+        void bind(uint8_t chn, unsigned int*       ptr, const char* name = nullptr);
+        void bind(uint8_t chn, long*               ptr, const char* name = nullptr);
+        void bind(uint8_t chn, unsigned long*      ptr, const char* name = nullptr);
+        void bind(uint8_t chn, long long*          ptr, const char* name = nullptr);
+        void bind(uint8_t chn, unsigned long long* ptr, const char* name = nullptr);
+
+        /// Auffangnetz fuer alles andere. Ohne diese Ueberladung liefert ein
+        /// nicht unterstuetzter Typ eine seitenlange Kandidatenliste; so steht
+        /// stattdessen ein einziger, lesbarer Satz im Compilerfehler.
+        template <class T>
+        void bind(uint8_t, T*, const char* = nullptr) {
+            static_assert(sizeof(T) == 0,
+                "PDS.bind()/PDS.track(): dieser Typ wird nicht unterstuetzt. "
+                "Erlaubt sind float, double, bool und alle Ganzzahltypen.");
+        }
+
+        /// bind() mit dem Namen zuerst und der Kanalnummer als drittem
+        /// Argument — dieselbe Wirkung wie bind(chn, ptr, name), liest sich
+        /// aber wie track() und macht die feste Kanalnummer explizit:
+        ///   PDS.bind("Akku", &akkuVolt, 12);
+        ///   PDS.bind("Akku", &akkuVolt, 12, "V");   // mit Einheit
+        template <class T>
+        uint8_t bind(const char* name, T* ptr, int chn, const char* unit = nullptr) {
+            if (chn < 0 || chn >= ACTIVE_CHANNELS) return 0xFF;
+            bind((uint8_t)chn, ptr, name);
+            if (unit) setUnit((uint8_t)chn, unit);
+            return (uint8_t)chn;
+        }
 
         /// bind() mit automatischer Kanalvergabe — die bequemste Variante:
-        ///   void setup() { PDS.begin(); PDS.track("Akku", &akkuVolt); }
+        ///   void setup() { PDS.begin(); PDS.track("Akku", &akkuVolt, "V"); }
         template <class T>
-        uint8_t track(const char* name, T* ptr) {
+        uint8_t track(const char* name, T* ptr, const char* unit = nullptr) {
             uint8_t chn = channelFor(name);
+            if (chn == 0xFF) return 0xFF;
             bind(chn, ptr, name);
+            if (unit) setUnit(chn, unit);
             return chn;
         }
+
+        // ══════════════════════════════════════════════════════════════
+        //  Einheiten
+        // ══════════════════════════════════════════════════════════════
+        //  Rein kosmetisch, aber in der GUI sehr hilfreich: "12.4 V" statt
+        //  "12.4". Die Einheit wird im Deskriptor mitgeschickt.
+
+        void setUnit(uint8_t chn, const char* unit);
+        void setUnit(const char* name, const char* unit) { setUnit(channelFor(name), unit); }
+        const char* unitOf(uint8_t chn) const;
+
+        // ══════════════════════════════════════════════════════════════
+        //  Ereignisse und Logzeilen -> GUI
+        // ══════════════════════════════════════════════════════════════
+        //  event() setzt eine senkrechte Marke in den Plotter (mit Zeitstempel
+        //  aus derselben micros()-Basis wie die Telemetrie), log()/warn()/
+        //  error() schreiben eine Zeile ins Logbuch der GUI.
+        //
+        //  Beide sind nicht-blockierend: die Meldung wandert in eine kleine
+        //  Warteschlange und geht im naechsten update() raus, sobald die
+        //  Leitung Platz hat. Der 100-Hz-Telemetrietakt hat immer Vorrang.
+
+        void event(const char* name)               { pushEvent(PDS_EVENT_KIND_EVENT, PDS_LEVEL_INFO, name, 0.0f); }
+        void event(const char* name, float value)  { pushEvent(PDS_EVENT_KIND_EVENT, PDS_LEVEL_INFO, name, value); }
+        void log(const char* text)                 { pushEvent(PDS_EVENT_KIND_LOG,   PDS_LEVEL_INFO, text, 0.0f); }
+
+        /// printf-Formatierung fuer das Logbuch (max. PDS_EVENT_TEXT_MAX Zeichen).
+        void logf(const char* fmt, ...)   __attribute__((format(printf, 2, 3)));
+        void warn(const char* fmt, ...)   __attribute__((format(printf, 2, 3)));
+        void error(const char* fmt, ...)  __attribute__((format(printf, 2, 3)));
+
+        uint32_t eventSentCount() const { return _evSent; }
+        uint32_t eventDropCount() const { return _evDrops; }
 
         // ══════════════════════════════════════════════════════════════
         //  Parameter von der GUI lesen
@@ -226,6 +350,11 @@ class PowerDebugger {
         bool  getParamBool(uint8_t index) const { return paramBool((int)index); }
         float getFastParam(uint8_t index) const { return fastParam((int)index); }
 
+        /// Rueckmeldung an die GUI: welche Parameter haelt der Teensy gerade
+        /// wirklich? Laeuft automatisch mit 2 Hz. Nur abschalten, wenn jedes
+        /// Byte Uplink zaehlt.
+        void enableParamAck(bool on) { _paramAckOn = on; }
+
         // ══════════════════════════════════════════════════════════════
         //  Verbindungszustand
         // ══════════════════════════════════════════════════════════════
@@ -244,6 +373,39 @@ class PowerDebugger {
         uint32_t fastParamAgeMs() const;
 
         // ══════════════════════════════════════════════════════════════
+        //  Watchdog (Teensy 4.x: Hardware-WDOG1)
+        // ══════════════════════════════════════════════════════════════
+        //  Bleibt loop() haengen (blockierende I2C-Lesung, Endlosschleife),
+        //  startet der Teensy nach `timeoutMs` neu, statt bewegungslos mit
+        //  laufenden Motoren stehenzubleiben.
+        //
+        //  update() fuettert den Watchdog automatisch — es reicht also, ihn
+        //  einmal in setup() einzuschalten. feedWatchdog() ist nur noetig,
+        //  wenn im Roboter-Code absichtlich laenger nicht update() laeuft
+        //  (z. B. waehrend einer Kalibrierfahrt).
+        //
+        //  ACHTUNG: Der Watchdog laesst sich per Hardware nicht wieder
+        //  abschalten. Aufloesung 0.5 s, Bereich 500..128000 ms.
+
+        void enableWatchdog(uint32_t timeoutMs = 2000);
+        void feedWatchdog();
+        bool watchdogEnabled() const { return _wdtOn; }
+
+        /// true, wenn der LETZTE Reset vom Watchdog ausgeloest wurde. Wird in
+        /// begin() einmal aus der Hardware gelesen und dann als Ereignis an
+        /// die GUI gemeldet.
+        bool watchdogResetOccurred() const { return _wdtWasReset; }
+
+        // ══════════════════════════════════════════════════════════════
+        //  Firmware-Version
+        // ══════════════════════════════════════════════════════════════
+
+        /// Version der ROBOTER-Firmware fuer die Anzeige in der GUI.
+        /// Alternativ das Build-Flag -DPDS_FW_VERSION='"1.4.2"' benutzen.
+        void setFirmwareVersion(const char* v);
+        const char* firmwareVersion() const { return _fwVersion; }
+
+        // ══════════════════════════════════════════════════════════════
         //  Diagnose
         // ══════════════════════════════════════════════════════════════
 
@@ -254,6 +416,7 @@ class PowerDebugger {
         uint32_t paramSyncLosses()  const { return _paramSyncLosses; }
         uint8_t  usedChannels()     const { return _autoNext; }
         bool     descriptorTruncated() const { return _descOverflow; }
+        size_t   descriptorBytes()  const { return _descJsonLen; }
 
         /// Eine Zeile Klartext-Diagnose, z. B. 1x/s im Sketch:
         ///   PDS.printStatus();          // -> USB-Serial
@@ -280,15 +443,21 @@ class PowerDebugger {
         float    _paramFloats[PARAM_SLOW_FLOAT_COUNT] = {0};
         bool     _paramBools[PARAM_SLOW_BOOL_COUNT]   = {false};
         uint32_t _lastSlowRxMs = 0;
+        uint32_t _lastSlowSeq  = 0;
 
         float    _fastFloats[PARAM_FAST_FLOAT_COUNT]  = {0};
         uint32_t _lastFastRxMs = 0;
+        uint32_t _lastFastSeq  = 0;
 
         // Parser-Zustand (frueher function-static — als Member ist die
         // Klasse damit auch in einem Zweit-Objekt sauber initialisiert).
         uint8_t  _rxBuf[PARAM_SLOW_PACKET_BYTES];
         int      _rxFill        = 0;
         int      _rxExpectedLen = 0;
+
+        // ── Parameter-Rueckmeldung ─────────────────────────────────────
+        bool     _paramAckOn = true;
+        void     sendParamAck();
 
         // ── Diagnose-Zaehler ───────────────────────────────────────────
         uint32_t _slowPktCount    = 0;
@@ -322,10 +491,43 @@ class PowerDebugger {
         struct NameCacheEntry { const char* key = nullptr; uint8_t chn = 0; };
         NameCacheEntry _nameCache[PDS_NAME_CACHE_SIZE];
 
+        // ── Einheiten (kleine Seitentabelle, siehe PDS_MAX_UNITS) ──────
+        struct UnitEntry { uint8_t chn; char unit[PDS_UNIT_MAXLEN]; };
+        UnitEntry _units[PDS_MAX_UNITS];
+        uint8_t   _unitCount = 0;
+
+        // ── Ereignis-/Log-Warteschlange ────────────────────────────────
+        struct EventEntry {
+            uint32_t ts_us;
+            float    value;
+            uint8_t  kind;
+            uint8_t  level;
+            uint8_t  len;
+            char     text[PDS_EVENT_TEXT_MAX];
+        };
+        EventEntry _evQueue[PDS_EVENT_QUEUE_SIZE];
+        uint8_t    _evHead = 0;      // naechster zu sendender Eintrag
+        uint8_t    _evCount = 0;
+        uint32_t   _evSent = 0;
+        uint32_t   _evDrops = 0;
+        uint32_t   _evWindowStartMs = 0;
+        uint8_t    _evInWindow = 0;  // in dieser Sekunde bereits gesendet
+
+        void pushEvent(uint8_t kind, uint8_t level, const char* text, float value);
+        void pushEventV(uint8_t kind, uint8_t level, float value, const char* fmt, va_list args);
+        bool sendNextEvent();
+
+        // ── Watchdog ───────────────────────────────────────────────────
+        bool _wdtOn       = false;
+        bool _wdtWasReset = false;
+
+        // ── Firmware-Version ───────────────────────────────────────────
+        char _fwVersion[24] = {0};
+
         // ── Namens-/Overlay-Deskriptor -> GUI ──────────────────────────
         size_t  _descJsonLen    = 0;
-        uint8_t _descChunkCount = 0;
-        uint8_t _descNextChunk  = 0xFF;   // 0xFF = kein Sendevorgang aktiv
+        uint16_t _descChunkCount = 0;
+        uint16_t _descNextChunk  = 0xFFFF;   // 0xFFFF = kein Sendevorgang aktiv
         bool     _descBuilt     = false;
         bool     _descOverflow  = false;
         bool     _linkWasUp     = false;   // fuer die Flanke "GUI wieder da"

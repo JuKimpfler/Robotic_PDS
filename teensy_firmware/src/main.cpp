@@ -1,112 +1,98 @@
 /*
  * ============================================================
- *  main.cpp — Beispiel-/Testsketch fuer die PDS-Bibliothek
+ *  Beispiel-Sketch fuer die PDS-Bibliothek
  * ============================================================
+ *  Laeuft unveraendert auf einem Teensy 4.0 ohne weitere Hardware und zeigt
+ *  alles, was man im Alltag braucht. In einem echten Roboterprojekt wird
+ *  diese Datei nicht mitkompiliert (siehe library.json) — dort ruft der
+ *  eigene Sketch einfach PDS.begin() / PDS.update() auf.
  *
- *  Dieser Sketch ist NICHT der Roboter-Code. Er zeigt in ~40 Zeilen alles,
- *  was die Bibliothek kann, und laesst sich direkt auf einen Teensy 4.0
- *  flashen, um die komplette Kette
- *
- *      Teensy -> RPi Zero -> WLAN -> GUI
- *
- *  zu testen, ohne dass ein Roboter angeschlossen sein muss: die Kanaele
- *  bekommen synthetische Werte (Sinus/Saegezahn), und die von der GUI
- *  gesendeten Parameter werden 1:1 zurueckgespiegelt.
- *
- *  Fuer das echte Roboter-Projekt kopiert man PDS.h, PDS.cpp, params.h und
- *  channel_config.h in dessen src/-Ordner (oder bindet dieses Verzeichnis
- *  ueber lib_deps/lib_extra_dirs ein) und ruft im eigenen Sketch nur noch
- *  PDS.begin() / PDS.update() auf.
+ *  Flashen:   pio run -t upload
+ *  Beobachten: GUI starten oder `pio device monitor` (USB-Serial)
  * ============================================================
  */
 
 #include <Arduino.h>
 #include "PDS.h"
 
-// Ein paar Beispielwerte des "Roboters". Alles, was hier steht, taucht in
-// der GUI auf — entweder per track() (einmal registriert, danach automatisch)
-// oder per plot() (bei jedem Schreiben).
-float    akkuVolt   = 0.0f;
-float    heading    = 0.0f;
-bool     ballSicht  = false;
-uint32_t loopHz     = 0;
+// Beliebige Variablen aus dem Roboter-Code. Einmal gebunden, tauchen sie ab
+// da mit 100 Hz in der GUI auf — im loop() muss man sie nicht mehr anfassen.
+float  akkuVolt   = 12.4f;
+float  ballX      = 0.0f;
+float  ballY      = 0.0f;
+int    heading    = 0;
+bool   dribblerAn = false;
 
-// Werte, die von der GUI kommen (Fernsteuerung/Tuning).
-float speedSoll = 0.0f;
-float rotSoll   = 0.0f;
-
-static elapsedMillis blinkTimer;
-static elapsedMillis statusTimer;
-static uint32_t      loopCounter = 0;
+elapsedMillis statusTimer;
+elapsedMillis eventTimer;
 
 void setup() {
-    Serial.begin(115200);            // USB-Serial, nur fuer Diagnose
-    pinMode(LED_BUILTIN, OUTPUT);
+    Serial.begin(115200);          // USB-Serial, nur fuer Diagnose
 
-    // ── Das ist alles, was zum Start noetig ist ──────────────────────────
-    PDS.begin();
+    PDS.begin();                   // UART starten, Namen an die GUI melden
 
-    // Variablen dauerhaft an die GUI binden: ab jetzt werden sie 100x/s
-    // automatisch mitgesendet, ohne dass loop() etwas tun muss.
-    PDS.track("Akku_Spannung", &akkuVolt);
-    PDS.track("Heading",       &heading);
-    PDS.track("Ball_sichtbar", &ballSicht);
-    PDS.track("Loop_Hz",       &loopHz);
+    // Version der eigenen Roboter-Firmware — erscheint in der GUI, damit man
+    // sieht, welcher Stand auf welchem Roboter laeuft.
+    PDS.setFirmwareVersion("Demo 1.0");
 
-    // Legt die PDS-eigenen Diagnosezaehler (gesendete Pakete, verworfene
-    // Pakete, Latenz des Fast-Kanals, Sync-Verluste) auf die letzten sechs
-    // Kanaele. Sehr nuetzlich, um Aussetzer direkt in der GUI zu sehen.
+    // ── Variablen an Kanaele binden ───────────────────────────────────────
+    PDS.track("Akku",     &akkuVolt, "V");    // Kanal automatisch, mit Einheit
+    PDS.track("Heading",  &heading,  "°");
+    PDS.track("Dribbler", &dribblerAn);
+
+    // ... oder mit fester Kanalnummer, wenn die GUI-Overlays darauf zeigen:
+    PDS.bind("Ball_X", &ballX, 20, "cm");
+    PDS.bind("Ball_Y", &ballY, 21, "cm");
+
+    // Diagnosezaehler auf die letzten sechs Kanaele legen (optional).
     PDS.enableSelfDiagnostics();
+
+    // Watchdog: bleibt loop() laenger als 2 s haengen, startet der Teensy neu.
+    PDS.enableWatchdog(2000);
+
+    PDS.log("Setup abgeschlossen");
 }
 
 void loop() {
-    loopCounter++;
+    const uint32_t t = millis();
 
-    // ── 1. Werte von der GUI holen ───────────────────────────────────────
-    //  Fast-Kanal (100 Hz): Joystick / PS4-Controller
-    speedSoll = PDS.fastParam(3);        // oder PDS.fastParam("Speed"),
-    rotSoll   = PDS.fastParam(2);        // sobald channel_config.h Namen hat
+    // ── Fernsteuerung lesen ───────────────────────────────────────────────
+    float speed    = PDS.fastParam(3);     // R2-Trigger / Schieberegler
+    float rotation = PDS.fastParam(2);
 
-    //  Slow-Kanal (2 Hz): Tuning-Parameter und Schalter
-    const float maxSpeed   = PDS.param(0);
-    const bool  motorenAus = PDS.paramBool(0);
-
-    // ── 2. Not-Aus, wenn die Verbindung weg ist ──────────────────────────
-    //  linkOk() ist genau dafuer da: kein Paket von der GUI -> nicht
-    //  weiterfahren. Im echten Roboter hier die Motoren stoppen.
-    if (!PDS.linkOk() || motorenAus) {
-        speedSoll = 0.0f;
-        rotSoll   = 0.0f;
+    // Not-Aus: sobald die GUI stumm ist, alles auf 0. Das ist das wichtigste
+    // Sicherheitsnetz der ganzen Bibliothek.
+    if (!PDS.linkOk()) {
+        speed = 0.0f;
+        rotation = 0.0f;
     }
 
-    // ── 3. "Roboter" simulieren ──────────────────────────────────────────
-    const float t = millis() / 1000.0f;
-    akkuVolt  = 12.4f + 0.15f * sinf(t * 0.7f);
-    heading   = fmodf(t * 45.0f, 360.0f);
-    ballSicht = (fmodf(t, 4.0f) < 2.0f);
+    // ── Simulierte Sensorwerte (im echten Projekt: echte Messwerte) ───────
+    akkuVolt   = 12.4f + 0.2f * sinf(t / 5000.0f);
+    ballX      = 90.0f + 60.0f * sinf(t / 1300.0f);
+    ballY      = 120.0f + 80.0f * cosf(t / 1700.0f);
+    heading    = (int)((t / 20) % 360);
+    dribblerAn = PDS.fastParam(4) > 50.0f;
 
-    // ── 4. Weitere Werte anzeigen — Kanal wird automatisch vergeben ──────
-    PDS.plot("Speed_Soll", speedSoll);
-    PDS.plot("Rot_Soll",   rotSoll);
-    PDS.plot("Max_Speed",  maxSpeed);
-    PDS.plot("Fast_Alter_ms", PDS.fastParamAgeMs());
+    // ── Werte direkt anzeigen (Kanal wird automatisch vergeben) ──────────
+    PDS.plot("Speed", speed);
+    PDS.plot("Rotation", rotation);
 
-    // Alternative fuer sehr schnelle Schleifen (Kanalnummer wird einmalig
-    // aufgeloest und danach in einer static-Variable gehalten):
-    PDS_PLOT("Loop_Counter", loopCounter);
+    // Fuer sehr heisse Schleifen: identisch, aber ohne jeden Overhead.
+    PDS_PLOT("Loop_us", micros() % 1000);
 
-    // ── 5. Genau ein Aufruf pro Schleifendurchlauf ───────────────────────
-    PDS.update();
-
-    // ── Diagnose: LED + eine Statuszeile pro Sekunde auf USB-Serial ──────
-    if (blinkTimer >= (PDS.linkOk() ? 500 : 100)) {
-        blinkTimer = 0;
-        digitalWriteFast(LED_BUILTIN, !digitalReadFast(LED_BUILTIN));
+    // ── Ereignisse: senkrechte Marke im Plotter der GUI ──────────────────
+    if (eventTimer >= 5000) {
+        eventTimer = 0;
+        PDS.event("Testmarke", speed);
+        if (akkuVolt < 11.0f) PDS.warn("Akku schwach: %.1f V", akkuVolt);
     }
+
+    // ── Eine Zeile Diagnose ueber USB-Serial ─────────────────────────────
     if (statusTimer >= 1000) {
         statusTimer = 0;
-        loopHz      = loopCounter;
-        loopCounter = 0;
         PDS.printStatus();
     }
+
+    PDS.update();   // genau einmal pro loop()
 }

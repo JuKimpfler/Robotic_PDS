@@ -2,11 +2,15 @@
 #include "elapsedMillis.h"
 #include <stdarg.h>
 #include <string.h>
+#include <math.h>
 
 // ── channel_config.h ist OPTIONAL ─────────────────────────────────────────
 //  Ohne die Datei laesst sich PDS.h/PDS.cpp unveraendert in ein beliebiges
-//  Projekt kopieren: es gibt dann einfach keine vorbelegten Namen und keine
-//  Overlays, alles andere (inkl. plot()/track()) funktioniert identisch.
+//  Projekt kopieren: es gibt dann einfach keine vorbelegten Namen, keine
+//  Param-Konfiguration und keine Overlays, alles andere (inkl. plot()/track()/
+//  event()/log()) funktioniert identisch.
+//  Die Strukturen selbst stehen in params.h — sie muessen auch dann bekannt
+//  sein, wenn channel_config.h fehlt.
 #if defined(__has_include)
 #  if __has_include("channel_config.h")
 #    include "channel_config.h"
@@ -15,21 +19,18 @@
 #endif
 
 #ifndef PDS_HAS_CHANNEL_CONFIG
-struct ChannelNameDef { uint8_t index; const char* name; };
-struct OverlayDef {
-    uint8_t group; const char* type; const char* label;
-    int16_t channel = -1; int16_t channel2 = -1;
-    float min_val = 0.0f; float max_val = 0.0f;
-    float x_pct = -1.0f; float y_pct = -1.0f;
-    const char* extra = "";
-};
-static const ChannelNameDef CHANNEL_NAMES[] = { {0, nullptr} };
-static constexpr size_t CHANNEL_NAMES_COUNT = 0;
-static const char* const PARAM_SLOW_FLOAT_NAMES[PARAM_SLOW_FLOAT_COUNT] = {};
-static const char* const PARAM_SLOW_BOOL_NAMES[PARAM_SLOW_BOOL_COUNT]  = {};
-static const char* const PARAM_FAST_FLOAT_NAMES[PARAM_FAST_FLOAT_COUNT] = {};
-static const OverlayDef CHANNEL_OVERLAYS[] = { {0, "", ""} };
-static constexpr size_t CHANNEL_OVERLAYS_COUNT = 0;
+static const ChannelNameDef CHANNEL_NAMES[]         = { {0, nullptr, ""} };
+static constexpr size_t     CHANNEL_NAMES_COUNT     = 0;
+static const ParamDef       PARAM_SLOW_FLOATS[]     = { {0, nullptr} };
+static constexpr size_t     PARAM_SLOW_FLOATS_COUNT = 0;
+static const ParamDef       PARAM_SLOW_BOOLS[]      = { {0, nullptr} };
+static constexpr size_t     PARAM_SLOW_BOOLS_COUNT  = 0;
+static const ParamDef       PARAM_FAST_FLOATS[]     = { {0, nullptr} };
+static constexpr size_t     PARAM_FAST_FLOATS_COUNT = 0;
+static const JoystickDef    PARAM_JOYSTICKS[]       = { {nullptr, "fast", 0, 1} };
+static constexpr size_t     PARAM_JOYSTICKS_COUNT   = 0;
+static const OverlayDef     CHANNEL_OVERLAYS[]      = { {0, "", ""} };
+static constexpr size_t     CHANNEL_OVERLAYS_COUNT  = 0;
 #endif
 
 // Die eine, im Sketch benutzte Instanz (siehe PDS.h).
@@ -56,10 +57,19 @@ static_assert((PDS_NAME_CACHE_SIZE & (PDS_NAME_CACHE_SIZE - 1)) == 0,
               "PDS_NAME_CACHE_SIZE muss eine Zweierpotenz sein");
 static_assert(PDS_AUTO_CHANNEL_BASE < ACTIVE_CHANNELS,
               "PDS_AUTO_CHANNEL_BASE liegt ausserhalb der aktiven Kanaele");
+static_assert(PDS_EVENT_QUEUE_SIZE > 0 && PDS_EVENT_QUEUE_SIZE <= 64,
+              "PDS_EVENT_QUEUE_SIZE muss zwischen 1 und 64 liegen");
+static_assert(PDS_UNIT_MAXLEN >= 2, "PDS_UNIT_MAXLEN muss mindestens 2 sein");
 
-static constexpr uint32_t SAMPLE_PERIOD_MS      = 10;   // 10 ms -> 100 Hz
-static constexpr uint32_t DESC_CHUNK_PERIOD_MS  = 10;   // ein Deskriptor-Chunk pro 10 ms
-static constexpr uint32_t WARN_INTERVAL_MS      = 1000; // Rate-Limit fuer Serial-Warnungen
+static constexpr uint32_t SAMPLE_PERIOD_MS = 10;     // 10 ms -> 100 Hz
+static constexpr uint32_t WARN_INTERVAL_MS = 1000;   // Rate-Limit fuer Serial-Warnungen
+
+// Ein Deskriptor-Chunk (257 B) alle 20 ms = 12.9 kB/s. Zusammen mit den
+// 80.8 kB/s Telemetrie bleibt das unter den 100 kB/s, die 1 Mbps 8N1
+// hergeben — der Deskriptor verdraengt also keine Telemetrie, sondern
+// braucht fuer einen vollen 24-kB-Deskriptor knapp 2 s. Da er nur beim Boot
+// und auf Anfrage laeuft, ist das der richtige Kompromiss.
+static constexpr uint32_t DESC_CHUNK_PERIOD_MS = 20;
 
 // ── UART-Puffer ───────────────────────────────────────────────────────────
 //  TX: 808 B/Paket bei 100 Hz = 80.8 kB/s gegen 100 kB/s Baud-Budget
@@ -94,16 +104,36 @@ static float debugData[MAX_FLOATS];
 #endif
 PDS_SLOWMEM static char _descBuf[PDS_DESC_BUF_BYTES];
 
+// chunk_idx/chunk_count sind je ein Byte im Wire-Format -> mehr als 255
+// Chunks liessen sich gar nicht adressieren.
+static_assert(PDS_DESC_BUF_BYTES / CHANNEL_DESC_CHUNK_PAYLOAD_MAX < 255,
+              "PDS_DESC_BUF_BYTES zu gross fuer die 8-Bit-Chunknummer");
+
 // Reserve fuer die STRUKTURZEICHEN des JSON (Abschnittstrenner + schliessende
-// Klammern, zusammen 97 Bytes), damit der Deskriptor auch bei vollem Puffer
-// gueltiges JSON bleibt: die variablen Inhalte (Namen, Overlays) duerfen nur
-// bis buf-Groesse minus dieser Reserve wachsen, die Struktur passt danach
-// garantiert noch hinein. Siehe JsonBuilder::raw() vs. put().
-static constexpr size_t DESC_STRUCT_RESERVE = 128;
+// Klammern), damit der Deskriptor auch bei vollem Puffer gueltiges JSON
+// bleibt: die variablen Inhalte (Namen, Param-Konfiguration, Overlays) duerfen
+// nur bis Puffergroesse minus dieser Reserve wachsen, die Struktur passt
+// danach garantiert noch hinein. Siehe JsonBuilder::raw() vs. put().
+static constexpr size_t DESC_STRUCT_RESERVE = 192;
 
 static elapsedMillis DBGTimer;
 static elapsedMillis DescChunkTimer;
+static elapsedMillis ParamAckTimer;
 static uint32_t      _lastWarnMs = 0;
+
+// ── Watchdog: i.MX RT1062 WDOG1 (Referenzhandbuch Kap. 62) ────────────────
+//  Bewusst mit eigenen Zeigern statt der Core-Makros: so haengt die
+//  Bibliothek an keiner bestimmten Teensyduino-Version und laesst sich
+//  unveraendert in fremde Projekte kopieren.
+#if defined(__IMXRT1062__)
+static volatile uint16_t* const PDS_WDOG1_WCR  = (volatile uint16_t*)0x400B8000;
+static volatile uint16_t* const PDS_WDOG1_WSR  = (volatile uint16_t*)0x400B8002;
+static volatile uint16_t* const PDS_WDOG1_WRSR = (volatile uint16_t*)0x400B8004;
+static constexpr uint16_t PDS_WCR_WDE   = 0x0004;   // Watchdog Enable (nur einmal setzbar)
+static constexpr uint16_t PDS_WCR_SRS   = 0x0010;   // 1 = keinen Software-Reset ausloesen
+static constexpr uint16_t PDS_WCR_WDA   = 0x0020;   // 1 = WDOG_B-Pin nicht ziehen
+static constexpr uint16_t PDS_WRSR_TOUT = 0x0002;   // letzter Reset kam vom Timeout
+#endif
 
 // Bereichsgeprueft: ein Channel()-Aufruf mit einem Index >= MAX_FLOATS hat
 // vorher hinter debugData[] geschrieben und dabei beliebigen anderen Speicher
@@ -112,10 +142,18 @@ static inline void writeChannel(int chn, float value) {
     if ((unsigned)chn < (unsigned)MAX_FLOATS) debugData[chn] = value;
 }
 
+// Bevor irgendetwas ausser Telemetrie geschrieben wird, muss im TX-Puffer
+// noch ein KOMPLETTES Telemetriepaket zusaetzlich Platz haben. Damit kann
+// kein Deskriptor-/Ereignis-/Ack-Paket den 100-Hz-Takt verdraengen.
+static inline bool txRoomFor(int extraBytes) {
+    return UART_DBG.availableForWrite() >= (PACKET_BYTES + extraBytes);
+}
+
 // Serial-Warnungen sind im Roboterbetrieb Nebensache und duerfen den
 // 100-Hz-Takt nicht stoeren: hoechstens eine pro Sekunde, und nur wenn ein
 // USB-Serial-Terminal ueberhaupt offen ist (sonst blockiert print() nicht,
 // verbraucht aber trotzdem Zeit im TX-Puffer).
+static void pdsWarn(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
 static void pdsWarn(const char* fmt, ...) {
     uint32_t now = millis();
     if (now - _lastWarnMs < WARN_INTERVAL_MS) return;
@@ -193,6 +231,158 @@ uint8_t PowerDebugger::plot(const char* name, float value) {
     return chn;
 }
 
+uint8_t PowerDebugger::plot(const char* name, float value, const char* unit) {
+    const uint8_t chn = channelFor(name);
+    writeChannel(chn, value);
+    if (unit && chn != 0xFF) setUnit(chn, unit);
+    return chn;
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+//  Einheiten
+// ══════════════════════════════════════════════════════════════════════════
+
+void PowerDebugger::setUnit(uint8_t chn, const char* unit) {
+    if (chn >= ACTIVE_CHANNELS || !unit || !unit[0]) return;
+
+    for (uint8_t i = 0; i < _unitCount; i++) {
+        if (_units[i].chn == chn) {
+            if (strncmp(_units[i].unit, unit, PDS_UNIT_MAXLEN - 1) == 0) return;
+            strncpy(_units[i].unit, unit, PDS_UNIT_MAXLEN - 1);
+            _units[i].unit[PDS_UNIT_MAXLEN - 1] = '\0';
+            _descBuilt = false;
+            return;
+        }
+    }
+    if (_unitCount >= PDS_MAX_UNITS) {
+        pdsWarn("Keine Einheit mehr frei (PDS_MAX_UNITS=%d)", PDS_MAX_UNITS);
+        return;
+    }
+    _units[_unitCount].chn = chn;
+    strncpy(_units[_unitCount].unit, unit, PDS_UNIT_MAXLEN - 1);
+    _units[_unitCount].unit[PDS_UNIT_MAXLEN - 1] = '\0';
+    _unitCount++;
+    _descBuilt = false;
+}
+
+const char* PowerDebugger::unitOf(uint8_t chn) const {
+    for (uint8_t i = 0; i < _unitCount; i++) {
+        if (_units[i].chn == chn) return _units[i].unit;
+    }
+    return "";
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+//  Ereignisse und Logzeilen
+// ══════════════════════════════════════════════════════════════════════════
+
+void PowerDebugger::pushEvent(uint8_t kind, uint8_t level, const char* text, float value) {
+    if (!text) text = "";
+    // Bei vollem Puffer gewinnt der AELTERE Eintrag: eine Fehlermeldung soll
+    // nicht von nachfolgendem Rauschen verdraengt werden.
+    if (_evCount >= PDS_EVENT_QUEUE_SIZE) { _evDrops++; return; }
+
+    const uint8_t slot = (uint8_t)((_evHead + _evCount) % PDS_EVENT_QUEUE_SIZE);
+    EventEntry& e = _evQueue[slot];
+    e.ts_us = micros();
+    e.value = value;
+    e.kind  = kind;
+    e.level = level;
+    size_t n = strlen(text);
+    if (n > (size_t)PDS_EVENT_TEXT_MAX) n = (size_t)PDS_EVENT_TEXT_MAX;
+    memcpy(e.text, text, n);
+    e.len = (uint8_t)n;
+    _evCount++;
+}
+
+void PowerDebugger::pushEventV(uint8_t kind, uint8_t level, float value,
+                                const char* fmt, va_list args) {
+    char line[PDS_EVENT_TEXT_MAX + 1];
+    vsnprintf(line, sizeof(line), fmt ? fmt : "", args);
+    pushEvent(kind, level, line, value);
+}
+
+void PowerDebugger::logf(const char* fmt, ...) {
+    va_list args; va_start(args, fmt);
+    pushEventV(PDS_EVENT_KIND_LOG, PDS_LEVEL_INFO, 0.0f, fmt, args);
+    va_end(args);
+}
+
+void PowerDebugger::warn(const char* fmt, ...) {
+    va_list args; va_start(args, fmt);
+    pushEventV(PDS_EVENT_KIND_LOG, PDS_LEVEL_WARN, 0.0f, fmt, args);
+    va_end(args);
+}
+
+void PowerDebugger::error(const char* fmt, ...) {
+    va_list args; va_start(args, fmt);
+    pushEventV(PDS_EVENT_KIND_LOG, PDS_LEVEL_ERROR, 0.0f, fmt, args);
+    va_end(args);
+}
+
+bool PowerDebugger::sendNextEvent() {
+    if (_evCount == 0) return false;
+
+    // Rate-Limit: eine Endlosschleife mit log() im Roboter-Code darf den
+    // Uplink nicht fluten (siehe PDS_EVENT_MAX_PER_SEC in params.h).
+    const uint32_t now = millis();
+    if (now - _evWindowStartMs >= 1000) {
+        _evWindowStartMs = now;
+        _evInWindow = 0;
+    }
+    if (_evInWindow >= PDS_EVENT_MAX_PER_SEC) return false;
+
+    const EventEntry& e = _evQueue[_evHead];
+    const int total = PDS_EVENT_HEADER_BYTES + (int)e.len;
+    if (!txRoomFor(total)) return false;
+
+    uint8_t pkt[PDS_EVENT_PACKET_MAX];
+    const uint32_t magic = PDS_EVENT_MAGIC;
+    memcpy(pkt,      &magic,   4);
+    memcpy(pkt + 4,  &e.ts_us, 4);
+    memcpy(pkt + 8,  &e.value, 4);
+    pkt[12] = e.kind;
+    pkt[13] = e.level;
+    pkt[14] = e.len;
+    pkt[15] = 0;                       // reserved -- Plausibilitaetspruefung im Node
+    memcpy(pkt + PDS_EVENT_HEADER_BYTES, e.text, e.len);
+    UART_DBG.write(pkt, total);
+
+    _evHead = (uint8_t)((_evHead + 1) % PDS_EVENT_QUEUE_SIZE);
+    _evCount--;
+    _evSent++;
+    _evInWindow++;
+    return true;
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+//  Parameter-Rueckmeldung (2 Hz) — "was habe ich wirklich?"
+// ══════════════════════════════════════════════════════════════════════════
+
+void PowerDebugger::sendParamAck() {
+    if (!txRoomFor(PARAM_ACK_PACKET_BYTES)) return;
+
+    uint8_t pkt[PARAM_ACK_PACKET_BYTES];
+    const uint32_t magic   = PARAM_ACK_MAGIC;
+    const uint32_t slowAge = (_lastSlowRxMs == 0) ? 0xFFFFFFFFUL : (millis() - _lastSlowRxMs);
+    const uint32_t fastAge = (_lastFastRxMs == 0) ? 0xFFFFFFFFUL : (millis() - _lastFastRxMs);
+
+    memcpy(pkt,      &magic,        4);
+    memcpy(pkt + 4,  &_lastSlowSeq, 4);
+    memcpy(pkt + 8,  &_lastFastSeq, 4);
+    memcpy(pkt + 12, &slowAge,      4);
+    memcpy(pkt + 16, &fastAge,      4);
+
+    int off = PARAM_ACK_HEADER_BYTES;
+    memcpy(pkt + off, _paramFloats, PARAM_SLOW_FLOAT_COUNT * 4);
+    off += PARAM_SLOW_FLOAT_COUNT * 4;
+    for (int i = 0; i < PARAM_SLOW_BOOL_COUNT; i++) pkt[off + i] = _paramBools[i] ? 1 : 0;
+    off += PARAM_SLOW_BOOL_COUNT;
+    memcpy(pkt + off, _fastFloats, PARAM_FAST_FLOAT_COUNT * 4);
+
+    UART_DBG.write(pkt, PARAM_ACK_PACKET_BYTES);
+}
+
 // ══════════════════════════════════════════════════════════════════════════
 //  Kanal-Bindungen (Auto-Sampling)
 // ══════════════════════════════════════════════════════════════════════════
@@ -220,17 +410,21 @@ void PowerDebugger::bindRaw(uint8_t chn, void* ptr, BoundChannelType type,
     if (name) setName(chn, name);
 }
 
-void PowerDebugger::bind(uint8_t c, float* p, const char* n)    { bindRaw(c, p, BoundChannelType::FLOAT_PTR,  n); }
-void PowerDebugger::bind(uint8_t c, double* p, const char* n)   { bindRaw(c, p, BoundChannelType::DOUBLE_PTR, n); }
-void PowerDebugger::bind(uint8_t c, bool* p, const char* n)     { bindRaw(c, p, BoundChannelType::BOOL_PTR,   n); }
-void PowerDebugger::bind(uint8_t c, int8_t* p, const char* n)   { bindRaw(c, p, BoundChannelType::I8_PTR,     n); }
-void PowerDebugger::bind(uint8_t c, uint8_t* p, const char* n)  { bindRaw(c, p, BoundChannelType::U8_PTR,     n); }
-void PowerDebugger::bind(uint8_t c, int16_t* p, const char* n)  { bindRaw(c, p, BoundChannelType::I16_PTR,    n); }
-void PowerDebugger::bind(uint8_t c, uint16_t* p, const char* n) { bindRaw(c, p, BoundChannelType::U16_PTR,    n); }
-void PowerDebugger::bind(uint8_t c, int32_t* p, const char* n)  { bindRaw(c, p, BoundChannelType::I32_PTR,    n); }
-void PowerDebugger::bind(uint8_t c, uint32_t* p, const char* n) { bindRaw(c, p, BoundChannelType::U32_PTR,    n); }
+void PowerDebugger::bind(uint8_t c, float* p, const char* n)              { bindRaw(c, p, BoundChannelType::FLOAT_PTR,  n); }
+void PowerDebugger::bind(uint8_t c, double* p, const char* n)             { bindRaw(c, p, BoundChannelType::DOUBLE_PTR, n); }
+void PowerDebugger::bind(uint8_t c, bool* p, const char* n)               { bindRaw(c, p, BoundChannelType::BOOL_PTR,   n); }
+void PowerDebugger::bind(uint8_t c, signed char* p, const char* n)        { bindRaw(c, p, BoundChannelType::SCHAR_PTR,  n); }
+void PowerDebugger::bind(uint8_t c, unsigned char* p, const char* n)      { bindRaw(c, p, BoundChannelType::UCHAR_PTR,  n); }
+void PowerDebugger::bind(uint8_t c, short* p, const char* n)              { bindRaw(c, p, BoundChannelType::SHORT_PTR,  n); }
+void PowerDebugger::bind(uint8_t c, unsigned short* p, const char* n)     { bindRaw(c, p, BoundChannelType::USHORT_PTR, n); }
+void PowerDebugger::bind(uint8_t c, int* p, const char* n)                { bindRaw(c, p, BoundChannelType::INT_PTR,    n); }
+void PowerDebugger::bind(uint8_t c, unsigned int* p, const char* n)       { bindRaw(c, p, BoundChannelType::UINT_PTR,   n); }
+void PowerDebugger::bind(uint8_t c, long* p, const char* n)               { bindRaw(c, p, BoundChannelType::LONG_PTR,   n); }
+void PowerDebugger::bind(uint8_t c, unsigned long* p, const char* n)      { bindRaw(c, p, BoundChannelType::ULONG_PTR,  n); }
+void PowerDebugger::bind(uint8_t c, long long* p, const char* n)          { bindRaw(c, p, BoundChannelType::LLONG_PTR,  n); }
+void PowerDebugger::bind(uint8_t c, unsigned long long* p, const char* n) { bindRaw(c, p, BoundChannelType::ULLONG_PTR, n); }
 
-// Unmittelbar vor buildPacket() aufgerufen: gebundene Kanaele aus ihrem
+// Unmittelbar vor dem Senden aufgerufen: gebundene Kanaele aus ihrem
 // Pointer in debugData[] uebernehmen. Iteriert nur ueber die tatsaechlich
 // gebundenen Eintraege (frueher: alle 200 Kanaele, 100x/s).
 void PowerDebugger::sampleBoundChannels() {
@@ -238,15 +432,19 @@ void PowerDebugger::sampleBoundChannels() {
         const BoundChannel& b = _bound[i];
         float v;
         switch (b.type) {
-            case BoundChannelType::FLOAT_PTR:  v = *(float*)b.ptr;                    break;
-            case BoundChannelType::DOUBLE_PTR: v = (float)(*(double*)b.ptr);          break;
-            case BoundChannelType::BOOL_PTR:   v = *(bool*)b.ptr ? 1.0f : 0.0f;       break;
-            case BoundChannelType::I8_PTR:     v = (float)(*(int8_t*)b.ptr);          break;
-            case BoundChannelType::U8_PTR:     v = (float)(*(uint8_t*)b.ptr);         break;
-            case BoundChannelType::I16_PTR:    v = (float)(*(int16_t*)b.ptr);         break;
-            case BoundChannelType::U16_PTR:    v = (float)(*(uint16_t*)b.ptr);        break;
-            case BoundChannelType::I32_PTR:    v = (float)(*(int32_t*)b.ptr);         break;
-            case BoundChannelType::U32_PTR:    v = (float)(*(uint32_t*)b.ptr);        break;
+            case BoundChannelType::FLOAT_PTR:  v = *(float*)b.ptr;                       break;
+            case BoundChannelType::DOUBLE_PTR: v = (float)(*(double*)b.ptr);             break;
+            case BoundChannelType::BOOL_PTR:   v = *(bool*)b.ptr ? 1.0f : 0.0f;          break;
+            case BoundChannelType::SCHAR_PTR:  v = (float)(*(signed char*)b.ptr);        break;
+            case BoundChannelType::UCHAR_PTR:  v = (float)(*(unsigned char*)b.ptr);      break;
+            case BoundChannelType::SHORT_PTR:  v = (float)(*(short*)b.ptr);              break;
+            case BoundChannelType::USHORT_PTR: v = (float)(*(unsigned short*)b.ptr);     break;
+            case BoundChannelType::INT_PTR:    v = (float)(*(int*)b.ptr);                break;
+            case BoundChannelType::UINT_PTR:   v = (float)(*(unsigned int*)b.ptr);       break;
+            case BoundChannelType::LONG_PTR:   v = (float)(*(long*)b.ptr);               break;
+            case BoundChannelType::ULONG_PTR:  v = (float)(*(unsigned long*)b.ptr);      break;
+            case BoundChannelType::LLONG_PTR:  v = (float)(*(long long*)b.ptr);          break;
+            case BoundChannelType::ULLONG_PTR: v = (float)(*(unsigned long long*)b.ptr); break;
             default: continue;
         }
         debugData[b.chn] = v;
@@ -254,10 +452,11 @@ void PowerDebugger::sampleBoundChannels() {
 }
 
 // ══════════════════════════════════════════════════════════════════════════
-//  Namens-/Overlay-Deskriptor: JSON bauen, chunken, ueber UART_DBG senden
+//  Deskriptor: JSON bauen, chunken, ueber UART_DBG senden
 // ══════════════════════════════════════════════════════════════════════════
-//  Wird beim Boot einmal und danach nur auf Anfrage der GUI gesendet —
-//  Effizienz ist hier zweitrangig gegenueber Lesbarkeit und Robustheit.
+//  Wird beim Boot einmal und danach nur auf Anfrage bzw. beim
+//  Wiederverbinden gesendet — Effizienz ist hier zweitrangig gegenueber
+//  Lesbarkeit und Robustheit.
 
 namespace {
 
@@ -279,6 +478,7 @@ struct JsonBuilder {
         return false;
     }
 
+    __attribute__((format(printf, 2, 3)))
     void put(const char* fmt, ...) {
         if (pos + 1 >= cap) { overflow = true; return; }
         va_list args;
@@ -296,13 +496,33 @@ struct JsonBuilder {
         pos += (written < room) ? written : room;
     }
 
-    /// Haengt s escaped an (Anfuehrungszeichen/Backslash), OHNE Quotes.
+    /// Zahl JSON-konform anhaengen. %g ist kompakt ("2.5" statt "2.500"),
+    /// liefert fuer NaN/Inf aber "nan"/"inf" — beides ist KEIN gueltiges
+    /// JSON und wuerde den Parser der GUI ueber den kompletten Deskriptor
+    /// stolpern lassen. Deshalb hier abgefangen.
+    void putNum(float v) {
+        if (!isfinite(v)) v = 0.0f;
+        put("%g", (double)v);
+    }
+
+    /// Haengt s escaped an (Anfuehrungszeichen/Backslash/Steuerzeichen),
+    /// OHNE die umgebenden Quotes.
     void putEscaped(const char* s) {
         if (!s) return;
         for (const char* p = s; *p; ++p) {
-            if (pos + 2 >= cap) { overflow = true; return; }
-            if (*p == '"' || *p == '\\') buf[pos++] = '\\';
-            buf[pos++] = *p;
+            const unsigned char c = (unsigned char)*p;
+            if (c == '"' || c == '\\') {
+                if (pos + 3 >= cap) { overflow = true; return; }
+                buf[pos++] = '\\';
+                buf[pos++] = (char)c;
+            } else if (c < 0x20) {
+                // Steuerzeichen sind in JSON-Strings nicht erlaubt.
+                if (!fits(8)) return;
+                put("\\u%04x", (unsigned)c);
+            } else {
+                if (pos + 2 >= cap) { overflow = true; return; }
+                buf[pos++] = (char)c;
+            }
         }
     }
 
@@ -320,7 +540,7 @@ struct JsonBuilder {
 /// bricht die Schleife dann ab, damit das JSON gueltig bleibt).
 bool putNameEntry(JsonBuilder& j, bool& first, int index, const char* name) {
     if (!name || !name[0]) return true;                       // Luecke: ueberspringen
-    if (!j.fits(strlen(name) * 2 + 16)) return false;
+    if (!j.fits(strlen(name) * 6 + 16)) return false;         // *6: \u00xx im Extremfall
     if (!first) j.put(",");
     first = false;
     j.put("\"%d\":\"", index);
@@ -329,54 +549,143 @@ bool putNameEntry(JsonBuilder& j, bool& first, int index, const char* name) {
     return true;
 }
 
+/// Ein Parameter-Eintrag der Widget-Konfiguration.
+bool putParamDef(JsonBuilder& j, bool& first, const ParamDef& d) {
+    if (!d.name || !d.name[0]) return true;
+    const size_t need = strlen(d.name) * 6
+                      + strlen(d.widget ? d.widget : "")
+                      + strlen(d.group  ? d.group  : "") * 6 + 140;
+    if (!j.fits(need)) return false;
+    if (!first) j.put(",");
+    first = false;
+    j.put("{\"i\":%d,\"n\":\"", (int)d.index);
+    j.putEscaped(d.name);
+    j.put("\",\"w\":\"%s\",\"min\":", d.widget ? d.widget : "slider");
+    j.putNum(d.min_val);
+    j.put(",\"max\":");
+    j.putNum(d.max_val);
+    j.put(",\"step\":");
+    j.putNum(d.step);
+    j.put(",\"def\":");
+    j.putNum(d.def_val);
+    if (d.group && d.group[0]) {
+        j.put(",\"g\":\"");
+        j.putEscaped(d.group);
+        j.put("\"");
+    }
+    if (d.momentary) j.put(",\"m\":true");
+    j.put("}");
+    return true;
+}
+
 }  // namespace
 
 void PowerDebugger::buildDescriptorJson() {
     JsonBuilder j(_descBuf, sizeof(_descBuf));
 
-    j.raw("{\"channels\":{");
+    // ── meta: Firmware-Version und Eckdaten ───────────────────────────────
+    j.raw("{\"meta\":{");
+    j.put("\"pds\":\"%s\",\"wire\":%d,\"channels\":%d,\"used\":%d",
+          PDS_VERSION, (int)PDS_WIRE_VERSION, (int)ACTIVE_CHANNELS, (int)_autoNext);
+    j.put(",\"build\":\"%s %s\"", __DATE__, __TIME__);
+    if (_fwVersion[0]) {
+        j.put(",\"fw\":\"");
+        j.putEscaped(_fwVersion);
+        j.put("\"");
+    }
+    if (_wdtWasReset) j.put(",\"wdt_reset\":true");
+
+    j.raw("},\"channels\":{");
     bool first = true;
     for (int i = 0; i < ACTIVE_CHANNELS; i++) {
         if (!putNameEntry(j, first, i, _names[i])) break;
     }
 
+    j.raw("},\"units\":{");
+    first = true;
+    for (uint8_t i = 0; i < _unitCount; i++) {
+        if (!putNameEntry(j, first, _units[i].chn, _units[i].unit)) break;
+    }
+
+    // ── Param-Namen (schlanker Pfad, den die GUI seit jeher liest) ────────
     j.raw("},\"param_slow_floats\":{");
     first = true;
-    for (int i = 0; i < PARAM_SLOW_FLOAT_COUNT; i++) {
-        if (!putNameEntry(j, first, i, PARAM_SLOW_FLOAT_NAMES[i])) break;
+    for (size_t i = 0; i < PARAM_SLOW_FLOATS_COUNT; i++) {
+        if (!putNameEntry(j, first, PARAM_SLOW_FLOATS[i].index, PARAM_SLOW_FLOATS[i].name)) break;
     }
 
     j.raw("},\"param_slow_bools\":{");
     first = true;
-    for (int i = 0; i < PARAM_SLOW_BOOL_COUNT; i++) {
-        if (!putNameEntry(j, first, i, PARAM_SLOW_BOOL_NAMES[i])) break;
+    for (size_t i = 0; i < PARAM_SLOW_BOOLS_COUNT; i++) {
+        if (!putNameEntry(j, first, PARAM_SLOW_BOOLS[i].index, PARAM_SLOW_BOOLS[i].name)) break;
     }
 
     j.raw("},\"param_fast_floats\":{");
     first = true;
-    for (int i = 0; i < PARAM_FAST_FLOAT_COUNT; i++) {
-        if (!putNameEntry(j, first, i, PARAM_FAST_FLOAT_NAMES[i])) break;
+    for (size_t i = 0; i < PARAM_FAST_FLOATS_COUNT; i++) {
+        if (!putNameEntry(j, first, PARAM_FAST_FLOATS[i].index, PARAM_FAST_FLOATS[i].name)) break;
     }
 
-    j.raw("},\"overlays\":[");
+    // ── Vollstaendige Widget-Konfiguration des Parameter-Tabs ─────────────
+    j.raw("},\"param_cfg\":{\"slow_floats\":[");
+    first = true;
+    for (size_t i = 0; i < PARAM_SLOW_FLOATS_COUNT; i++) {
+        if (!putParamDef(j, first, PARAM_SLOW_FLOATS[i])) break;
+    }
+    j.raw("],\"slow_bools\":[");
+    first = true;
+    for (size_t i = 0; i < PARAM_SLOW_BOOLS_COUNT; i++) {
+        if (!putParamDef(j, first, PARAM_SLOW_BOOLS[i])) break;
+    }
+    j.raw("],\"fast_floats\":[");
+    first = true;
+    for (size_t i = 0; i < PARAM_FAST_FLOATS_COUNT; i++) {
+        if (!putParamDef(j, first, PARAM_FAST_FLOATS[i])) break;
+    }
+    j.raw("],\"joysticks\":[");
+    first = true;
+    for (size_t i = 0; i < PARAM_JOYSTICKS_COUNT; i++) {
+        const JoystickDef& js = PARAM_JOYSTICKS[i];
+        if (!js.name || !js.name[0]) continue;
+        if (!j.fits(strlen(js.name) * 6 + 160)) break;
+        if (!first) j.put(",");
+        first = false;
+        j.put("{\"n\":\"");
+        j.putEscaped(js.name);
+        j.put("\",\"s\":\"%s\",\"x\":%d,\"y\":%d,\"xr\":[",
+              js.source ? js.source : "fast", (int)js.x_index, (int)js.y_index);
+        j.putNum(js.x_min); j.put(",");
+        j.putNum(js.x_max); j.put("],\"yr\":[");
+        j.putNum(js.y_min); j.put(",");
+        j.putNum(js.y_max);
+        j.put("],\"c\":%s}", js.return_to_center ? "true" : "false");
+    }
+
+    // ── Overlays der Systemansicht ────────────────────────────────────────
+    j.raw("]},\"overlays\":[");
     bool firstOverlay = true;
     for (size_t i = 0; i < CHANNEL_OVERLAYS_COUNT; i++) {
         const OverlayDef& ov = CHANNEL_OVERLAYS[i];
-        const size_t need = strlen(ov.label ? ov.label : "") * 2
-                          + strlen(ov.extra ? ov.extra : "") * 2
-                          + strlen(ov.type  ? ov.type  : "") + 200;
+        if (!ov.type || !ov.type[0]) continue;
+        const size_t need = strlen(ov.label ? ov.label : "") * 6
+                          + strlen(ov.extra ? ov.extra : "") * 6
+                          + strlen(ov.type) + 220;
         if (!j.fits(need)) break;
         if (!firstOverlay) j.put(",");
         firstOverlay = false;
-        j.put("{\"group\":%d,\"type\":\"%s\",\"label\":\"", ov.group, ov.type ? ov.type : "");
+        j.put("{\"group\":%d,\"type\":\"%s\",\"label\":\"", ov.group, ov.type);
         j.putEscaped(ov.label);
         j.put("\"");
         if (ov.channel  >= 0) j.put(",\"channel\":%d",  ov.channel);
         if (ov.channel2 >= 0) j.put(",\"channel2\":%d", ov.channel2);
-        if (ov.min_val != 0.0f || ov.max_val != 0.0f)
-            j.put(",\"min\":%.3f,\"max\":%.3f", ov.min_val, ov.max_val);
-        if (ov.x_pct >= 0.0f)
-            j.put(",\"x_pct\":%.2f,\"y_pct\":%.2f", ov.x_pct, ov.y_pct);
+        if (ov.min_val != 0.0f || ov.max_val != 0.0f) {
+            j.put(",\"min\":"); j.putNum(ov.min_val);
+            j.put(",\"max\":"); j.putNum(ov.max_val);
+        }
+        if (ov.x_pct >= 0.0f) {
+            j.put(",\"x_pct\":"); j.putNum(ov.x_pct);
+            j.put(",\"y_pct\":"); j.putNum(ov.y_pct);
+        }
         if (ov.extra && ov.extra[0]) {
             j.put(",\"extra\":\"");
             j.putEscaped(ov.extra);
@@ -386,10 +695,10 @@ void PowerDebugger::buildDescriptorJson() {
     }
     j.raw("]}");
 
-    _descJsonLen  = j.pos;
-    _descOverflow = j.overflow;
-    _descChunkCount = (uint8_t)((j.pos + CHANNEL_DESC_CHUNK_PAYLOAD_MAX - 1)
-                                 / CHANNEL_DESC_CHUNK_PAYLOAD_MAX);
+    _descJsonLen    = j.pos;
+    _descOverflow   = j.overflow;
+    _descChunkCount = (uint16_t)((j.pos + CHANNEL_DESC_CHUNK_PAYLOAD_MAX - 1)
+                                  / CHANNEL_DESC_CHUNK_PAYLOAD_MAX);
     if (_descChunkCount == 0) _descChunkCount = 1;   // leerer Deskriptor -> 1 leerer Chunk
     _descBuilt = true;
 
@@ -406,7 +715,7 @@ void PowerDebugger::startDescriptorSend() {
 }
 
 void PowerDebugger::sendNextDescChunk() {
-    if (_descNextChunk >= _descChunkCount) { _descNextChunk = 0xFF; return; }
+    if (_descNextChunk >= _descChunkCount) { _descNextChunk = 0xFFFF; return; }
 
     const size_t offset    = (size_t)_descNextChunk * CHANNEL_DESC_CHUNK_PAYLOAD_MAX;
     const size_t remaining = (offset < _descJsonLen) ? (_descJsonLen - offset) : 0;
@@ -416,15 +725,15 @@ void PowerDebugger::sendNextDescChunk() {
     uint8_t pkt[CHANNEL_DESC_CHUNK_HEADER_BYTES + CHANNEL_DESC_CHUNK_PAYLOAD_MAX];
     const uint32_t magic = CHANNEL_DESC_MAGIC;
     memcpy(pkt, &magic, 4);
-    pkt[4] = _descNextChunk;
-    pkt[5] = _descChunkCount;
+    pkt[4] = (uint8_t)_descNextChunk;
+    pkt[5] = (uint8_t)_descChunkCount;
     pkt[6] = payloadLen;
     memcpy(pkt + CHANNEL_DESC_CHUNK_HEADER_BYTES, _descBuf + offset, payloadLen);
 
     UART_DBG.write(pkt, CHANNEL_DESC_CHUNK_HEADER_BYTES + payloadLen);
 
     _descNextChunk++;
-    if (_descNextChunk >= _descChunkCount) _descNextChunk = 0xFF;   // fertig
+    if (_descNextChunk >= _descChunkCount) _descNextChunk = 0xFFFF;   // fertig
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -505,6 +814,8 @@ void PowerDebugger::pollParamUart() {
             _rxBuf[_rxFill++] = b;
 
             if (_rxFill >= _rxExpectedLen) {
+                uint32_t seq;
+                memcpy(&seq, _rxBuf + 4, 4);
                 if (_rxExpectedLen == PARAM_SLOW_PACKET_BYTES) {
                     memcpy(_paramFloats, _rxBuf + PARAM_HEADER_BYTES,
                            PARAM_SLOW_FLOAT_COUNT * 4);
@@ -513,11 +824,13 @@ void PowerDebugger::pollParamUart() {
                             _rxBuf[PARAM_HEADER_BYTES + PARAM_SLOW_FLOAT_COUNT * 4 + i] != 0;
                     }
                     _lastSlowRxMs = millis();
+                    _lastSlowSeq  = seq;
                     _slowPktCount++;
                 } else {
                     memcpy(_fastFloats, _rxBuf + PARAM_HEADER_BYTES,
                            PARAM_FAST_FLOAT_COUNT * 4);
                     _lastFastRxMs = millis();
+                    _lastFastSeq  = seq;
                     _fastPktCount++;
                 }
                 _rxExpectedLen = 0;
@@ -543,32 +856,37 @@ float PowerDebugger::fastParam(int index) const {
     return ((unsigned)index < (unsigned)PARAM_FAST_FLOAT_COUNT) ? _fastFloats[index] : 0.0f;
 }
 
-// Namensauflösung ueber die Tabellen aus channel_config.h. Lineare Suche
+// Namensaufloesung ueber die Tabellen aus channel_config.h. Lineare Suche
 // ueber hoechstens 50 kurze Strings — bei einem Aufruf je Regelzyklus nicht
 // messbar. Wer sie in einer sehr heissen Schleife braucht, holt den Index
 // einmal in eine static-Variable (siehe Beispiel-Sketch).
-static int lookupParamIndex(const char* const* table, int count, const char* name) {
+static int lookupParamIndex(const ParamDef* table, size_t count, int limit, const char* name) {
     if (!name || !name[0]) return -1;
-    for (int i = 0; i < count; i++) {
-        if (table[i] && strcmp(table[i], name) == 0) return i;
+    for (size_t i = 0; i < count; i++) {
+        if (table[i].name && strcmp(table[i].name, name) == 0) {
+            return (table[i].index < (uint8_t)limit) ? (int)table[i].index : -1;
+        }
     }
     return -1;
 }
 
 float PowerDebugger::param(const char* name) const {
-    const int i = lookupParamIndex(PARAM_SLOW_FLOAT_NAMES, PARAM_SLOW_FLOAT_COUNT, name);
+    const int i = lookupParamIndex(PARAM_SLOW_FLOATS, PARAM_SLOW_FLOATS_COUNT,
+                                    PARAM_SLOW_FLOAT_COUNT, name);
     if (i < 0) { pdsWarn("Unbekannter Param-Name \"%s\"", name ? name : "(null)"); return 0.0f; }
     return _paramFloats[i];
 }
 
 bool PowerDebugger::paramBool(const char* name) const {
-    const int i = lookupParamIndex(PARAM_SLOW_BOOL_NAMES, PARAM_SLOW_BOOL_COUNT, name);
+    const int i = lookupParamIndex(PARAM_SLOW_BOOLS, PARAM_SLOW_BOOLS_COUNT,
+                                    PARAM_SLOW_BOOL_COUNT, name);
     if (i < 0) { pdsWarn("Unbekannter Bool-Param \"%s\"", name ? name : "(null)"); return false; }
     return _paramBools[i];
 }
 
 float PowerDebugger::fastParam(const char* name) const {
-    const int i = lookupParamIndex(PARAM_FAST_FLOAT_NAMES, PARAM_FAST_FLOAT_COUNT, name);
+    const int i = lookupParamIndex(PARAM_FAST_FLOATS, PARAM_FAST_FLOATS_COUNT,
+                                    PARAM_FAST_FLOAT_COUNT, name);
     if (i < 0) { pdsWarn("Unbekannter Fast-Param \"%s\"", name ? name : "(null)"); return 0.0f; }
     return _fastFloats[i];
 }
@@ -586,15 +904,64 @@ uint32_t PowerDebugger::fastParamAgeMs() const {
     return millis() - _lastFastRxMs;
 }
 
+// ══════════════════════════════════════════════════════════════════════════
+//  Watchdog
+// ══════════════════════════════════════════════════════════════════════════
+
+void PowerDebugger::enableWatchdog(uint32_t timeoutMs) {
+#if defined(__IMXRT1062__)
+    if (_wdtOn) { feedWatchdog(); return; }
+
+    if (timeoutMs < 500)    timeoutMs = 500;
+    if (timeoutMs > 128000) timeoutMs = 128000;
+    uint32_t halfSeconds = (timeoutMs + 499) / 500;    // aufrunden
+    if (halfSeconds < 1)   halfSeconds = 1;
+    if (halfSeconds > 128) halfSeconds = 128;
+
+    // WDE ist per Hardware nur EINMAL setzbar und laesst sich ohne Reset
+    // nicht mehr loeschen — genau das macht einen Watchdog verlaesslich.
+    // SRS/WDA bleiben gesetzt: beide sind aktiv-LOW, ein versehentliches
+    // Loeschen wuerde sofort einen Reset ausloesen.
+    *PDS_WDOG1_WCR = (uint16_t)(((halfSeconds - 1) << 8)
+                                 | PDS_WCR_WDA | PDS_WCR_SRS | PDS_WCR_WDE);
+    _wdtOn = true;
+    feedWatchdog();
+    logf("Watchdog aktiv: %lu ms", (unsigned long)(halfSeconds * 500));
+#else
+    (void)timeoutMs;
+    pdsWarn("Watchdog wird nur auf Teensy 4.x unterstuetzt");
+#endif
+}
+
+void PowerDebugger::feedWatchdog() {
+#if defined(__IMXRT1062__)
+    if (!_wdtOn) return;
+    *PDS_WDOG1_WSR = 0x5555;
+    *PDS_WDOG1_WSR = 0xAAAA;
+#endif
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+
+void PowerDebugger::setFirmwareVersion(const char* v) {
+    if (!v) v = "";
+    strncpy(_fwVersion, v, sizeof(_fwVersion) - 1);
+    _fwVersion[sizeof(_fwVersion) - 1] = '\0';
+    _descBuilt = false;
+}
+
 void PowerDebugger::printStatus(Print& out) const {
-    out.printf("[PDS %s] TX=%lu (drop %lu) | Slow=%lu Fast=%lu | Alter=%lu ms | "
-               "Sync-Verluste=%lu | Kanaele=%u%s\n",
+    out.printf("[PDS %s%s%s] TX=%lu (drop %lu) | Slow=%lu Fast=%lu | Alter=%lu ms | "
+               "Sync-Verluste=%lu | Kanaele=%u | Ereignisse=%lu (verworfen %lu)%s%s\n",
                PDS_VERSION,
+               _fwVersion[0] ? " fw " : "", _fwVersion,
                (unsigned long)_txPktCount, (unsigned long)_txDrops,
                (unsigned long)_slowPktCount, (unsigned long)_fastPktCount,
                (unsigned long)fastParamAgeMs(),
                (unsigned long)_paramSyncLosses,
                (unsigned)_autoNext,
+               (unsigned long)_evSent, (unsigned long)_evDrops,
+               _wdtOn ? " | WDT" : "",
                _descOverflow ? " | DESKRIPTOR GEKUERZT" : "");
 }
 
@@ -607,6 +974,7 @@ void PowerDebugger::enableSelfDiagnostics(int firstChannel) {
     setName(firstChannel + 2, "PDS_Slow_Pakete");
     setName(firstChannel + 3, "PDS_Fast_Pakete");
     setName(firstChannel + 4, "PDS_Fast_Alter_ms");
+    setUnit(firstChannel + 4, "ms");
     setName(firstChannel + 5, "PDS_Sync_Verluste");
 }
 
@@ -617,13 +985,25 @@ void PowerDebugger::begin() {
     for (int i = 0; i < MAX_FLOATS; i++) debugData[i] = 0.0f;
     for (int i = 0; i < ACTIVE_CHANNELS; i++) _names[i][0] = '\0';
     _boundCount = 0;
+    _unitCount  = 0;
     _autoNext   = PDS_AUTO_CHANNEL_BASE;
+    _evHead = _evCount = _evInWindow = 0;
+    _evWindowStartMs = millis();
 
-    // Namen aus channel_config.h vorbelegen. bind()/Channel(...,name)/plot()
-    // im Sketch ueberschreiben danach gezielt einzelne Eintraege bzw. bekommen
-    // die noch freien Kanaele (siehe channelFor()).
+    if (PDS_FW_VERSION[0]) setFirmwareVersion(PDS_FW_VERSION);
+
+    // Kam der letzte Reset vom Watchdog? Muss VOR dem ersten feedWatchdog()
+    // gelesen werden — WRSR haelt den Grund bis zum naechsten Power-On.
+#if defined(__IMXRT1062__)
+    _wdtWasReset = (*PDS_WDOG1_WRSR & PDS_WRSR_TOUT) != 0;
+#endif
+
+    // Namen/Einheiten aus channel_config.h vorbelegen. bind()/Channel(...,name)/
+    // plot() im Sketch ueberschreiben danach gezielt einzelne Eintraege bzw.
+    // bekommen die noch freien Kanaele (siehe channelFor()).
     for (size_t i = 0; i < CHANNEL_NAMES_COUNT; i++) {
         setName(CHANNEL_NAMES[i].index, CHANNEL_NAMES[i].name);
+        if (CHANNEL_NAMES[i].unit) setUnit(CHANNEL_NAMES[i].index, CHANNEL_NAMES[i].unit);
     }
 
     // TX- UND RX-Puffer erweitern, danach erst UART starten. Der RX-Puffer ist
@@ -646,13 +1026,22 @@ void PowerDebugger::begin() {
     // loop()-Durchlauf, ein hier gebauter Deskriptor waere noch leer.
     // (Die GUI kann per CHANNEL_DESC_REQUEST_MAGIC jederzeit eine
     //  Neuuebertragung anfordern.)
-    _descNextChunk     = 0xFF;
-    _bootAnnounceAtMs  = millis() + PDS_BOOT_ANNOUNCE_DELAY_MS;
+    _descNextChunk    = 0xFFFF;
+    _bootAnnounceAtMs = millis() + PDS_BOOT_ANNOUNCE_DELAY_MS;
     if (_bootAnnounceAtMs == 0) _bootAnnounceAtMs = 1;   // 0 ist der "erledigt"-Marker
+
+    if (_wdtWasReset) {
+        // Als Ereignis in die GUI: ein Watchdog-Reset ist die wichtigste
+        // Einzelinformation nach einem unerklaerlichen Neustart im Spiel.
+        pushEvent(PDS_EVENT_KIND_LOG, PDS_LEVEL_ERROR, "Neustart durch Watchdog", 0.0f);
+    }
 }
 
 void PowerDebugger::update() {
-    // ── Param-Downlink ZUERST: nicht-blockierend, jede update()-Iteration.
+    // ── Watchdog zuerst: solange update() laeuft, laeuft auch der Roboter.
+    feedWatchdog();
+
+    // ── Param-Downlink: nicht-blockierend, jede update()-Iteration.
     //    Bewusst vor dem Telemetrie-Versand, damit fastParam() direkt nach
     //    update() den zuletzt eingetroffenen Stand liefert und nicht einen
     //    um einen Zyklus alten.
@@ -680,12 +1069,22 @@ void PowerDebugger::update() {
         sendTelemetryPacket();
     }
 
-    // ── Namens-/Overlay-Deskriptor: ein Chunk alle 10 ms, solange ein
-    //    Sendevorgang laeuft (Boot oder GUI-Anfrage). Nur senden, wenn im
-    //    TX-Puffer genug Platz ist -- sonst wuerde write() blockierend auf
-    //    den UART warten und den 100-Hz-Takt des Hauptprogramms verzoegern.
-    if (_descNextChunk != 0xFF && DescChunkTimer >= DESC_CHUNK_PERIOD_MS) {
-        if (UART_DBG.availableForWrite() >= CHANNEL_DESC_CHUNK_PACKET_BYTES) {
+    // ── Ereignisse/Logzeilen: hoechstens eines pro update(), und nur wenn
+    //    im TX-Puffer noch ein komplettes Telemetriepaket zusaetzlich Platz
+    //    hat (txRoomFor). Marken sollen zeitnah ankommen, duerfen den
+    //    100-Hz-Takt aber unter keinen Umstaenden verdraengen.
+    sendNextEvent();
+
+    // ── Parameter-Rueckmeldung an die GUI (2 Hz) ─────────────────────────
+    if (_paramAckOn && ParamAckTimer >= PARAM_ACK_INTERVAL_MS) {
+        ParamAckTimer = 0;
+        sendParamAck();
+    }
+
+    // ── Deskriptor: ein Chunk alle DESC_CHUNK_PERIOD_MS, solange ein
+    //    Sendevorgang laeuft (Boot, GUI-Anfrage oder Wiederverbindung).
+    if (_descNextChunk != 0xFFFF && DescChunkTimer >= DESC_CHUNK_PERIOD_MS) {
+        if (txRoomFor(CHANNEL_DESC_CHUNK_PACKET_BYTES)) {
             DescChunkTimer = 0;
             sendNextDescChunk();
         }

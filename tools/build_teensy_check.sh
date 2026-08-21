@@ -56,5 +56,8 @@ run "PDS.cpp (32 Kanaele)" -DACTIVE_CHANNELS=32 -DPDS_AUTO_CHANNEL_BASE=8 \
     -DPDS_DESC_REPEAT_MS=0 -DPDS_DESC_BUF_BYTES=2048 -DPDS_NAME_CACHE_SIZE=16 \
     -I"$ROOT/teensy_firmware/src" "$ROOT/teensy_firmware/src/PDS.cpp" -o "$TMP/3a.o"
 
+echo "== 4) Typabdeckung von bind()/track() =="
+run "bind-Typen" -DACTIVE_CHANNELS=200 -I"$ROOT/teensy_firmware/src"     "$ROOT/tools/teensy_bind_types_test.cpp" -o "$TMP/4a.o"
+
 [[ $fail -eq 0 ]] && echo "Alle Teensy-Konfigurationen kompilieren sauber." || echo "FEHLER: siehe oben."
 exit $fail
