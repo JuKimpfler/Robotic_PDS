@@ -108,6 +108,9 @@ class AppBridge(QObject):
         # ausgewertet wird sie in der Diagnose-Brücke.
         self._diag.load_battery_config(self._settings.battery())
         self._diag.batteryConfigChanged.connect(self._store_battery_config)
+        # Meldungen des Overlay-Editors (gespeichert, verworfen, ...)
+        # laufen in dieselbe Fusszeile wie alles andere.
+        self._visuals.notice.connect(self.statusMessage)
         self._params.setKeyboardEnabled(self._settings.keyboardControl)
         self._settings.settingsChanged.connect(self._apply_settings)
 

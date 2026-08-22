@@ -20,6 +20,8 @@ testen kann, und die erfahrungsgemaess die meisten Fehler enthalten:
  11. runtime_config           — Teensy-Konfiguration -> param_config.json,
                                 Fingerabdruck, atomares Speichern
  12. expand_textgrid          — Rasterlayout vieler Werte auf einem Bild
+ 13. overlay_schema           — Feldschema und Typumwandlung des Editors,
+                                Konfliktregel Teensy <-> Handarbeit
 
 Benoetigt nur die Standardbibliothek. numpy/PyQt6/pyserial/pygame duerfen
 fehlen — fehlende Module werden fuer den Test durch Attrappen ersetzt.
@@ -30,6 +32,7 @@ Exit-Code 0 = alles gruen.
 """
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import socket
@@ -46,10 +49,12 @@ sys.path.insert(0, str(ROOT / "shared"))
 sys.path.insert(0, str(ROOT / "tools"))
 
 # ── pyserial-Attrappe: uart_receiver.py importiert serial auf Modulebene ────
+#  find_spec() statt eines try/except um `import serial`: der Import haette
+#  hier nur die Frage "ist pyserial da?" beantwortet und einen Namen gebunden,
+#  den niemand benutzt — pyflakes meldet genau das, und die CI-Stufe lief
+#  deshalb rot. `# noqa` kennt pyflakes nicht.
 if "serial" not in sys.modules:
-    try:
-        import serial  # noqa: F401
-    except ImportError:
+    if importlib.util.find_spec("serial") is None:
         stub = types.ModuleType("serial")
         stub.EIGHTBITS = 8
         stub.PARITY_NONE = "N"
@@ -574,11 +579,135 @@ def test_textgrid() -> None:
           expand_textgrid({"cols": 2}, name_for) == [])
 
 
+# ══════════════════════════════════════════════════════════════════════════
+#  13) Overlay-Editor: Feldschema, Typumwandlung, Konfliktregel
+# ══════════════════════════════════════════════════════════════════════════
+def test_overlay_editor() -> None:
+    section("13) Overlay-Editor")
+    import overlay_schema as osch
+    import runtime_config
+
+    # ── Arten und Feldschema ─────────────────────────────────────────────
+    check("fehlendes 'type' bedeutet Text",
+          osch.entry_kind({"label": "x"}) == "text")
+    check("unbekanntes 'type' faellt auf Text zurueck",
+          osch.entry_kind({"type": "quatsch"}) == "text")
+
+    for kind in osch.OVERLAY_KINDS + osch.GRAPHIC_KINDS:
+        entry = osch.new_entry(kind)
+        fields = osch.describe(entry)
+        check(f"{kind}: neuer Eintrag hat Felder und alle einen Wert",
+              len(fields) > 0 and all("value" in f for f in fields))
+        check(f"{kind}: neuer Eintrag ist ohne Beanstandung",
+              osch.problems(entry) == [], str(osch.problems(entry)))
+        check(f"{kind}: Art bleibt nach dem Anlegen erhalten",
+              osch.entry_kind(entry) == kind)
+
+    # "text" darf KEIN type-Feld bekommen, sonst versteht die alte
+    # visuals_overlays.json-Ladelogik den Eintrag nicht mehr.
+    check("Text-Eintrag bleibt ohne 'type'-Schluessel",
+          "type" not in osch.new_entry("text"))
+
+    # ── Typumwandlung: QML liefert alles als Zeichenkette ────────────────
+    grid = osch.new_entry("textgrid")
+    osch.set_value(grid, "cols", "3")
+    check("Zahl aus einem Textfeld wird zu int",
+          grid["cols"] == 3 and isinstance(grid["cols"], int))
+    osch.set_value(grid, "dx_pct", "22,5")
+    check("deutsches Dezimalkomma wird verstanden", grid["dx_pct"] == 22.5)
+    osch.set_value(grid, "cols", "999")
+    check("zu grosser Wert wird auf das Maximum begrenzt", grid["cols"] == 12)
+    before = grid["dy_pct"]
+    osch.set_value(grid, "dy_pct", "keine Zahl")
+    check("unlesbare Eingabe laesst das Feld unveraendert", grid["dy_pct"] == before)
+    osch.set_value(grid, "dy_pct", float("nan"))
+    check("NaN landet nie in der Konfiguration", grid["dy_pct"] == before)
+    osch.set_value(grid, "labels", "0")
+    check('"0" wird zu False', grid["labels"] is False)
+    osch.set_value(grid, "channels", " 0-11,20 ")
+    check("Kanal-Spezifikation bleibt als Text erhalten (nicht aufgeloest)",
+          grid["channels"] == "0-11,20")
+    check("unbekannter Schluessel wird abgewiesen",
+          osch.set_value(grid, "gibtsnicht", 1) is False)
+
+    # ── DIE Regression: ein Raster bleibt EIN Eintrag ────────────────────
+    #  Wuerde der Editor die aufbereitete Fassung zurueckschreiben, waeren
+    #  aus einem Block hier 13 Einzeleintraege geworden — und der ganze
+    #  Sinn ("nicht 13 Positionen von Hand pflegen") waere dahin.
+    from bridge.utils import expand_textgrid
+    cells = expand_textgrid(grid, lambda c: f"K{c}")
+    check("das Raster zeigt viele Zellen", len(cells) == 13)
+    x0, y0 = grid["x_pct"], grid["y_pct"]
+    grid["x_pct"], grid["y_pct"] = osch.move_position(grid, 5.0, -3.0)
+    check("Ziehen verschiebt nur die linke obere Ecke",
+          grid["x_pct"] == x0 + 5 and grid["y_pct"] == y0 - 3
+          and len(osch.describe(grid)) == len(osch.fields_for("textgrid")))
+    moved = expand_textgrid(grid, lambda c: f"K{c}")
+    check("alle Zellen wandern um denselben Betrag mit",
+          all(abs((m["xPct"] - c["xPct"]) - 5.0) < 1e-9
+              and abs((m["yPct"] - c["yPct"]) + 3.0) < 1e-9
+              for c, m in zip(cells, moved)))
+
+    # ── Positionsgrenzen ─────────────────────────────────────────────────
+    check("nach links aus dem Bild geschoben wird begrenzt",
+          osch.move_position({"x_pct": 0, "y_pct": 0}, -500, -500)
+          == (osch.POS_MIN, osch.POS_MIN))
+    check("nach rechts aus dem Bild geschoben wird begrenzt",
+          osch.move_position({"x_pct": 0, "y_pct": 0}, 500, 500)
+          == (osch.POS_MAX, osch.POS_MAX))
+    check("Text an einer Zahlenstelle stuerzt nicht ab",
+          osch.move_position({"x_pct": "kaputt", "y_pct": None}, 1, 1)
+          == (6.0, 9.0))
+
+    # ── Verschachtelte Schluessel (Feldansicht) ──────────────────────────
+    bodies = osch.new_entry("bodies")
+    osch.set_value(bodies, "body2.label", "Ball")
+    check("verschachtelter Schluessel wird gesetzt",
+          bodies["body2"]["label"] == "Ball"
+          and osch.get_value(bodies, "body2.label") == "Ball")
+    osch.set_value(bodies, "body1.channel_x", "7")
+    check("nur x gesetzt, y fehlt -> Hinweis",
+          any("x und y" in p for p in osch.problems(bodies)),
+          str(osch.problems(bodies)))
+    osch.set_value(bodies, "body1.channel_y", "8")
+    check("x und y gesetzt -> kein Hinweis mehr",
+          not any("x und y" in p for p in osch.problems(bodies)))
+
+    # ── Pruefungen ───────────────────────────────────────────────────────
+    g = osch.new_entry("gauge")
+    osch.set_value(g, "max", -5.0)
+    check("Minimum >= Maximum wird gemeldet",
+          any("Minimum" in p for p in osch.problems(g)))
+    tg = osch.new_entry("textgrid")
+    tg["channels"] = ""
+    check("leere Kanalliste wird gemeldet",
+          any("Kanaele" in p for p in osch.problems(tg)))
+    tg["channels"] = "0,999"
+    check("Kanal ausserhalb des Wire-Formats wird gemeldet",
+          any("999" in p for p in osch.problems(tg)))
+
+    # ── Konfliktregel Teensy <-> Handarbeit ──────────────────────────────
+    H, E = runtime_config.TEENSY_HASH_KEY, runtime_config.LOCAL_EDIT_KEY
+    check("nichts gespeichert -> Teensy befuellt",
+          runtime_config.merge_decision(None, "abc") == "overwrite")
+    check("gleicher Fingerabdruck -> nichts tun",
+          runtime_config.merge_decision({H: "abc"}, "abc") == "keep")
+    check("neue Firmware ohne Handarbeit -> Teensy gewinnt",
+          runtime_config.merge_decision({H: "alt"}, "neu") == "overwrite")
+    check("neue Firmware MIT Handarbeit -> nachfragen",
+          runtime_config.merge_decision({H: "alt", E: True}, "neu") == "ask")
+    check("gleicher Fingerabdruck schlaegt Handarbeit -> nicht nachfragen",
+          runtime_config.merge_decision({H: "abc", E: True}, "abc") == "keep")
+    check("offene, ungespeicherte Bearbeitung -> immer nachfragen",
+          runtime_config.merge_decision(None, "abc", editing_unsaved=True) == "ask")
+
+
 def main() -> int:
     print("Power Debug System — Selbsttest")
     for fn in (test_wire_format, test_frame_assemblers, test_descriptor,
                test_param_io, test_bt_protocol, test_qml_bindings,
-               test_aux_uplink, test_runtime_config, test_textgrid):
+               test_aux_uplink, test_runtime_config, test_textgrid,
+               test_overlay_editor):
         try:
             fn()
         except Exception as exc:            # noqa: BLE001

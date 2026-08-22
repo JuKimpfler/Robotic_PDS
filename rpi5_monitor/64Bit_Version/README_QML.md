@@ -36,9 +36,52 @@ auf echter Hardware vor).
 | Hauptshell (SwipeView+TabBar+NodeSelector+StatusBar) | `qml/Main.qml`, `qml/components/{NodeSelector,StatusBar}.qml` | ✅ vollständig |
 | Tab 1 — Live-Tabelle | `qml/TelemetryView.qml`, `bridge/telemetry_bridge.py` | ✅ vollständig, inkl. Filterfeld (neu ggü. Original) |
 | Tab 2 — Live-Plotter | `qml/PlotterView.qml`, `bridge/plot_bridge.py` (PlotCanvas, Option C aus dem Plan) | ✅ funktional; Pinch-to-Zoom für Punktezahl |
-| Tab 3 — Systemansicht | `qml/SystemView.qml`, `bridge/visuals_bridge.py`, `qml/components/{Gauge,RotationIndicator,VectorIndicator,MiniTable}.qml` | ✅ Anzeige vollständig (Bild+Overlays+Gauges/Rotation/Vektor/Tabelle); **Editier-Modus (Overlays per Drag verschieben) noch nicht umgesetzt**, siehe TODO |
+| Tab 3 — Systemansicht | `qml/SystemView.qml`, `bridge/visuals_bridge.py`, `overlay_schema.py`, `qml/components/{Gauge,RotationIndicator,VectorIndicator,MiniTable,OverlayEditor,FieldEditor,ChannelPicker}.qml` | ✅ vollständig, inkl. **Editor** (Ziehen im Bild, Formular je Element, Gruppen, Rückgängig, dauerhaft je Node gespeichert) — siehe unten |
 | Tab 4 — Parameter | `qml/ParamsView.qml`, `bridge/param_bridge.py`, `qml/components/{Joystick,TouchSlider}.qml` | ✅ vollständig (Slider/Zahl/Text/Toggle/Button/Joystick, Fast+Slow-Downlink, Save-Default) |
 | Kanal-/Param-Namen + Overlay-Defaults vom Teensy | `channel_registry.py` (Modulwurzel), `bridge/app_bridge.py::_poll_descriptor`/`requestChannelNames` | ✅ vollständig — siehe `Doku/Kanalnamen_Implementierung.md`; Namens-Refresh baut `params.groups` neu auf, gibt dabei aber die aktuellen Live-Werte statt der JSON-Defaults mit, damit kein Regler zurückspringt |
+
+## Der Editor der Systemansicht
+
+„✎ Bearbeiten" in Tab 3 macht aus der Anzeige einen Editor. Bewusst **kein
+eigener Dialog**: Beschriftungen auf einem Bild positioniert man nur sinnvoll,
+wenn man dabei das Bild in Originalgröße und die echten Messwerte sieht.
+
+* **Ziehen im Bild** verschiebt ein Textfeld. Bei einem **Textraster** zieht
+  man damit den ganzen Block — gemeint ist immer dessen linke obere Ecke.
+* **Formular rechts** für das ausgewählte Element. Es gibt kein Formular je
+  Element-Art: `overlay_schema.py` beschreibt die Felder als Daten, und
+  `FieldEditor.qml` rendert daraus mit einem Repeater das passende
+  Bedienelement. Ein neues Feld ist eine Zeile Python und in QML gar nichts.
+* **Kanalauswahl** mit Suche über Nummer *und* Name (`ChannelPicker.qml`) —
+  bei 200 Kanälen ist eine ComboBox unbedienbar.
+* **Warnhinweise** statt Sperren: ein Kanal, den es (noch) nicht gibt, ein
+  Minimum ≥ Maximum oder eine leere Kanalliste werden gemeldet, verhindern
+  aber weder Bearbeiten noch Speichern. Ein Editor, der beim Umbauen der
+  Firmware das Speichern verweigert, wäre nur im Weg.
+* **Rückgängig** über 50 Schritte, **Speichern** und **Verwerfen** getrennt.
+
+### Was gespeichert wird — und warum das Format gleich bleibt
+
+Bearbeitet wird das **Rohformat** von `visuals_overlays.json`, nicht die
+aufbereitete Fassung, die die Ansicht zeigt. Das ist der ganze Trick beim
+Textraster: angezeigt werden dreißig Textfelder, gespeichert bleibt **ein**
+Eintrag. Würde der Editor zurückschreiben, was er anzeigt, wäre das Raster
+nach dem ersten Speichern in dreißig Einzelpositionen zerfallen — sichtbar
+identisch, aber beim nächsten Verschieben müsste man jede einzeln anfassen.
+`tools/qml_smoketest.py` liest die gespeicherte Datei deshalb nach und prüft
+genau das.
+
+Gespeichert wird **je Node** unter `runtime_config/nodeN/` und damit
+neustartfest.
+
+### Wenn der Teensy etwas anderes meldet
+
+Sobald hier von Hand bearbeitet wurde, wird die Anordnung **nicht mehr
+stillschweigend** von einer neuen Firmware überschrieben. Stattdessen
+erscheint ein Balken mit „Teensy übernehmen" / „Eigene behalten". Ohne diese
+Rückfrage wäre eine halbe Stunde Positionierarbeit beim nächsten Flashen weg,
+und zwar ohne jeden Hinweis. Die Regel selbst steht als reine Funktion in
+`runtime_config.merge_decision()` und wird im Selbsttest durchgespielt.
 
 ## Bewusste Abweichungen vom Original
 
@@ -54,17 +97,14 @@ auf echter Hardware vor).
 
 ## Offene Punkte / nächste Schritte (aus dem Migrationsplan)
 
-1. **Systemansicht-Editiermodus**: Overlay-Label per Drag verschieben und
-   `visuals_overlays.json` daraus neu schreiben (Migrationsplan 4.5,
-   „Drag-Handles statt Eingabefeldern"). Aktuell nur Lesedarstellung.
-2. **Test auf echter RPi5-Hardware**: `QT_QPA_PLATFORM=eglfs` prüfen,
+1. **Test auf echter RPi5-Hardware**: `QT_QPA_PLATFORM=eglfs` prüfen,
    `QSG_RENDER_LOOP=basic` bei Flackern testen (Migrationsplan Abschnitt 7).
-3. **PlotCanvas-Performance** bei sehr hoher Punktzahl (>500) auf
+2. **PlotCanvas-Performance** bei sehr hoher Punktzahl (>500) auf
    schwacher RPi5-GPU messen; ggf. Umstieg auf Option D (QSGGeometryNode)
    falls Option C (aktuell umgesetzt) nicht ausreicht.
-4. Alte `gui/`-Widgets-Tabs erst entfernen, wenn Punkt 2 erfolgreich war
+3. Alte `gui/`-Widgets-Tabs erst entfernen, wenn Punkt 2 erfolgreich war
    (Migrationsplan Phase 6).
-5. Tooling: Qt Design Studio zum visuellen Feintuning der Touch-Layouts
+4. Tooling: Qt Design Studio zum visuellen Feintuning der Touch-Layouts
    nutzen (Migrationsplan Abschnitt 10).
 
 ## Projektstruktur (neu)
@@ -72,13 +112,15 @@ auf echter Hardware vor).
 ```
 rpi5_monitor/
 ├── main_qml.py               # neuer QML-Einstiegspunkt
+├── overlay_schema.py         # Felder der Anzeige-Elemente als Daten (ohne PyQt)
+├── runtime_config.py         # vom Teensy uebernommene Konfiguration, je Node
 ├── bridge/                   # Python↔QML-Brücke (kein QtWidgets-Import)
 │   ├── app_bridge.py         # Fassade, Poll-Loop, Node-Umschaltung
 │   ├── telemetry_bridge.py   # Tab 1
 │   ├── plot_bridge.py        # Tab 2 (inkl. PlotCanvas QQuickPaintedItem)
 │   ├── param_bridge.py       # Tab 4 (ParamStore unverändert übernommen)
-│   ├── visuals_bridge.py     # Tab 3
-│   └── utils.py              # parse_channels (portiert)
+│   ├── visuals_bridge.py     # Tab 3 samt Editor
+│   └── utils.py              # parse_channels, expand_textgrid
 └── qml/
     ├── Theme.qml              # als App-1.0-Singleton registriert (main_qml.py)
     ├── Main.qml
@@ -94,7 +136,10 @@ rpi5_monitor/
         ├── Gauge.qml
         ├── RotationIndicator.qml
         ├── VectorIndicator.qml
-        └── MiniTable.qml
+        ├── MiniTable.qml
+        ├── OverlayEditor.qml      # Bedienfeld des Editors
+        ├── FieldEditor.qml        # ein Feld, datengetrieben aus overlay_schema
+        └── ChannelPicker.qml      # Kanalauswahl mit Suche
 ```
 
 Unverändert wiederverwendet: `config.py`, `network_worker.py`, `param_io.py`,

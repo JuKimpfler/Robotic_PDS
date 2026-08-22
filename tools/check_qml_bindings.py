@@ -14,7 +14,10 @@ Vorgehen:
        * @pyqtSlot(...)      -> aufrufbare Methode
        * X = pyqtSignal(...) -> Signal (in QML als onXChanged nutzbar)
   2. Die .qml-Dateien werden nach `<objekt>.<name>` durchsucht. Aliase wie
-     `property var params: appBridge.params` werden dabei aufgeloest.
+     `property var params: appBridge.params` werden dabei aufgeloest — auch
+     ueber Dateigrenzen: steht in SystemView.qml `OverlayEditor { visuals:
+     root.visuals }`, dann gilt `visuals` in OverlayEditor.qml als
+     VisualsBridge, obwohl dort nur `property var visuals: null` steht.
   3. Jeder Zugriff auf ein bekanntes Bruecken-Objekt mit unbekanntem Namen
      wird gemeldet.
 
@@ -129,16 +132,47 @@ def resolve(chain: str, aliases: dict[str, str]) -> str | None:
     return current
 
 
-def check_file(path: Path, members: dict[str, set[str]]) -> list[str]:
-    text = path.read_text(encoding="utf-8")
+def resolve_anywhere(chain: str, aliases: dict[str, str]) -> str | None:
+    """Wie resolve(), aber der Einstiegspunkt darf mitten in der Kette liegen.
 
-    # 1) Aliase aufloesen (auch mehrstufig: root.telemetry -> appBridge.telemetry)
-    aliases: dict[str, str] = {}
+    `resolve()` verlangt, dass schon das ERSTE Glied bekannt ist. Die im
+    Projekt uebliche Schreibweise `root.visuals` faengt aber mit der id des
+    Wurzelelements an, und die steht in keiner Tabelle — `resolve()` gibt
+    dafuer None zurueck und der Zugriff bliebe ungeprueft.
+    """
+    parts = chain.split(".")
+    for i, part in enumerate(parts):
+        current = aliases.get(part) or ROOT_OBJECTS.get(part)
+        if current is None:
+            continue
+        for attr in parts[i + 1:]:
+            current = PROPERTY_TYPES.get((current, attr))
+            if current is None:
+                return None
+        return current
+    return None
+
+
+def file_aliases(text: str, seed: dict[str, str] | None = None) -> dict[str, str]:
+    """Welcher lokale Name steht fuer welche Bruecken-Klasse?
+
+    `seed` bringt die Typen mit, die die Komponente von aussen gereicht
+    bekommt (siehe component_prop_types) — ohne das waere in einer Datei mit
+    `property var visuals: null` gar nicht bekannt, was darin steckt.
+    """
+    aliases: dict[str, str] = dict(seed or {})
     for _ in range(3):                      # bis zu drei Aufloesungsrunden
         for name, chain in _ALIAS_RE.findall(text):
             cls = resolve(chain, aliases)
             if cls:
                 aliases[name] = cls
+    return aliases
+
+
+def check_file(path: Path, members: dict[str, set[str]],
+               seed: dict[str, str] | None = None) -> list[str]:
+    text = path.read_text(encoding="utf-8")
+    aliases = file_aliases(text, seed)
 
     problems: list[str] = []
     for lineno, line in enumerate(text.splitlines(), 1):
@@ -268,6 +302,51 @@ def own_components() -> dict[str, set[str]]:
     return out
 
 
+def component_prop_types(path: Path, components: dict[str, set[str]]
+                          ) -> dict[str, dict[str, str]]:
+    """Welche Bruecken-Objekte werden einer eigenen Komponente uebergeben?
+
+    Aus
+
+        OverlayEditor { visuals: root.visuals }
+
+    folgt, dass in OverlayEditor.qml der Name `visuals` fuer VisualsBridge
+    steht. Ohne diesen Weg blieb dort alles ungeprueft: die Komponente
+    deklariert nur `property var visuals: null`, und was darin liegt, steht
+    ausschliesslich an der Verwendungsstelle.
+
+    Genau diese Luecke hat einen Tippfehler wie `visuals.setFeld(...)` in
+    einer Komponente frueher unentdeckt durchgelassen — Qt meldet so etwas
+    zur Laufzeit nur, wenn die Zeile auch wirklich ausgefuehrt wird.
+    """
+    text = path.read_text(encoding="utf-8")
+    aliases = file_aliases(text)
+    out: dict[str, dict[str, str]] = {}
+
+    lines = text.split("\n")
+    i = 0
+    while i < len(lines):
+        m = _COMPONENT_HEADER_RE.match(lines[i])
+        if not m or m.group(2) not in components:
+            i += 1
+            continue
+        indent, comp = m.group(1), m.group(2)
+        child_indent = indent + "    "
+        j = i + 1
+        while j < len(lines) and lines[j].rstrip() != indent + "}":
+            am = _ASSIGN_RE.match(lines[j])
+            if am and am.group(1) == child_indent:
+                value = lines[j].split(":", 1)[1].strip()
+                mm = re.match(r"^([\w.]+)\s*$", value)
+                if mm:
+                    cls = resolve_anywhere(mm.group(1), aliases)
+                    if cls:
+                        out.setdefault(comp, {})[am.group(2)] = cls
+            j += 1
+        i = j + 1
+    return out
+
+
 def check_component_props(path: Path, components: dict[str, set[str]]) -> list[str]:
     problems: list[str] = []
     lines = path.read_text(encoding="utf-8").split("\n")
@@ -306,10 +385,18 @@ def main() -> int:
 
     components = own_components()
 
+    # Erst durchgehen, welche Bruecken-Objekte an eigene Komponenten gereicht
+    # werden — beim Pruefen der Komponente selbst ist das sonst nicht mehr
+    # feststellbar.
+    seeds: dict[str, dict[str, str]] = {}
+    for qml in qml_files:
+        for comp, props in component_prop_types(qml, components).items():
+            seeds.setdefault(comp, {}).update(props)
+
     problems: list[str] = []
     for qml in qml_files:
         problems += check_balance(qml)
-        problems += check_file(qml, members)
+        problems += check_file(qml, members, seeds.get(qml.stem))
         problems += check_component_props(qml, components)
 
     print(f"{len(qml_files)} QML-Dateien gegen {len(members)} Bruecken-Klassen "

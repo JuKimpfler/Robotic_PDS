@@ -50,6 +50,37 @@ VISUALS_NAME       = "visuals_overlays.json"
 DESCRIPTOR_NAME    = "descriptor.json"
 
 _HASH_KEY = "_teensy_hash"
+TEENSY_HASH_KEY = _HASH_KEY      # oeffentlicher Name fuer andere Module
+
+# Wird gesetzt, sobald die Anordnung im Overlay-Editor der GUI von Hand
+# bearbeitet und gespeichert wurde (siehe bridge/visuals_bridge.py).
+LOCAL_EDIT_KEY = "_locally_edited"
+
+
+def merge_decision(stored: dict | None, digest: str,
+                   editing_unsaved: bool = False) -> str:
+    """Was soll mit einer neu eingetroffenen Teensy-Konfiguration passieren?
+
+        "keep"      -> nichts tun, die gespeicherte Fassung gilt weiter
+        "ask"       -> zurueckhalten und den Benutzer fragen
+        "overwrite" -> die Teensy-Fassung uebernehmen und speichern
+
+    Ausgelagert aus visuals_bridge.py, weil hier die eigentliche Regel steht
+    (siehe "Wer gewinnt bei einem Konflikt?") und weil eine reine Funktion
+    ohne PyQt6 in tools/selftest.py durchgespielt werden kann. Die Faelle
+    unterscheiden sich nur in Kleinigkeiten und genau da entstehen Fehler:
+    einmal falsch herum, und entweder kommt eine neue Firmware nie an oder
+    sie loescht bei jedem Einschalten die Handarbeit.
+    """
+    if editing_unsaved:
+        return "ask"                 # nicht unter der offenen Bearbeitung wegziehen
+    if not stored:
+        return "overwrite"           # noch nichts gespeichert -> Erstbefuellung
+    if stored.get(_HASH_KEY) == digest:
+        return "keep"                # unveraenderte Firmware
+    if stored.get(LOCAL_EDIT_KEY):
+        return "ask"                 # neue Firmware, aber Handarbeit vorhanden
+    return "overwrite"
 
 
 # ══════════════════════════════════════════════════════════════════════════

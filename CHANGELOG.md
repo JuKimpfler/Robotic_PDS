@@ -22,6 +22,104 @@ welchem Roboter läuft.
 
 ---
 
+## 2.2 — Editor für die Systemansicht
+
+Wire-Format unverändert (2). Die Teensy-Firmware muss **nicht** neu geflasht
+werden.
+
+### Neu
+
+* **Editor in Tab 3.** „✎ Bearbeiten" macht die Textfelder im Bild ziehbar
+  und blendet rechts ein Bedienfeld ein: Element anlegen (Text, Textraster,
+  Zeiger, Drehanzeige, Vektor, Tabelle, Feldansicht), Formular je Element,
+  Reihenfolge, Kopie, Löschen, Rückgängig über 50 Schritte, Gruppen anlegen,
+  umbenennen und Hintergrundbild wählen.
+* **Ein Textraster wird als Block gezogen.** Gezogen wird irgendeine Zelle,
+  verschoben wird die linke obere Ecke des Blocks — und gespeichert bleibt es
+  **ein** Eintrag.
+* **Kanalauswahl mit Suche** über Nummer und Name, statt einer ComboBox mit
+  200 Zeilen.
+* **Warnhinweise** für Kanäle, die es nicht gibt, für Minimum ≥ Maximum und
+  für leere Kanallisten. Sie sperren nichts — beim Umbauen der Firmware wäre
+  ein Editor, der das Speichern verweigert, nur im Weg.
+* **Rückfrage statt stillschweigendem Überschreiben:** wurde die Anordnung
+  von Hand bearbeitet, ersetzt eine neue Firmware sie nicht mehr einfach.
+  Es erscheint „Teensy übernehmen" / „Eigene behalten".
+* Gespeichert wird je Node unter `runtime_config/nodeN/` und damit
+  neustartfest.
+
+### Spielfeld
+
+* **Kein Gruppenbild mehr hinter dem Platz.** Die Feldansicht legte bisher
+  das Bild der Gruppe — in aller Regel eine Platinenaufnahme — hinter das
+  Spielfeld. Jetzt standardmäßig aus und im Editor einschaltbar.
+* **Tore, Mittellinie, Mittelkreis und Anstoßpunkt** werden gezeichnet. Die
+  Tore liegen an den Enden der langen Achse, quer dazu mittig, und sind als
+  Nische nach innen gezeichnet. Toröffnung und Tortiefe sind einstellbar.
+* Das Raster ist deutlich dezenter, der Platz hat eine gedämpfte Rasenfarbe.
+* **Beschriftung `240 × 180 cm`** statt `180 × 240 cm` — in der Reihenfolge,
+  in der man das Feld sieht (waagerecht × senkrecht).
+
+### Entfernt
+
+* **Der Stopp-Knopf in der Kopfzeile** ist auf Wunsch weg. Der Not-Aus liegt
+  weiterhin auf der Leertaste.
+
+### Behoben
+
+* **Der Trigger-Kasten im Plotter fiel beim Einschalten zusammen** — von 192
+  auf 16 Pixel, Schwelle, Modus und Nachlauf waren damit nicht mehr
+  erreichbar. Zwei Fehler übereinander: eine Bindungsschleife zwischen der
+  Höhe des Kastens und der seiner `Flow` (`anchors.fill` statt nur der
+  Breite), und ein direktes Kind der `Flow` mit Ankern — dazu meldet Qt
+  „Flow will not function" und ordnet danach gar nichts mehr an.
+* **In der Parameter-Leiste ragten die Knöpfe aus ihrer Zeile heraus** und
+  überlappten die Zeile darunter: `anchors.margins` liess der Zeile von 56
+  Pixeln nur 40, während AppButton und AppSwitch 56 Pixel hoch sind.
+* **Die Firmware-Version enthielt wörtlich `__DATE____TIME__`.**
+  `-DBUILD_DATE=\"__DATE__\"` definiert die Zeichenkette `"__DATE__"` — der
+  Präprozessor ersetzt Makros nicht innerhalb eines String-Literals.
+  Zusätzlich war `_fwVersion[24]` zu klein für den zusammengesetzten Text
+  und schnitt ihn nach `v0.0.1(Build vom Aug 22` ab; jetzt 48 Byte.
+* **`tools/build_teensy_check.sh`** kannte die `-D`-Flags aus
+  `platformio.ini` nicht und meldete einen Fehler in `main.cpp`, der keiner
+  war. Es liest sie jetzt aus der `platformio.ini`, damit beide nicht mehr
+  auseinanderlaufen können.
+* **`tools/selftest.py`** liess die CI-Stufe `pyflakes` rot laufen: ein
+  `import serial`, der nur die Frage „ist pyserial da?" beantwortete und
+  einen ungenutzten Namen band. `# noqa` kennt pyflakes nicht — jetzt über
+  `importlib.util.find_spec()`.
+* **Kanäle ohne Daten zeigten in der Kanaltabelle keine Min/Max/Δ-Werte.**
+  Das Modell liefert dafür `None`, was in QML als `undefined` ankommt — die
+  Abfrage prüfte aber auf `null`. `undefined !== null` ist wahr, also lief
+  `.toFixed()` auf `undefined`, und die drei Spalten blieben leer statt „—"
+  anzuzeigen. Betraf jeden Kanal, den der Teensy nicht sendet.
+
+### Prüfung
+
+* `tools/qml_smoketest.py` spielt den Editor jetzt wirklich durch: alle
+  sieben Element-Arten anlegen, im Bild ziehen, Formularfelder aller Typen
+  setzen, Gruppen, Speichern und Verwerfen, Teensy-Rückfrage — 47 Schritte.
+  Zusätzlich wird **nachgewiesen, dass der Editor überhaupt gezeichnet
+  wurde**, und die **gespeicherte Datei nachgelesen**. Ohne diese beiden
+  Prüfungen hätte der Test leer grün gemeldet.
+* `tools/check_qml_bindings.py` reicht Brücken-Typen jetzt über die
+  Verwendungsstelle in eigene Komponenten hinein: steht in `SystemView.qml`
+  `OverlayEditor { visuals: root.visuals }`, gilt `visuals` auch in
+  `OverlayEditor.qml` als `VisualsBridge`. Vorher blieb dort jeder Tippfehler
+  ungeprüft, weil die Komponente selbst nur `property var visuals: null`
+  deklariert.
+* `tools/selftest.py`: 98 → 148 Prüfungen (Feldschema, Typumwandlung,
+  Positionsgrenzen, Konfliktregel Teensy ↔ Handarbeit).
+* Der Smoketest erzwingt jetzt eine **Layout-Runde** und prüft danach eine
+  echte Invariante: *kein Positionierer darf flacher sein als sein höchstes
+  Kind.* Offscreen rechnet Qt sonst gar kein Layout, und genau deshalb blieb
+  der zusammenklappende Trigger-Kasten unbemerkt, obwohl der Test ihn
+  angefasst hat. Bewusst keine Mindesthöhe in Pixeln — die Kurvenlegende des
+  Plotters ist völlig zu Recht nur 13 Pixel hoch.
+
+---
+
 ## 2.1 — Ereignisse, Diagnose und Konfiguration vom Teensy
 
 **Wire-Format 1 → 2.** Teensy, Node und GUI müssen zusammen aktualisiert
