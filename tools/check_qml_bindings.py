@@ -222,6 +222,80 @@ def check_balance(path: Path) -> list[str]:
     return problems
 
 
+# ══════════════════════════════════════════════════════════════════════════
+#  Eigene Komponenten: gesetzte Properties gegen die Deklaration pruefen
+# ══════════════════════════════════════════════════════════════════════════
+#  Wird an einer eigenen Komponente eine Property gesetzt, die es dort gar
+#  nicht gibt, ist das in QML kein Fehler — der Wert landet still im Nichts.
+#  Nach einer Umbenennung (BodiesField: fieldWidth -> fieldXCm) sieht die
+#  Oberflaeche dann korrekt aus und zeigt trotzdem den Standardwert an.
+
+# Von Item/QtObject geerbt bzw. sonst ueberall gueltig.
+_STD_PROPS = {
+    "id", "width", "height", "x", "y", "z", "visible", "opacity", "enabled",
+    "clip", "anchors", "rotation", "scale", "implicitWidth", "implicitHeight",
+    "focus", "parent", "antialiasing", "smooth", "transformOrigin", "layer",
+    "state", "activeFocusOnTab", "objectName", "spacing", "padding", "font",
+    "color", "scale", "baselineOffset",
+}
+
+_COMPONENT_HEADER_RE = re.compile(r"^(\s*)([A-Z]\w*)\s*\{\s*$")
+_ASSIGN_RE = re.compile(r"^(\s*)(\w+)\s*:")
+_DECL_PROP_RE = re.compile(r"^\s*(?:readonly\s+)?property\s+\S+\s+(\w+)", re.M)
+_DECL_SIGNAL_RE = re.compile(r"^\s*signal\s+(\w+)", re.M)
+_DECL_FUNC_RE = re.compile(r"^\s*function\s+(\w+)", re.M)
+
+
+def _declared_members(path: Path) -> set[str]:
+    """Properties, Signale und Funktionen einer .qml-Komponente — plus die
+    daraus abgeleiteten Signal-Handler-Namen (onFooChanged, onClicked, ...)."""
+    src = path.read_text(encoding="utf-8")
+    names = set(_DECL_PROP_RE.findall(src))
+    names |= set(_DECL_SIGNAL_RE.findall(src))
+    names |= set(_DECL_FUNC_RE.findall(src))
+    handlers = {"on" + n[:1].upper() + n[1:] for n in names}
+    handlers |= {"on" + n[:1].upper() + n[1:] + "Changed" for n in names}
+    return names | handlers
+
+
+def own_components() -> dict[str, set[str]]:
+    """Alle .qml-Dateien des Projekts, nach Dateiname (= Komponentenname)."""
+    out: dict[str, set[str]] = {}
+    for f in QML_DIR.rglob("*.qml"):
+        if f.stem in ("Main",):
+            continue          # wird nie als Komponente eingebunden
+        out[f.stem] = _declared_members(f)
+    return out
+
+
+def check_component_props(path: Path, components: dict[str, set[str]]) -> list[str]:
+    problems: list[str] = []
+    lines = path.read_text(encoding="utf-8").split("\n")
+    i = 0
+    while i < len(lines):
+        m = _COMPONENT_HEADER_RE.match(lines[i])
+        if not m or m.group(2) not in components:
+            i += 1
+            continue
+        indent, comp = m.group(1), m.group(2)
+        allowed = components[comp]
+        child_indent = indent + "    "
+        j = i + 1
+        while j < len(lines) and lines[j].rstrip() != indent + "}":
+            am = _ASSIGN_RE.match(lines[j])
+            # Nur DIREKTE Zuweisungen dieser Komponente betrachten; alles
+            # tiefer Eingerueckte gehoert zu verschachtelten Elementen.
+            if am and am.group(1) == child_indent:
+                prop = am.group(2)
+                if prop not in allowed and prop not in _STD_PROPS:
+                    problems.append(
+                        f"{path.relative_to(ROOT)}:{j + 1}: "
+                        f"{comp} hat keine Property/Signal '{prop}'")
+            j += 1
+        i = j + 1
+    return problems
+
+
 def main() -> int:
     members = {name: members_of(path, cls) for name, (path, cls) in BRIDGE_CLASSES.items()}
 
@@ -230,18 +304,22 @@ def main() -> int:
         print(f"[FEHLER] Keine .qml-Dateien unter {QML_DIR}")
         return 1
 
+    components = own_components()
+
     problems: list[str] = []
     for qml in qml_files:
         problems += check_balance(qml)
         problems += check_file(qml, members)
+        problems += check_component_props(qml, components)
 
-    print(f"{len(qml_files)} QML-Dateien gegen {len(members)} Bruecken-Klassen geprueft.")
+    print(f"{len(qml_files)} QML-Dateien gegen {len(members)} Bruecken-Klassen "
+          f"und {len(components)} eigene Komponenten geprueft.")
     if problems:
         print("\nUnbekannte Zugriffe:")
         for p in problems:
             print(f"  * {p}")
         return 1
-    print("OK — alle QML-Zugriffe auf die Python-Bruecken existieren.")
+    print("OK — alle QML-Zugriffe auf Python-Bruecken und eigene Komponenten existieren.")
     return 0
 
 
