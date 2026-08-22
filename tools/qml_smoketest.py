@@ -329,12 +329,18 @@ def _verify_positioners(engine) -> list[str]:
                 kids = [c for c in child.childItems()
                         if isinstance(c, QQuickItem) and c.isVisible()]
                 tallest = max((c.height() for c in kids), default=0.0)
-                if tallest > 0 and child.height() < tallest - 0.5:
+                # Toleranz von 8 Pixeln: Schriftmetriken sind auf dem
+                # Entwicklungsrechner andere als in der CI, ein Kind darf
+                # deshalb ein, zwei Pixel ueberstehen. Der Fund, um den es
+                # geht, war deutlich groesser -- in der Parameter-Leiste
+                # standen 56 Pixel hohe Knoepfe in einer 40 Pixel hohen Zeile.
+                if tallest > 0 and child.height() < tallest - 8:
                     found.append(
                         f"{name.split('_QMLTYPE')[0]} ist {child.height():.0f} px "
                         f"hoch, sein hoechstes von {len(kids)} Kindern aber "
-                        f"{tallest:.0f} px — Inhalt ragt heraus oder eine "
-                        f"Bindungsschleife um die Hoehe. Ort: {_chain(child)}")
+                        f"{tallest:.0f} px — der Inhalt ragt heraus und "
+                        f"ueberlappt, was daneben oder darunter liegt. "
+                        f"Ort: {_chain(child)}")
             walk(child, depth + 1)
 
     root = engine.rootObjects()[0]

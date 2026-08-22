@@ -109,7 +109,7 @@ Item {
             Rectangle {
                 anchors.fill: parent
                 color: Theme.dark ? "#000000" : "#ffffff"
-                opacity: 0.25
+                opacity: 0.15
                 visible: root.hasImage
             }
 
@@ -131,9 +131,14 @@ Item {
                     //  Bei unplausibel vielen Linien lieber gar keine, sonst
                     //  wird daraus eine Flaeche.
                     if (root.fieldXCm / step <= 40 && root.fieldYCm / step <= 40) {
-                        ctx.strokeStyle = "rgba(120,170,230,0.20)"
-                        ctx.lineWidth = 1
-                        ctx.setLineDash([2, 5])
+                        // Ueber einem Foto muss das Raster deutlich kraeftiger
+                        // sein: ein blasses Blau auf hellgruenem Rasen ist zwar
+                        // gezeichnet, aber nicht zu sehen -- es wirkt, als laege
+                        // es hinter dem Bild.
+                        ctx.strokeStyle = root.hasImage ? "rgba(255,255,255,0.55)"
+                                                        : "rgba(120,170,230,0.25)"
+                        ctx.lineWidth = root.hasImage ? 1.3 : 1
+                        ctx.setLineDash([3, 4])
                         for (fx = 0; fx <= root.fieldXCm + 1e-6; fx += step) {
                             var px = fieldBox.xToPx(fx)
                             ctx.beginPath(); ctx.moveTo(px, 0); ctx.lineTo(px, height); ctx.stroke()

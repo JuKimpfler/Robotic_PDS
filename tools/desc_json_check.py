@@ -13,9 +13,13 @@ sieht man davon nur "die Kanalnamen kommen nicht an". Genau dieser Fehler ist
 in diesem Projekt schon einmal aufgetreten. Ein Uebersetzungslauf allein
 findet ihn nicht — er muss ausgefuehrt werden.
 
-Ohne g++ im Pfad beendet sich das Skript mit Exit-Code 0 und einem Hinweis
+Ohne C++-Compiler beendet sich das Skript mit Exit-Code 0 und einem Hinweis
 (SKIP), damit es auf einem Entwicklungsrechner ohne Compiler nicht stoert.
 In der CI ist g++ vorhanden, dort laeuft die Pruefung wirklich.
+
+Auf einem Rechner ohne Compiler (typisch: Windows) genuegt:
+    pip install ziglang
+    CXX="python -m ziglang c++" python tools/desc_json_check.py
 
 Aufruf:
     python tools/desc_json_check.py
@@ -23,6 +27,7 @@ Aufruf:
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -44,24 +49,62 @@ def check(name: str, ok: bool, detail: str = "") -> None:
         _failures.append(name)
 
 
+def _find_compiler() -> list[str] | None:
+    """Womit wird uebersetzt? Gibt den Aufruf als Argumentliste zurueck.
+
+    CXX hat Vorrang. Ohne diese Moeglichkeit liess sich der Test auf einem
+    Rechner ohne g++ gar nicht ausfuehren — und genau dort ist er am
+    wertvollsten, weil er sonst erst in der CI zum ersten Mal laeuft.
+    Der Wert darf mehrere Woerter haben, damit auch Aufrufe wie
+    `python -m ziglang c++` oder `zig c++` funktionieren.
+    """
+    env = os.environ.get("CXX", "").strip()
+    if env:
+        return env.split()
+    found = shutil.which("g++") or shutil.which("clang++") or shutil.which("c++")
+    return [found] if found else None
+
+
 def build_and_run() -> str | None:
-    cxx = shutil.which("g++") or shutil.which("clang++")
+    cxx = _find_compiler()
     if cxx is None:
-        print("SKIP: kein g++/clang++ im Pfad — Deskriptor-Test uebersprungen.")
+        print("SKIP: kein C++-Compiler gefunden — Deskriptor-Test uebersprungen.")
+        print("      Ohne g++/clang++ im Pfad hilft z. B.:")
+        print('        pip install ziglang')
+        print('        CXX="python -m ziglang c++" python tools/desc_json_check.py')
         return None
 
     with tempfile.TemporaryDirectory() as tmp:
-        exe = Path(tmp) / ("desc_dump.exe" if sys.platform == "win32" else "desc_dump")
+        work = Path(tmp)
+        # ── Alle Quellen in EIN Verzeichnis kopieren ──────────────────────
+        #  Frueher stand hier -I hostsim -I src mit dem Kommentar "hostsim MUSS
+        #  vor src stehen". Das war falsch: bei einem Include in
+        #  Anfuehrungszeichen sucht der Praeprozessor ZUERST im Verzeichnis der
+        #  einbindenden Datei. PDS.cpp liegt in src/, also gewann immer
+        #  src/channel_config.h -- und das ist die ausgelieferte Vorlage, in der
+        #  alles auskommentiert ist. Der Test lief damit gegen eine LEERE
+        #  Konfiguration und pruefte faktisch nichts von dem, was er zu pruefen
+        #  vorgibt. Mit allen Dateien im selben Verzeichnis greift die
+        #  Testkonfiguration, ohne dass PDS.cpp etwas davon wissen muss.
+        for name in ("PDS.cpp", "PDS.h", "params.h"):
+            shutil.copy2(SRC / name, work / name)
+        for name in ("channel_config.h", "Arduino.h", "elapsedMillis.h",
+                     "desc_dump.cpp"):
+            shutil.copy2(HOSTSIM / name, work / name)
+
+        exe = work / ("desc_dump.exe" if sys.platform == "win32" else "desc_dump")
         cmd = [
-            cxx, "-std=c++17", "-O1", "-Wall", "-Wextra", "-Wno-unused-parameter",
-            # hostsim MUSS vor src stehen: dort liegt die ausgefuellte
-            # Testkonfiguration, die teensy_firmware/src/channel_config.h
-            # fuer diesen Lauf ersetzt.
-            f"-I{HOSTSIM}", f"-I{SRC}",
-            str(HOSTSIM / "desc_dump.cpp"), str(SRC / "PDS.cpp"),
+            *cxx, "-std=c++17", "-O1", "-Wall", "-Wextra", "-Wno-unused-parameter",
+            f"-I{work}",
+            str(work / "desc_dump.cpp"), str(work / "PDS.cpp"),
             "-o", str(exe),
         ]
-        proc = subprocess.run(cmd, capture_output=True, text=True)
+        # encoding ausdruecklich: der Deskriptor ist UTF-8, und mit
+        # text=True wuerde subprocess die Locale-Kodierung nehmen --
+        # auf Windows cp1252. Aus "Groesse_Oe" wurde damit Zeichensalat,
+        # und der Test meldete einen Fehler im Escaping, den es nicht gab.
+        proc = subprocess.run(cmd, capture_output=True,
+                              encoding="utf-8", errors="replace")
         if proc.returncode != 0:
             print("  [FAIL] Uebersetzung fehlgeschlagen:")
             print(proc.stderr[:4000])
@@ -74,7 +117,9 @@ def build_and_run() -> str | None:
             print(proc.stderr[:4000])
             _failures.append("Compiler-Warnungen")
 
-        run = subprocess.run([str(exe)], capture_output=True, text=True, timeout=60)
+        run = subprocess.run([str(exe)], capture_output=True,
+                             encoding="utf-8", errors="replace",
+                             timeout=60)
         if run.returncode != 0:
             print("  [FAIL] Ausfuehrung fehlgeschlagen:")
             print(run.stderr[:2000])
@@ -130,6 +175,16 @@ def main() -> int:
         return 1
 
     check("oberste Ebene ist ein Objekt", isinstance(data, dict))
+
+    # Lief der Test ueberhaupt gegen die Testkonfiguration? Ohne diese Frage
+    # sah ein Lauf gegen die leere Vorlage aus wie ein Haufen einzelner
+    # Fehlschlaege statt wie das eine Problem, das es ist.
+    used_testcfg = bool(data.get("param_slow_floats")) and bool(data.get("overlays"))
+    check("tools/hostsim/channel_config.h wurde benutzt", used_testcfg,
+          "der Deskriptor ist leer — vermutlich wurde "
+          "teensy_firmware/src/channel_config.h eingebunden (die Vorlage)")
+    if not used_testcfg:
+        return 1
     for key in ("meta", "channels", "units", "param_slow_floats",
                 "param_slow_bools", "param_fast_floats", "param_cfg", "overlays"):
         check(f"Abschnitt '{key}' vorhanden", key in data)

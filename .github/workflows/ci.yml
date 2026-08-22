@@ -87,7 +87,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             libgl1 libegl1 libglib2.0-0 libdbus-1-3 \
-            libxkbcommon0 libfontconfig1 libfreetype6
+            libxkbcommon0 libfontconfig1 libfreetype6 \
+            fonts-dejavu-core
+          # fonts-dejavu-core: libfontconfig bringt selbst keine Schrift mit.
+          # Ohne eine einzige installierte Schriftart meldet Qt beim Aufbau
+          # jedes Textelements eine Warnung — und der Smoketest wertet jede
+          # Qt-Warnung als Fehler.
 
       - name: Abhaengigkeiten installieren
         run: |
