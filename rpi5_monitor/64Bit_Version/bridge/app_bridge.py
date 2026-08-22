@@ -284,6 +284,9 @@ class AppBridge(QObject):
                 led_changed = True
         if led_changed:
             self.ledChanged.emit()
+        # Die Parameter-Statuszeile zeigt nur dann Sendezaehler, wenn wirklich
+        # eine Gegenstelle da ist — siehe ParamBridge.set_link_state().
+        self._params.set_link_state(self._node_connected[self._active_node])
 
         # Deskriptor und Aux-Uplink haben eigene Queues und werden bewusst
         # VOR dem batch-Abbruch ausgewertet: sonst käme ein Ereignis nur

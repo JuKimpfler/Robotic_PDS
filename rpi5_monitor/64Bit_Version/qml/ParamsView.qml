@@ -62,11 +62,13 @@ Item {
 
                 Text {
                     text: params.statusText
-                    color: Theme.accentGreen
+                    // Grün nur, wenn wirklich eine Gegenstelle da ist. Ohne
+                    // Node ist die Zeile eine Warnung, keine Erfolgsmeldung.
+                    color: params.linkUp ? Theme.accentGreen : Theme.accentAmber
                     font.family: Theme.fontMono
                     font.pixelSize: Theme.fontSizeSmall
                     anchors.verticalCenter: parent.verticalCenter
-                    width: 380
+                    width: 470
                     elide: Text.ElideRight
                 }
 

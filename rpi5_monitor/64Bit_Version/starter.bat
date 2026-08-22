@@ -23,7 +23,7 @@ if %ERRORLEVEL% NEQ 0 (
     echo.
     echo [FEHLER] Start fehlgeschlagen ^(Exit-Code %ERRORLEVEL%^).
     echo Abhaengigkeiten installieren mit:
-    echo     pip install -r ..\..equirements.txt
+    echo     pip install -r "%~dp0..\..\requirements.txt"
 )
 pause
 endlocal

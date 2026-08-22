@@ -172,22 +172,26 @@ def _graphic_to_entry(gr: dict, raw_index: int) -> dict:
                 "channelAngle": int(b.get("channel_angle", -1)),
                 "channelDiameter": int(b.get("channel_diameter", -1)),
             }
-        # Feldmaße in ZENTIMETERN im Feldkoordinatensystem:
-        #   x = 0..fieldXCm nach Osten, y = 0..fieldYCm nach Norden.
-        # field_width/field_height (Meter) sind das Altformat und
-        # werden weiterhin angenommen.
+        # Feldmasse in ZENTIMETERN, in derselben Einheit wie die Kanalwerte:
+        #   x = 0..field_x_cm nach rechts, y = 0..field_y_cm nach oben.
+        #
+        # field_width/field_height sind das Altformat und meinen DIESELBE
+        # Einheit, nicht Meter. Die zwischenzeitliche Multiplikation mit 100
+        # machte aus einem 240 x 180 cm grossen Feld ein 240 x 180 METER
+        # grosses: das Tor war dann 0,25 % einer Kante breit und die
+        # Rasterlinien alle 30 cm verschmolzen zu einer Flaeche.
         if "field_x_cm" in gr or "field_y_cm" in gr:
-            fx = float(gr.get("field_x_cm", 180.0))
-            fy = float(gr.get("field_y_cm", 240.0))
+            fx = float(gr.get("field_x_cm", 240.0))
+            fy = float(gr.get("field_y_cm", 180.0))
         else:
-            fx = float(gr.get("field_width", 1.8)) * 100.0
-            fy = float(gr.get("field_height", 2.4)) * 100.0
+            fx = float(gr.get("field_width", 240.0))
+            fy = float(gr.get("field_height", 180.0))
         entry.update({
             "fieldXCm": fx,
             "fieldYCm": fy,
             "goalWidthCm": float(gr.get("goal_width_cm", 45.0)),
             "goalDepthCm": float(gr.get("goal_depth_cm", 10.0)),
-            "showImage": bool(gr.get("show_image", False)),
+            "showImage": bool(gr.get("show_image", True)),
             "body1": _body(gr.get("body1", {})),
             "body2": _body(gr.get("body2", {})),
         })

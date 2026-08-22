@@ -191,16 +191,15 @@ Item {
                     anchors.fill: parent
                     visible: root.bodiesGraphic !== null
                     label: root.bodiesGraphic ? root.bodiesGraphic.label : ""
-                    // Das Gruppenbild ist in aller Regel eine Platinen-
-                    // aufnahme; hinter einem Spielfeld ergibt das kein Bild,
-                    // sondern Unruhe. Nur auf ausdrueckliche Ansage.
+                    // Das Bild der Gruppe ist bei der Feldansicht eine
+                    // Aufnahme des Spielfeldes und passt. Abschaltbar, dann
+                    // zeichnet BodiesField das Feld selbst.
                     imageUrl: (root.bodiesGraphic && root.bodiesGraphic.showImage)
                               ? root.visuals.activeGroup.imageUrl : ""
-                    // Feldmasse in ZENTIMETERN (x = Ost, y = Nord). Die
-                    // Darstellung dreht das Feld um 90 Grad nach Osten —
-                    // siehe BodiesField.qml.
-                    fieldXCm: root.bodiesGraphic ? root.bodiesGraphic.fieldXCm : 180
-                    fieldYCm: root.bodiesGraphic ? root.bodiesGraphic.fieldYCm : 240
+                    // Feldmasse in ZENTIMETERN: x waagerecht nach rechts,
+                    // y senkrecht nach oben — siehe BodiesField.qml.
+                    fieldXCm: root.bodiesGraphic ? root.bodiesGraphic.fieldXCm : 240
+                    fieldYCm: root.bodiesGraphic ? root.bodiesGraphic.fieldYCm : 180
                     goalWidthCm: root.bodiesGraphic ? root.bodiesGraphic.goalWidthCm : 45
                     goalDepthCm: root.bodiesGraphic ? root.bodiesGraphic.goalDepthCm : 10
                     readonly property var _emptyBody: ({ label: "", color: "#4ec9b0", diameter: 7, x: 0, y: 0, angleDeg: 0 })

@@ -136,9 +136,10 @@ def _body_fields(prefix: str, title: str) -> List[dict]:
         _f(f"{prefix}.color", f"{title}: Farbe", "color"),
         _f(f"{prefix}.diameter", f"{title}: Durchmesser (cm)", "real",
            min=0.5, max=100.0, step=0.5, decimals=1),
-        _channel_field(f"{prefix}.channel_x", f"{title}: Kanal x (Ost, cm)", True),
-        _channel_field(f"{prefix}.channel_y", f"{title}: Kanal y (Nord, cm)", True),
-        _channel_field(f"{prefix}.channel_angle", f"{title}: Kanal Winkel (Grad)", True),
+        _channel_field(f"{prefix}.channel_x", f"{title}: Kanal x (cm, nach rechts)", True),
+        _channel_field(f"{prefix}.channel_y", f"{title}: Kanal y (cm, nach oben)", True),
+        _channel_field(f"{prefix}.channel_angle",
+                       f"{title}: Kanal Winkel (Grad, 0 = rechts)", True),
         _channel_field(f"{prefix}.channel_diameter", f"{title}: Kanal Durchmesser", True),
     ]
 
@@ -191,9 +192,9 @@ _SCHEMAS: dict[str, Callable[[], List[dict]]] = {
     ],
     "bodies": lambda: [
         _f("label", "Beschriftung", "text"),
-        _f("field_x_cm", "Feldbreite x nach Ost (cm)", "real",
+        _f("field_x_cm", "Feld waagerecht, x (cm)", "real",
            min=10.0, max=2000.0, step=10.0, decimals=0),
-        _f("field_y_cm", "Feldlaenge y nach Nord (cm)", "real",
+        _f("field_y_cm", "Feld senkrecht, y (cm)", "real",
            min=10.0, max=2000.0, step=10.0, decimals=0),
         _f("goal_width_cm", "Toroeffnung (cm)", "real",
            min=5.0, max=500.0, step=5.0, decimals=0,
@@ -201,8 +202,8 @@ _SCHEMAS: dict[str, Callable[[], List[dict]]] = {
         _f("goal_depth_cm", "Tortiefe (cm)", "real",
            min=2.0, max=200.0, step=2.0, decimals=0),
         _f("show_image", "Bild der Gruppe als Hintergrund", "bool",
-           hint="Standardmaessig aus: das Gruppenbild ist in aller Regel eine "
-                "Platinenaufnahme und macht hinter dem Spielfeld keinen Sinn."),
+           hint="An: das Bild der Gruppe ist eine Aufnahme des Spielfeldes. "
+                "Aus: das Feld wird selbst gezeichnet (Tore, Mittelkreis)."),
         *_body_fields("body1", "Objekt 1"),
         *_body_fields("body2", "Objekt 2"),
     ],
@@ -249,9 +250,7 @@ def _ensure(entry: dict, path: list[str]) -> dict:
 def _default_for(field: dict) -> Any:
     ftype = field["type"]
     if ftype == "bool":
-        # Ausnahme: das Gruppenbild hinter dem Spielfeld ist fast immer
-        # falsch (Platinenfoto), also standardmaessig aus.
-        return field["key"] != "show_image"
+        return True
     if ftype == "color":
         return _DEFAULT_COLOR
     if ftype in ("int", "channel"):
@@ -368,9 +367,9 @@ def new_entry(kind: str, x_pct: float = 40.0, y_pct: float = 40.0) -> dict:
     if kind == "table":
         entry.update({"title": "Neue Tabelle", "channels": "0-9"})
     if kind == "bodies":
-        entry.update({"label": "Spielfeld", "field_x_cm": 180.0, "field_y_cm": 240.0,
+        entry.update({"label": "Spielfeld", "field_x_cm": 240.0, "field_y_cm": 180.0,
                       "goal_width_cm": 45.0, "goal_depth_cm": 10.0,
-                      "show_image": False})
+                      "show_image": True})
         for i, prefix in enumerate(("body1", "body2"), start=1):
             entry[prefix].update({"label": f"Objekt {i}", "diameter": 18.0,
                                   "color": COLOR_PRESETS[i - 1]})

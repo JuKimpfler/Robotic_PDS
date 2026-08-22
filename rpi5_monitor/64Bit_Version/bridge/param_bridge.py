@@ -385,6 +385,7 @@ class FastControlWorker(threading.Thread):
 
 class ParamBridge(QObject):
     groupsChanged  = pyqtSignal()
+    linkStateChanged  = pyqtSignal()
     statusChanged  = pyqtSignal()
     errorChanged   = pyqtSignal()
     enabledChanged = pyqtSignal()
@@ -401,6 +402,12 @@ class ParamBridge(QObject):
         self._enabled = True
         self._pkt_sent_slow = 0
         self._pkt_sent_fast = 0
+        # Kommt vom AppBridge-Poll (Telemetrie eingetroffen oder nicht).
+        # Ohne diesen Zustand meldete die Statuszeile munter steigende
+        # Paketzahlen, obwohl gar kein Node da war: ein UDP-sendto() an eine
+        # unerreichbare Gegenstelle gelingt lokal IMMER. Gezaehlt wurde also
+        # "an den Socket uebergeben" und gelesen wurde es als "angekommen".
+        self._link_up = False
         self._send_drops = 0
         self._last_send_error_log = 0.0
         self._error: str | None = None
@@ -989,6 +996,29 @@ class ParamBridge(QObject):
     #  Anzeige (GUI-Thread)
     # ══════════════════════════════════════════════════════════════════════
 
+    def set_link_state(self, connected: bool) -> None:
+        """Meldet, ob vom aktiven Node gerade Telemetrie ankommt.
+
+        Beim Wechsel auf "verbunden" werden die Sendezaehler zurueckgesetzt:
+        die Zahlen aus der Zeit ohne Gegenstelle sagen nichts und wuerden den
+        frischen Verbindungsaufbau nur verschleiern.
+        """
+        connected = bool(connected)
+        if connected == self._link_up:
+            return
+        if connected:
+            self._pkt_sent_slow = 0
+            self._pkt_sent_fast = 0
+            self._send_drops = 0
+        self._link_up = connected
+        self._refresh_status()
+        self.linkStateChanged.emit()
+
+    @pyqtProperty(bool, notify=linkStateChanged)
+    def linkUp(self):
+        """Fuer die Einfaerbung der Statuszeile in ParamsView.qml."""
+        return self._link_up
+
     @safe_slot
     def _refresh_status(self) -> None:
         ip = self._get_node_ip(self._active_node)
@@ -1001,12 +1031,20 @@ class ParamBridge(QObject):
             src = ""
         drops = f" - Verworfen: {self._send_drops}" if self._send_drops else ""
         late = f" - Takt spät: {self._worker.late_count}x" if self._worker.late_count else ""
-        status = (
-            f"{state} -> Node {self._active_node} ({ip}) - "
-            f"Slow: {PARAM_SLOW_SEND_HZ:.1f} Hz ({self._pkt_sent_slow} Pkt) - "
-            f"Fast: {PARAM_FAST_SEND_HZ:.0f} Hz ({self._pkt_sent_fast} Pkt)"
-            f"{drops}{late}{src}"
-        )
+
+        if not self._link_up:
+            # Keine Paketzahlen ohne Gegenstelle. Ein UDP-sendto() gelingt
+            # auch ins Leere, die Zahl waere also nur eine Zusicherung, die
+            # niemand einloest.
+            status = (f"⚠ Node {self._active_node} ({ip}) nicht erreichbar "
+                      f"— gesendet wird weiter{src}")
+        else:
+            status = (
+                f"{state} -> Node {self._active_node} ({ip}) - "
+                f"Slow: {PARAM_SLOW_SEND_HZ:.1f} Hz ({self._pkt_sent_slow} Pkt) - "
+                f"Fast: {PARAM_FAST_SEND_HZ:.0f} Hz ({self._pkt_sent_fast} Pkt)"
+                f"{drops}{late}{src}"
+            )
         # Nur bei echter Aenderung melden: sonst wertet QML das daran haengende
         # Text-Binding 2x/s neu aus, obwohl sich nichts geaendert hat.
         if status != self._status:

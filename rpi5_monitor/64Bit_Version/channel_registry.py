@@ -395,17 +395,20 @@ def _teensy_overlay_to_entry(ov: dict) -> tuple[str, dict]:
                 "channel_diameter": int(kv.get(f"{prefix}_channel_diameter", -1)),
             }
 
-        # Feldmasse in ZENTIMETERN, im Feldkoordinatensystem:
-        #   x = 0..field_x_cm nach Osten, y = 0..field_y_cm nach Norden.
-        # Die Darstellung dreht das Feld um 90 Grad nach Osten (Querformat) —
-        # siehe components/BodiesField.qml. field_width/field_height (Meter)
-        # werden als Altformat weiterhin angenommen und umgerechnet.
+        # Feldmasse in ZENTIMETERN, in derselben Einheit wie die Kanalwerte:
+        #   x = 0..field_x_cm nach rechts, y = 0..field_y_cm nach oben.
+        #
+        # field_width/field_height sind das Altformat und meinen DIESELBE
+        # Einheit, nicht Meter. Die zwischenzeitliche Multiplikation mit 100
+        # machte aus einem 240 x 180 cm grossen Feld ein 240 x 180 METER
+        # grosses: das Tor war dann 0,25 % einer Kante breit und die
+        # Rasterlinien alle 30 cm verschmolzen zu einer Flaeche.
         if "field_x_cm" in kv or "field_y_cm" in kv:
-            field_x = float(kv.get("field_x_cm", 180.0))
-            field_y = float(kv.get("field_y_cm", 240.0))
+            field_x = float(kv.get("field_x_cm", 240.0))
+            field_y = float(kv.get("field_y_cm", 180.0))
         else:
-            field_x = float(kv.get("field_width", 1.8)) * 100.0
-            field_y = float(kv.get("field_height", 2.4)) * 100.0
+            field_x = float(kv.get("field_width", 240.0))
+            field_y = float(kv.get("field_height", 180.0))
 
         return "graphics", {
             "type": "bodies",
