@@ -28,6 +28,25 @@ BASE=(-c -std=gnu++17 -fno-exceptions -fpermissive -felide-constructors -fno-rtt
       -D__IMXRT1062__ -DTEENSYDUINO=159 -DARDUINO=10805 -DARDUINO_TEENSY40
       -DF_CPU=600000000 -DUSB_SERIAL -DLAYOUT_US_ENGLISH -I"$CORE")
 
+# Die -D-Flags aus platformio.ini uebernehmen, statt sie hier ein zweites
+# Mal hinzuschreiben. Genau daran ist der Check schon einmal gescheitert:
+# main.cpp benutzte BUILD_VERSION/BUILD_DATE/BUILD_TIME aus der platformio.ini,
+# dieses Skript kannte sie nicht, und die Meldung sah aus wie ein Fehler in der
+# Firmware statt wie eine Luecke im Pruefwerkzeug.
+#
+# sed schneidet den build_flags-Block heraus (bis zur naechsten Zeile, die
+# nicht eingerueckt ist), grep zieht die -D-Tokens, sed entfernt die fuer die
+# INI noetigen Backslashes vor den Anfuehrungszeichen. Die Anfuehrungszeichen
+# selbst BLEIBEN stehen: -DBUILD_VERSION="0.0.1" muss beim Compiler als
+# String-Literal ankommen, und Array-Elemente werden von bash nicht erneut
+# zerlegt.
+mapfile -t PIO_DEFINES < <(
+    sed -n '/^build_flags/,/^[^[:space:]#]/p' "$ROOT/teensy_firmware/platformio.ini" \
+    | sed 's/;.*$//' \
+    | grep -oE -- '-D[A-Za-z_][A-Za-z0-9_]*(=[^[:space:]]+)?' \
+    | sed 's/\\"/"/g'
+)
+
 fail=0
 run() {
     local name="$1"; shift
@@ -43,7 +62,7 @@ run() {
 
 echo "== 1) Standardkonfiguration =="
 run "PDS.cpp"  -DACTIVE_CHANNELS=200 -I"$ROOT/teensy_firmware/src" "$ROOT/teensy_firmware/src/PDS.cpp"  -o "$TMP/1a.o"
-run "main.cpp" -DACTIVE_CHANNELS=200 -I"$ROOT/teensy_firmware/src" "$ROOT/teensy_firmware/src/main.cpp" -o "$TMP/1b.o"
+run "main.cpp" -DACTIVE_CHANNELS=200 "${PIO_DEFINES[@]}" -I"$ROOT/teensy_firmware/src" "$ROOT/teensy_firmware/src/main.cpp" -o "$TMP/1b.o"
 
 echo "== 2) ohne channel_config.h (Fallback) =="
 mkdir -p "$TMP/nocfg"

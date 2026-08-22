@@ -522,7 +522,11 @@ class PowerDebugger {
         bool _wdtWasReset = false;
 
         // ── Firmware-Version ───────────────────────────────────────────
-        char _fwVersion[24] = {0};
+        // 48 Byte, nicht 24: ein zusammengesetzter Text wie
+        // "v0.0.1 (Build 22.08.2026 14:23:05)" ist knapp 40 Zeichen lang
+        // und wurde vorher stillschweigend nach "…Aug 22" abgeschnitten.
+        // Der Deskriptor hat mit 24 kB reichlich Platz dafuer.
+        char _fwVersion[48] = {0};
 
         // ── Namens-/Overlay-Deskriptor -> GUI ──────────────────────────
         size_t  _descJsonLen    = 0;

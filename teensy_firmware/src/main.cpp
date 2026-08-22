@@ -33,7 +33,8 @@ void setup() {
 
     // Version der eigenen Roboter-Firmware — erscheint in der GUI, damit man
     // sieht, welcher Stand auf welchem Roboter laeuft.
-    PDS.setFirmwareVersion("Demo 1.0");
+    String Version = "v" + String(BUILD_VERSION) + " (Build " + String(BUILD_DATE) + " " + String(BUILD_TIME) + ")";
+    PDS.setFirmwareVersion(Version.c_str());
 
     // ── Variablen an Kanaele binden ───────────────────────────────────────
     PDS.track("Akku",     &akkuVolt, "V");    // Kanal automatisch, mit Einheit
