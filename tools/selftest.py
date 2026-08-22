@@ -297,6 +297,18 @@ def test_bt_protocol() -> None:
     section("8) bt_flash_protocol")
     from bt_flash_protocol import Cmd, ProtocolError, recv_frame, send_frame
 
+    # pc_flash_tool/ enthaelt ABSICHTLICH eine zweite, identische Kopie des
+    # Protokolls: das Verzeichnis soll sich allein auf einen anderen PC
+    # kopieren lassen (bt_flash_sender.py nimmt shared/, wenn es da ist, und
+    # sonst die Kopie daneben). Zwei Dateien, die von Hand gleich gehalten
+    # werden muessen, laufen aber irgendwann auseinander — und dann redet der
+    # PC ein anderes Protokoll als der Node, ohne dass es jemandem auffaellt.
+    shared = (ROOT / "shared" / "bt_flash_protocol.py").read_bytes()
+    copy = (ROOT / "pc_flash_tool" / "bt_flash_protocol.py").read_bytes()
+    check("Kopie in pc_flash_tool/ ist identisch mit shared/",
+          shared == copy,
+          "beide Dateien muessen Byte fuer Byte gleich sein")
+
     a, b = socket.socketpair()
     try:
         send_frame(a, Cmd.HELLO, b"token123")

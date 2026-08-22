@@ -5,9 +5,8 @@
 #      pip install -r requirements.txt
 #
 #  setup_rpi5.sh benutzt diese Datei automatisch, wenn sie neben dem
-#  Skript liegt (das war bisher nie der Fall — das Skript ist deshalb
-#  immer in seinen Fallback-Zweig gelaufen und hat dort u. a. das gar
-#  nicht mehr verwendete pyqtgraph mitinstalliert).
+#  Skript liegt. pyqtgraph wird nirgends mehr gebraucht — es hing nur
+#  an der inzwischen entfernten Widgets-GUI.
 #
 #  Der Pi-Zero-Node braucht NICHTS davon — dort reicht pyserial
 #  (siehe rpi_zero_node/setup_node.sh).

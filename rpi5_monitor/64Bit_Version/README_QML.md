@@ -1,8 +1,11 @@
 # Power Debug Monitor — QML-Migration (Umsetzungsstand)
 
-Diese Umsetzung folgt `QML_Migrationsplan_RPi5_Monitor.md` und deckt die
-**Phasen 0–5** ab: ein vollständig lauffähiges QML-Frontend parallel zur
-alten Widgets-GUI, mit allen vier Tabs funktional nachgebaut.
+Diese Umsetzung folgt `QML_Migrationsplan_RPi5_Monitor.md` und ist
+abgeschlossen: die Oberfläche besteht nur noch aus QML. Die frühere
+PyQt6-**Widgets**-GUI (`main.py` + `gui/`, rund 3700 Zeilen) ist entfernt —
+sie wurde von keinem Setup-Skript mehr installiert, brauchte mit `pyqtgraph`
+eine zusätzliche Abhängigkeit und kannte weder PS4-Controller noch
+automatische Kanalnamen noch die Überwachung der Empfängerprozesse.
 
 **Getestet:** headless (`QT_QPA_PLATFORM=offscreen`) mit `--simulate`,
 mehrere Minuten Dauerlauf ohne QML-/Python-Fehler, 30 Hz Poll-Takt,
@@ -21,11 +24,6 @@ python3 main_qml.py --simulate
 # Mit echter Hardware:
 python3 main_qml.py
 ```
-
-Die alte Widgets-GUI (`python3 main.py`) bleibt unverändert nutzbar —
-beide Versionen laufen komplett unabhängig nebeneinander (Migrationsplan
-Phase 6 sieht das Entfernen von `gui/` erst nach vollständiger Validierung
-auf echter Hardware vor).
 
 ## Was wurde umgesetzt
 
@@ -95,16 +93,14 @@ und zwar ohne jeden Hinweis. Die Regel selbst steht als reine Funktion in
 - **`table`-Grafiktyp** in der Systemansicht ist bewusst simpel gehalten
   (zweispaltiges Text-Grid) statt einer vollen Tabellen-Widget-Nachbildung.
 
-## Offene Punkte / nächste Schritte (aus dem Migrationsplan)
+## Offene Punkte
 
 1. **Test auf echter RPi5-Hardware**: `QT_QPA_PLATFORM=eglfs` prüfen,
    `QSG_RENDER_LOOP=basic` bei Flackern testen (Migrationsplan Abschnitt 7).
 2. **PlotCanvas-Performance** bei sehr hoher Punktzahl (>500) auf
    schwacher RPi5-GPU messen; ggf. Umstieg auf Option D (QSGGeometryNode)
    falls Option C (aktuell umgesetzt) nicht ausreicht.
-3. Alte `gui/`-Widgets-Tabs erst entfernen, wenn Punkt 2 erfolgreich war
-   (Migrationsplan Phase 6).
-4. Tooling: Qt Design Studio zum visuellen Feintuning der Touch-Layouts
+3. Tooling: Qt Design Studio zum visuellen Feintuning der Touch-Layouts
    nutzen (Migrationsplan Abschnitt 10).
 
 ## Projektstruktur (neu)

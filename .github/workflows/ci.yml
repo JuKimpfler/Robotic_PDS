@@ -52,8 +52,7 @@ jobs:
 
       - name: pyflakes
         run: |
-          # gui/ ist die abgekuendigte Widgets-Oberflaeche und wird nicht
-          # mehr gepflegt; extra_script.py bekommt seine Namen von PlatformIO.
+          # extra_script.py bekommt seine Namen von PlatformIO.
           python -m pyflakes \
             rpi5_monitor/64Bit_Version/*.py \
             rpi5_monitor/64Bit_Version/bridge/*.py \

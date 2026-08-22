@@ -179,7 +179,6 @@ Full API, build flags and integration options:
 
 - **`rpi5_monitor/64Bit_Version/`**: The desktop application (PyQt6). The Qt Quick/QML frontend is the one that is actually shipped and installed — see [`README_QML.md`](rpi5_monitor/64Bit_Version/README_QML.md).
   - `main_qml.py`: **Main entry point** (`setup_rpi5.sh` installs and starts this one). `--simulate` generates synthetic telemetry so the GUI can be tested without a Teensy. `PDS_LOGLEVEL=DEBUG` raises the log level.
-  - `main.py` + `gui/`: the older PyQt6-**Widgets** GUI. Kept for reference only — not installed by any setup script, needs the extra `pyqtgraph` dependency, and lacks the QML feature set (no PS4 controller, no automatic channel names, no receiver supervision). Safe to delete if nobody misses it.
   - `starter.bat`: Windows launcher for `main_qml.py`.
   - `network_worker.py`: UDP receiver processes and network backend.
   - `aux_receiver.py`: receiver for the aux uplink (events, parameter feedback, node health) — the parsing is a plain function so it can be unit-tested without a socket.

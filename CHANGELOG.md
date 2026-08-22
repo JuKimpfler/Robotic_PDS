@@ -22,6 +22,51 @@ welchem Roboter läuft.
 
 ---
 
+## 2.3 — Spielfeld richtig herum, ehrlicher Paketzähler, Altlasten weg
+
+### Behoben
+
+* **Das Spielfeld war um 90° gedreht und tausendmal zu groß.** Zwei Fehler
+  in derselben Umrechnung:
+  1. `field_width`/`field_height` wurden als **Meter** gelesen und mit 100
+     multipliziert. Die vorhandene Konfiguration sagt `240 × 180`, gemeint in
+     Zentimetern — daraus wurde ein **240 × 180 Meter** großes Feld. Ein
+     45-cm-Tor nahm darin 0,25 % einer Kante ein, der Mittelkreis war ein
+     Punkt, und die Rasterlinien alle 30 cm verschmolzen zu einer Fläche.
+     Deshalb wirkte an der Feldansicht scheinbar keine Änderung.
+  2. Die Achsen waren vertauscht: gezeichnet wurde y waagerecht und x
+     senkrecht. Die frühere Widgets-Oberfläche zeichnete **x nach rechts,
+     y nach oben**, und alle Konfigurationen und Hintergrundbilder passen
+     dazu. Genau so wird jetzt wieder gezeichnet.
+* **Das Hintergrundbild der Feldansicht ist wieder an.** Es ist eine
+  Aufnahme des Spielfeldes und passt — mit den korrigierten Maßen jetzt auch
+  pixelgenau. Abschaltbar; dann zeichnet die GUI Tore, Mittellinie und
+  Mittelkreis selbst. Mit Bild werden sie **nicht** gezeichnet, sonst lägen
+  sie doppelt und versetzt über einem Foto, das sie schon zeigt.
+* **Die Parameter-Statuszeile zählte gesendete Pakete hoch, auch ohne Node.**
+  Ein UDP-`sendto()` an eine unerreichbare Gegenstelle gelingt lokal immer —
+  gezählt wurde also „an den Socket übergeben" und gelesen als „angekommen".
+  Ohne Verbindung steht dort jetzt eine Warnung in Bernstein statt einer
+  grünen Erfolgsmeldung; die Zähler starten bei jedem Verbindungsaufbau neu.
+* **`starter.bat`** enthielt mitten in einer Zeile ein verirrtes
+  Carriage-Return-Byte (`..\..<CR>equirements.txt`). Die Fehlermeldung
+  überschrieb sich dadurch selbst und nannte einen Pfad, den es nicht gibt.
+
+### Entfernt
+
+* **Die alte PyQt6-Widgets-GUI** (`main.py` + `gui/`, 3748 Zeilen). Sie wurde
+  von keinem Setup-Skript installiert, brauchte mit `pyqtgraph` eine
+  zusätzliche Abhängigkeit und kannte weder PS4-Controller noch automatische
+  Kanalnamen noch die Überwachung der Empfängerprozesse. Alle Verweise in
+  README, Setup-Skript, CI und Doku sind nachgezogen.
+
+  `pc_flash_tool/bt_flash_protocol.py` bleibt dagegen als bewusste Kopie von
+  `shared/bt_flash_protocol.py` liegen: das Verzeichnis soll sich allein auf
+  einen anderen PC kopieren lassen. Damit die beiden nicht stillschweigend
+  auseinanderlaufen, prüft der Selbsttest sie jetzt Byte für Byte.
+
+---
+
 ## 2.2 — Editor für die Systemansicht
 
 Wire-Format unverändert (2). Die Teensy-Firmware muss **nicht** neu geflasht

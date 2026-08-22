@@ -238,23 +238,24 @@ Neues Modul (gleiche Duplikations-Konvention wie `param_io.py`/`config.py`):
 
 | GUI-Bereich | Datei | Mechanismus |
 |---|---|---|
-| Live-Tabelle (Kanalnamen) | `gui/tab_table.py`, `bridge/telemetry_bridge.py` | `TelemetryTableModel.set_names()` — granulares `dataChanged`, kein Neuaufbau |
-| Param-Tab (Namen der Slow-/Fast-Einträge) | `gui/tab_params.py` | Jede Widget-Factory hängt einen `_name_setter`-Callback an ihr Wurzel-Widget; `ParamEditorWidget.apply_names()` ruft ihn gezielt pro Index auf — **Werte/Zustand bleiben unangetastet** |
+| Live-Tabelle (Kanalnamen) | `bridge/telemetry_bridge.py` | `TelemetryTableModel.set_names()` — granulares `dataChanged`, kein Neuaufbau |
+| Param-Tab (Namen der Slow-/Fast-Einträge) | `bridge/param_bridge.py` | Namens-Refresh baut `params.groups` neu auf und gibt die aktuellen Live-Werte mit, damit kein Regler zurückspringt |
 | Param-Tab (QML) | `bridge/param_bridge.py` | Baut `groups` neu auf (QML kennt keine granulare Property-Aktualisierung), gibt dabei aber die **aktuellen Live-Werte** aus `ParamStore` statt der JSON-Defaults mit — sonst würde der Repeater-Neuaufbau jeden verstellten Regler zurücksetzen |
-| Systemansicht (Overlay-Defaults) | `gui/tab_visuals.py`, `bridge/visuals_bridge.py` | `apply_overlay_defaults_from_registry()` — nur leere Gruppen werden befüllt; Widgets-GUI hat zusätzlich einen "⟲ Auf Teensy-Standard zurücksetzen"-Button für die aktuell sichtbare Gruppe |
+| Systemansicht (Overlay-Defaults) | `bridge/visuals_bridge.py` | `apply_overlay_defaults_from_registry()` — wurde die Anordnung im Editor von Hand bearbeitet, fragt die GUI nach, statt zu überschreiben |
 | Systemansicht (Tabellen-Kanalnamen) | `qml/components/MiniTable.qml` | Bekommt `channelNames` (aufgelöst in `visuals_bridge.py` via `VARIABLE_NAMES`) statt clientseitig `"Var_" + index` zu bilden |
 
 `VARIABLE_NAMES` (in `config.py`) wird beim Empfang **in-place mutiert**
 (`.update(...)`, nicht neu zugewiesen), damit bereits importierte Referenzen
 überall im Code automatisch die neuen Namen sehen.
 
-### 5.2 Bewusste Einschränkung: kein Overlay-Editor in QML
+### 5.2 Overlay-Editor
 
-Nur die PyQt6-Widgets-GUI (`gui/tab_visuals.py::OverlayConfigTable`) kann
-Overlays interaktiv bearbeiten und speichern — das war schon vor dieser
-Änderung so (QML zeigt Overlays nur an, siehe `README_QML.md`). Die neue
-Teensy-Namensfunktion ändert daran nichts: QML zeigt die vom Teensy gelieferten
-bzw. lokal editierten Overlays an, die Bearbeitung bleibt Widgets-exklusiv.
+Zum Zeitpunkt dieses Dokuments konnte nur die inzwischen entfernte
+PyQt6-Widgets-GUI Overlays bearbeiten; QML zeigte sie nur an. Das gilt nicht
+mehr: die QML-Oberfläche hat seit Version 2.2 einen eigenen Editor
+(„✎ Bearbeiten" in der Systemansicht, siehe `README_QML.md`). Meldet der
+Teensy eine neue Anordnung, obwohl hier von Hand bearbeitet wurde, fragt die
+GUI nach, statt zu überschreiben.
 
 ---
 
