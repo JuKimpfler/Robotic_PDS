@@ -275,6 +275,11 @@ Konkrete Anpassungen (in der bestehenden Struktur des Skripts):
 
 ## 11. Offene Punkte, die vor der Umsetzung zu klären sind
 
+> Stand nach der Umsetzung: Punkt 2 wurde mit Tkinter entschieden
+> (`pc_flash_tool/bt_flash_sender_gui.py`, siehe `pc_flash_tool/README.md`),
+> Punkt 4 mit „eigenständiges Tool" (kein Tab im `rpi5_monitor`). Die übrigen
+> Punkte sind unten weiterhin als ursprüngliche Planungsfragen dokumentiert.
+
 1. Soll die Bluetooth-Verbindung dauerhaft aktiv/discoverable bleiben oder nur bei Bedarf (z. B. per Taster/Skript) aktiviert werden? (Wirkt sich auf Stromverbrauch und Sicherheitsprofil aus.)
 2. Reicht ein CLI-Tool auf dem PC, oder wird von Anfang an eine grafische Oberfläche gewünscht (Tkinter reicht aus, PyQt6 wäre Konsistenz zu `rpi5_monitor`, aber mehr Aufwand)?
 3. Sollen beide Nodes wirklich **sequenziell** geflasht werden, oder ist paralleles Flashen (zwei gleichzeitige RFCOMM-Verbindungen, zwei Threads im PC-Tool) gewünscht, trotz höherer Komplexität?

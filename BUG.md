@@ -1,5 +1,31 @@
 # Gemeldete Fehler — Stand: alle behoben
 
+## Runde 3
+
+- [x] **Die GUI stürzte beim Beenden ab — nur auf dem Raspberry Pi, nicht auf
+  dem Entwicklungsrechner.** `FastControlWorker` (Ableitung von
+  `threading.Thread`) hatte ein Attribut `self._stop`. Bis einschließlich
+  Python 3.12 ist `_stop` eine **interne Methode** von `threading.Thread`, die
+  `join()` beim Threadende aufruft; das Attribut überdeckte sie, und `join()`
+  lief in `TypeError: 'Event' object is not callable`. Der Absturz riss den
+  Interpreter mit — QML baute anschließend auf eine halb abgeräumte Brücke
+  ab, was vierzig Folgemeldungen und am Ende ein `SIGABRT` ergab.
+  Auf dem Entwicklungsrechner (Python 3.14) fiel es nicht auf, weil diese
+  Methode dort nicht mehr existiert; der Pi läuft mit 3.11. Der Selbsttest
+  prüft jetzt versionsunabhängig, dass keine Thread-Ableitung ein Interna von
+  `threading.Thread` überdeckt.
+- [x] **`tools/desc_json_check.py` prüfte nie die echte `channel_config.h`,
+  sondern immer die leere Vorlage.** Ein Include in Anführungszeichen sucht
+  zuerst im Verzeichnis der einbindenden Datei — dort lag immer die
+  auskommentierte Vorlage aus `teensy_firmware/src/`, unabhängig von der
+  `-I`-Reihenfolge. Der CI-Job schlug deshalb zu Recht fehl. Behoben, indem
+  alle Quellen vor dem Test in ein temporäres Verzeichnis kopiert werden;
+  eine neue Prüfung stellt zusätzlich fest, ob überhaupt die Testkonfiguration
+  benutzt wurde.
+- [x] **Smoketest prüfte Plotter/Systemansicht ohne vorher hinzuschalten** —
+  funktionierte nur zufällig, je nachdem wie viele Tabs der `SwipeView` im
+  Voraus aufbaut. Der Test schaltet jetzt um, bevor er einen Tab anfasst.
+
 ## Runde 2
 
 - [x] **Spielfeld: Änderungen wirkten nicht, Bild fehlte, falsche Drehung.**

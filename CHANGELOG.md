@@ -71,6 +71,47 @@ welchem Roboter läuft.
   gelöschte Brücke zu. PyQt macht aus dem `RuntimeError` in einem Slot ein
   `abort()`.
 
+* **`tools/desc_json_check.py` prüfte nie die echte `channel_config.h`.** Der
+  Übersetzungsaufruf band `"-I tools/hostsim -I teensy_firmware/src"` ein, mit
+  dem Kommentar „hostsim MUSS vor src stehen" — das stimmt bei
+  spitzen Klammern, aber `PDS.cpp` bindet `channel_config.h` in
+  **Anführungszeichen** ein, und dafür sucht der Präprozessor zuerst im
+  Verzeichnis der einbindenden Datei selbst. Gewonnen hat also immer
+  `teensy_firmware/src/channel_config.h` — die ausgelieferte Vorlage, in der
+  jeder Eintrag auskommentiert ist. Der Deskriptor kam leer heraus, und
+  vierzehn Einzelprüfungen schlugen fehl, obwohl es ein einziges Problem war.
+  Jetzt kopiert das Skript alle Quellen in ein temporäres Verzeichnis, und
+  eine neue Prüfung stellt fest, ob überhaupt die Testkonfiguration benutzt
+  wurde — mit der Vorlage meldet sie das jetzt direkt statt vierzehn
+  Folgefehlern.
+
+  Zweiter Fund an derselben Stelle: `subprocess` las die Ausgabe in der
+  Locale-Kodierung (`text=True`). Der Deskriptor ist UTF-8; unter Windows
+  (cp1252) wurde daraus Zeichensalat, den der Test als Escaping-Fehler
+  meldete, der keiner war. Jetzt ausdrücklich `encoding="utf-8"`.
+
+  `desc_json_check.py` beachtet jetzt außerdem **`CXX`**. Ohne das ließ sich
+  der Test auf einem Rechner ohne `g++` gar nicht ausführen — mit
+  `pip install ziglang` und `CXX="python -m ziglang c++"` läuft er auch unter
+  Windows.
+* **Das Raster der Feldansicht war über dem Hintergrundbild unsichtbar** —
+  blasses Blau auf gedämpftem Rasengrün. Über einem Bild jetzt weiß und
+  kräftiger, die Abdunklung des Bildes dafür schwächer.
+* **Der Smoketest prüfte Plotter und Systemansicht, ohne vorher dorthin zu
+  wechseln.** Baut ein `SwipeView` (abhängig von Qt-Version und Puffergröße)
+  nicht alle Seiten im Voraus auf, meldete die Prüfung „OverlayEditor: 0
+  Instanzen", obwohl an der Oberfläche nichts falsch war. Der Test schaltet
+  jetzt um, bevor er den jeweiligen Tab anfasst — das bildet zugleich ab, was
+  ein Bediener tatsächlich tut.
+* Die Layout-Prüfung des Smoketests („kein Positionierer flacher als sein
+  höchstes Kind") arbeitet jetzt mit 8 Pixeln Toleranz — Schriftmetriken
+  unterscheiden sich zwischen CI und Entwicklungsrechner, und ein, zwei Pixel
+  Überstand sind normal. Der 16-Pixel-Fund, um den es ursprünglich ging, wird
+  weiterhin erkannt.
+* **CI**: `fonts-dejavu-core` ergänzt. Ohne eine einzige installierte
+  Schriftart meldet Qt beim Aufbau jedes Textelements eine Warnung, die der
+  Smoketest als Fehler wertet.
+
 ### Entfernt
 
 * **Die alte PyQt6-Widgets-GUI** (`main.py` + `gui/`, 3748 Zeilen). Sie wurde

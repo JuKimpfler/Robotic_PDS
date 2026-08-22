@@ -15,7 +15,7 @@ laufen sauber durch.
 ## Starten
 
 ```bash
-cd rpi5_monitor
+cd rpi5_monitor/64Bit_Version
 pip install PyQt6 numpy --break-system-packages   # falls noch nicht vorhanden
 
 # Mit synthetischen Testdaten (kein Teensy nötig):
@@ -36,6 +36,9 @@ python3 main_qml.py
 | Tab 2 — Live-Plotter | `qml/PlotterView.qml`, `bridge/plot_bridge.py` (PlotCanvas, Option C aus dem Plan) | ✅ funktional; Pinch-to-Zoom für Punktezahl |
 | Tab 3 — Systemansicht | `qml/SystemView.qml`, `bridge/visuals_bridge.py`, `overlay_schema.py`, `qml/components/{Gauge,RotationIndicator,VectorIndicator,MiniTable,OverlayEditor,FieldEditor,ChannelPicker}.qml` | ✅ vollständig, inkl. **Editor** (Ziehen im Bild, Formular je Element, Gruppen, Rückgängig, dauerhaft je Node gespeichert) — siehe unten |
 | Tab 4 — Parameter | `qml/ParamsView.qml`, `bridge/param_bridge.py`, `qml/components/{Joystick,TouchSlider}.qml` | ✅ vollständig (Slider/Zahl/Text/Toggle/Button/Joystick, Fast+Slow-Downlink, Save-Default) |
+| Tab 5 — Diagnose | `qml/DiagnosticsView.qml`, `bridge/diag_bridge.py` | ✅ vollständig — Verbindungsqualität, Round-Trip-Zeit, Node-Systemstatus, Akku-Warnung, Logbuch, Einstellungen (siehe Architektur-Übersicht in der Haupt-`README.md`, Abschnitt 3b) |
+| PS4-Controller | `bridge/controller_bridge.py` | ✅ vollständig — übernimmt den Fast-Channel automatisch, sobald ein DualShock 4 verbunden ist; siehe `Doku/PS4_Controller_Implementierung.md` |
+| Einstellungen (Theme, Schriftgröße, Kiosk-Modus) | `bridge/settings_bridge.py` | ✅ vollständig, persistiert unter `runtime_config/` |
 | Kanal-/Param-Namen + Overlay-Defaults vom Teensy | `channel_registry.py` (Modulwurzel), `bridge/app_bridge.py::_poll_descriptor`/`requestChannelNames` | ✅ vollständig — siehe `Doku/Kanalnamen_Implementierung.md`; Namens-Refresh baut `params.groups` neu auf, gibt dabei aber die aktuellen Live-Werte statt der JSON-Defaults mit, damit kein Regler zurückspringt |
 
 ## Der Editor der Systemansicht
@@ -106,36 +109,49 @@ und zwar ohne jeden Hinweis. Die Regel selbst steht als reine Funktion in
 ## Projektstruktur (neu)
 
 ```
-rpi5_monitor/
-├── main_qml.py               # neuer QML-Einstiegspunkt
-├── overlay_schema.py         # Felder der Anzeige-Elemente als Daten (ohne PyQt)
-├── runtime_config.py         # vom Teensy uebernommene Konfiguration, je Node
-├── bridge/                   # Python↔QML-Brücke (kein QtWidgets-Import)
-│   ├── app_bridge.py         # Fassade, Poll-Loop, Node-Umschaltung
-│   ├── telemetry_bridge.py   # Tab 1
-│   ├── plot_bridge.py        # Tab 2 (inkl. PlotCanvas QQuickPaintedItem)
-│   ├── param_bridge.py       # Tab 4 (ParamStore unverändert übernommen)
-│   ├── visuals_bridge.py     # Tab 3 samt Editor
-│   └── utils.py              # parse_channels, expand_textgrid
+rpi5_monitor/64Bit_Version/
+├── main_qml.py               # QML-Einstiegspunkt (--simulate, PDS_LOGLEVEL)
+├── starter.bat                # Windows-Starter für main_qml.py
+├── overlay_schema.py          # Felder der Anzeige-Elemente als Daten (ohne PyQt)
+├── runtime_config.py          # vom Teensy uebernommene Konfiguration, je Node
+├── channel_registry.py        # Deskriptor-Empfang/-Parsing vom Teensy
+├── aux_receiver.py            # Ereignisse, Parameter-Rückmeldung, Node-Status
+├── param_defaults.h           # von der GUI generiert: Parameter-Defaults als C-Header zum Rückkopieren in channel_config.h
+├── runtime_config/            # git-ignored: gespeicherte Node-Konfiguration + UI-Settings
+├── bridge/                    # Python↔QML-Brücke (kein QtWidgets-Import)
+│   ├── app_bridge.py          # Fassade, Poll-Loop, Node-Umschaltung
+│   ├── telemetry_bridge.py    # Tab 1
+│   ├── plot_bridge.py         # Tab 2 (inkl. PlotCanvas QQuickPaintedItem)
+│   ├── visuals_bridge.py      # Tab 3 samt Editor
+│   ├── param_bridge.py        # Tab 4 (ParamStore, Fast-Channel-Thread)
+│   ├── diag_bridge.py         # Tab 5: Link-Qualität, Node-Status, Akku-Alarm, Logbuch
+│   ├── controller_bridge.py   # PS4-Controller (übernimmt Fast-Channel automatisch)
+│   ├── settings_bridge.py     # Theme, Schriftgröße, Kiosk-Modus (persistiert)
+│   └── utils.py                # parse_channels, expand_textgrid
 └── qml/
-    ├── Theme.qml              # als App-1.0-Singleton registriert (main_qml.py)
+    ├── Theme.qml               # als App-1.0-Singleton registriert (main_qml.py)
     ├── Main.qml
+    ├── UiState.qml
     ├── TelemetryView.qml
     ├── PlotterView.qml
     ├── SystemView.qml
     ├── ParamsView.qml
+    ├── DiagnosticsView.qml      # Tab 5
     └── components/
         ├── NodeSelector.qml
         ├── StatusBar.qml
+        ├── AppButton.qml
+        ├── AppSwitch.qml
         ├── Joystick.qml
         ├── TouchSlider.qml
         ├── Gauge.qml
         ├── RotationIndicator.qml
         ├── VectorIndicator.qml
+        ├── BodiesField.qml         # Feldansicht (Spielfeld, Zentimeter)
         ├── MiniTable.qml
-        ├── OverlayEditor.qml      # Bedienfeld des Editors
-        ├── FieldEditor.qml        # ein Feld, datengetrieben aus overlay_schema
-        └── ChannelPicker.qml      # Kanalauswahl mit Suche
+        ├── OverlayEditor.qml       # Bedienfeld des Editors
+        ├── FieldEditor.qml         # ein Feld, datengetrieben aus overlay_schema
+        └── ChannelPicker.qml       # Kanalauswahl mit Suche
 ```
 
 Unverändert wiederverwendet: `config.py`, `network_worker.py`, `param_io.py`,
