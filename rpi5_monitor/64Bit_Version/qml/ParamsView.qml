@@ -50,9 +50,14 @@ Item {
             color: Theme.bgMid
             border.color: Theme.border
 
+            // Nur SEITLICHE Raender: mit anchors.margins blieben der Zeile von
+            // den 56 px des Kastens nur 40 uebrig, waehrend AppButton und
+            // AppSwitch 56 px hoch sind. Die Knoepfe ragten dann oben und
+            // unten aus der Leiste heraus und ueberlappten die Zeile darunter.
             Row {
                 anchors.fill: parent
-                anchors.margins: Theme.spacingS
+                anchors.leftMargin: Theme.spacingS
+                anchors.rightMargin: Theme.spacingS
                 spacing: Theme.spacingM
 
                 Text {

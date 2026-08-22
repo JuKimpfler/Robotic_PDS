@@ -163,10 +163,18 @@ Item {
             color: Theme.bgMid
             border.color: root.plotter.triggerEnabled ? Theme.accentAmber : Theme.border
 
+            // NICHT `anchors.fill: parent`: die Hoehe des Kastens kommt aus
+            // triggerRow.implicitHeight, und anchors.fill wuerde die Hoehe der
+            // Flow zurueck an den Kasten binden — eine Schleife. Qt loest sie
+            // auf, indem es eine Seite fallen laesst, und der Kasten fiel dann
+            // beim Einschalten des Triggers von 192 auf 16 Pixel zusammen:
+            // Schwelle, Modus und Nachlauf waren nicht mehr erreichbar.
+            // Nur die BREITE binden, die Hoehe rechnet die Flow selbst aus.
             Flow {
                 id: triggerRow
-                anchors.fill: parent
-                anchors.margins: Theme.spacingS
+                x: Theme.spacingS
+                y: Theme.spacingS
+                width: parent.width - 2 * Theme.spacingS
                 spacing: Theme.spacingS
 
                 AppSwitch {
@@ -270,8 +278,13 @@ Item {
                     onClicked: root.plotter.rearmTrigger()
                 }
 
+                // Ein DIREKTES Kind einer Flow darf keine Anker haben — Qt
+                // meldet "Cannot specify anchors for items inside Flow. Flow
+                // will not function." und ordnet danach gar nichts mehr an.
+                // Senkrecht zentriert wird deshalb ueber die Textausrichtung.
                 Text {
-                    anchors.verticalCenter: parent.verticalCenter
+                    height: Theme.touchTargetMin
+                    verticalAlignment: Text.AlignVCenter
                     color: Theme.textDim
                     font.pixelSize: Theme.fontSizeSmall
                     text: !root.plotter.triggerEnabled ? ""

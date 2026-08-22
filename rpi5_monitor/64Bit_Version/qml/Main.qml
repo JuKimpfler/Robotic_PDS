@@ -178,18 +178,10 @@ ApplicationWindow {
                     onNodeSelected: (nodeId) => appBridge.setActiveNode(nodeId)
                 }
 
-                AppButton {
-                    id: emergencyBtn
-                    width: 130
-                    height: parent.height
-                    text: "⛔ STOPP"
-                    danger: true
-                    onClicked: {
-                        appBridge.params.stopAll()
-                        keys.held = 0
-                    }
-                }
-
+                // Kein Not-Aus-Knopf in der Kopfzeile (auf Wunsch entfernt).
+                // Der Not-Aus liegt weiterhin auf der LEERTASTE, siehe
+                // keyCatcher weiter oben — der ist am Spielfeldrand ohnehin
+                // schneller zu treffen als ein Ziel auf dem Touchscreen.
                 AppButton {
                     width: 150
                     height: parent.height
@@ -199,7 +191,7 @@ ApplicationWindow {
 
                 TabBar {
                     id: tabBar
-                    width: parent.width - 360 - 130 - 150 - Theme.spacingM * 3
+                    width: parent.width - 360 - 150 - Theme.spacingM * 2
                     height: parent.height
                     currentIndex: swipeView.currentIndex
                     Material.background: "transparent"

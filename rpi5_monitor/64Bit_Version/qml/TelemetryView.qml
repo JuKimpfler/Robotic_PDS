@@ -12,6 +12,15 @@ Item {
     id: root
     property var telemetry: appBridge.telemetry
 
+    // Min/Max/Delta sind leer, solange ein Kanal noch keinen endlichen Wert
+    // hatte (TelemetryTableModel gibt dann None zurueck). In QML kommt das als
+    // `undefined` an, NICHT als `null` — die fruehere Abfrage `!== null` war
+    // deshalb immer wahr und lief in `undefined.toFixed()`. Ergebnis: bei jedem
+    // ungenutzten Kanal blieben die drei Spalten leer statt "—" zu zeigen.
+    function fmt(v, digits) {
+        return (typeof v === "number" && isFinite(v)) ? v.toFixed(digits) : "—"
+    }
+
     Column {
         anchors.fill: parent
         anchors.margins: Theme.spacingS
@@ -135,21 +144,21 @@ Item {
                         anchors.verticalCenter: parent.verticalCenter
                     }
                     Text {
-                        text: "min " + (minVal !== null ? minVal.toFixed(3) : "—")
+                        text: "min " + root.fmt(minVal, 3)
                         color: Theme.textDim
                         font.family: Theme.fontMono
                         font.pixelSize: Theme.fontSizeSmall
                         anchors.verticalCenter: parent.verticalCenter
                     }
                     Text {
-                        text: "max " + (maxVal !== null ? maxVal.toFixed(3) : "—")
+                        text: "max " + root.fmt(maxVal, 3)
                         color: Theme.textDim
                         font.family: Theme.fontMono
                         font.pixelSize: Theme.fontSizeSmall
                         anchors.verticalCenter: parent.verticalCenter
                     }
                     Text {
-                        text: "Δ " + (delta !== null ? delta.toFixed(3) : "—")
+                        text: "Δ " + root.fmt(delta, 3)
                         color: Theme.textDim
                         font.family: Theme.fontMono
                         font.pixelSize: Theme.fontSizeSmall

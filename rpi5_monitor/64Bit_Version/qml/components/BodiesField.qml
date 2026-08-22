@@ -19,12 +19,20 @@ import App
 //      Bildschirm RECHTS  = Norden  (+y)
 //      Bildschirm UNTEN   = Osten   (+x)
 //
-//                       N (+y) ──────────────►
-//                    ┌───────────────────────────┐
-//        O (+x)  │   │ (0,0)                     │
-//                │   │            Feld           │
-//                ▼   │                           │
-//                    └───────────────────────────┘
+//                       N (+y) ──────────────────────►
+//                    ┌──────────────┬──────────────┐
+//                    │              │              │
+//        O (+x)  │   ├───┐          │          ┌───┤
+//                │   │TOR│      ( • )          │TOR│
+//                ▼   ├───┘          │          └───┤
+//                    │              │              │
+//                    └──────────────┴──────────────┘
+//                    (0,0)
+//
+//  Die Tore liegen an den beiden Enden der LANGEN Achse (y = 0 und
+//  y = fieldYCm) und sind quer dazu mittig. Gezeichnet werden sie nach
+//  innen — als Nische in der Bande. Nach aussen gezeichnet wuerde der
+//  `clip` des Feldes sie abschneiden.
 //
 //  Der Blickwinkel eines Körpers ist ein KOMPASSKURS: 0° = Norden, im
 //  Uhrzeigersinn steigend. In genau dieser Darstellung entspricht das
@@ -42,11 +50,17 @@ Item {
     property string imageUrl: ""
 
     // Feldmaße in cm. Standard = RoboCup Junior Soccer Lightweight.
-    property real fieldXCm: 180     // Ost-Achse
-    property real fieldYCm: 240     // Nord-Achse
+    property real fieldXCm: 180     // Ost-Achse (quer,  im Bild senkrecht)
+    property real fieldYCm: 240     // Nord-Achse (lang, im Bild waagerecht)
+
+    // Tore stehen an den beiden Enden der LANGEN Achse (Nord/Süd) und sind
+    // quer dazu mittig. goalWidthCm ist die Toröffnung entlang der Ost-Achse.
+    property real goalWidthCm: 45
+    property real goalDepthCm: 10
 
     // Rasterabstand in cm.
     property real gridStepCm: 30
+    property real centerCircleCm: 60
 
     // { label, color, diameter (cm), x (cm, Ost), y (cm, Nord), angleDeg (Kompass) }
     property var body1: ({ label: "", color: "#4ec9b0", diameter: 7,  x: 0, y: 0, angleDeg: 0 })
@@ -77,7 +91,9 @@ Item {
 
         Rectangle {
             anchors.fill: parent
-            color: Theme.bg
+            // Gedaempftes Rasengruen: damit ist auf einen Blick klar, dass
+            // hier ein Spielfeld steht und nicht irgendein Diagramm.
+            color: Theme.dark ? "#16301f" : "#e3f0e6"
             border.color: Theme.border
             border.width: 1.5
             radius: Theme.radiusS
@@ -106,31 +122,74 @@ Item {
                 onPaint: {
                     var ctx = getContext("2d")
                     ctx.reset()
-                    ctx.strokeStyle = "rgba(60,120,200,0.35)"
+
+                    // ── 1) Raster, dezent: es ist Ablesehilfe, nicht Motiv ──
+                    ctx.strokeStyle = "rgba(60,120,200,0.18)"
                     ctx.lineWidth = 1
-                    ctx.setLineDash([2, 4])
+                    ctx.setLineDash([2, 5])
 
                     var step = Math.max(5, root.gridStepCm)
+                    var fy, fx, px, py
 
                     // Senkrechte Linien = feste Nord-Koordinaten
-                    for (var fy = 0; fy <= root.fieldYCm + 1e-6; fy += step) {
-                        var px = fieldBox.northToPx(fy)
+                    for (fy = 0; fy <= root.fieldYCm + 1e-6; fy += step) {
+                        px = fieldBox.northToPx(fy)
                         ctx.beginPath(); ctx.moveTo(px, 0); ctx.lineTo(px, height); ctx.stroke()
                     }
                     // Waagerechte Linien = feste Ost-Koordinaten
-                    for (var fx = 0; fx <= root.fieldXCm + 1e-6; fx += step) {
-                        var py = fieldBox.eastToPx(fx)
+                    for (fx = 0; fx <= root.fieldXCm + 1e-6; fx += step) {
+                        py = fieldBox.eastToPx(fx)
                         ctx.beginPath(); ctx.moveTo(0, py); ctx.lineTo(width, py); ctx.stroke()
                     }
 
-                    // Mittellinien kräftiger
-                    ctx.strokeStyle = "rgba(80,160,255,0.55)"
+                    // ── 2) Spielfeldmarkierungen ────────────────────────────
+                    //  Die Mittellinie liegt QUER zur langen Achse, also im
+                    //  Bild senkrecht — die lange Achse (Nord) ist waagerecht.
+                    var line = "rgba(150,190,240,0.75)"
+                    ctx.strokeStyle = line
                     ctx.setLineDash([])
-                    ctx.lineWidth = 1.2
-                    var mx = fieldBox.northToPx(root.fieldYCm / 2)
-                    var my = fieldBox.eastToPx(root.fieldXCm / 2)
-                    ctx.beginPath(); ctx.moveTo(mx, 0); ctx.lineTo(mx, height); ctx.stroke()
-                    ctx.beginPath(); ctx.moveTo(0, my); ctx.lineTo(width, my); ctx.stroke()
+                    ctx.lineWidth = 1.6
+
+                    var mid = fieldBox.northToPx(root.fieldYCm / 2)
+                    var half = fieldBox.eastToPx(root.fieldXCm / 2)
+                    ctx.beginPath(); ctx.moveTo(mid, 0); ctx.lineTo(mid, height); ctx.stroke()
+
+                    // Mittelkreis
+                    var rC = Math.max(6, root.centerCircleCm / 2 * fieldBox._cmScale)
+                    ctx.beginPath(); ctx.arc(mid, half, rC, 0, 2 * Math.PI); ctx.stroke()
+                    ctx.beginPath(); ctx.arc(mid, half, 2.5, 0, 2 * Math.PI)
+                    ctx.fillStyle = line; ctx.fill()
+
+                    // ── 3) Tore an den Enden der langen Achse ───────────────
+                    //  Nach innen gezeichnet (wie eine Nische in der Bande),
+                    //  damit nichts über den Feldrand hinausragt und vom
+                    //  clip abgeschnitten wird.
+                    var gd = Math.max(4, root.goalDepthCm * fieldBox._cmScale)
+                    var gTop = fieldBox.eastToPx((root.fieldXCm - root.goalWidthCm) / 2)
+                    var gBot = fieldBox.eastToPx((root.fieldXCm + root.goalWidthCm) / 2)
+
+                    function goal(x0, x1, label) {
+                        ctx.fillStyle = "rgba(90,150,220,0.20)"
+                        ctx.fillRect(Math.min(x0, x1), gTop, Math.abs(x1 - x0), gBot - gTop)
+                        ctx.strokeStyle = line
+                        ctx.lineWidth = 2
+                        ctx.strokeRect(Math.min(x0, x1) + 1, gTop + 1,
+                                       Math.abs(x1 - x0) - 2, gBot - gTop - 2)
+                        // "TOR" laengs der Nische, also um 90 Grad gedreht
+                        if (gBot - gTop > 34) {
+                            ctx.save()
+                            ctx.translate((x0 + x1) / 2, (gTop + gBot) / 2)
+                            ctx.rotate(-Math.PI / 2)
+                            ctx.fillStyle = line
+                            ctx.font = "bold 11px sans-serif"
+                            ctx.textAlign = "center"
+                            ctx.textBaseline = "middle"
+                            ctx.fillText(label, 0, 0)
+                            ctx.restore()
+                        }
+                    }
+                    goal(0, gd, "TOR SÜD")                 // y = 0
+                    goal(width, width - gd, "TOR NORD")    // y = fieldYCm
                 }
                 Component.onCompleted: requestPaint()
                 onWidthChanged: requestPaint()
@@ -140,6 +199,9 @@ Item {
                     function onFieldXCmChanged() { grid.requestPaint() }
                     function onFieldYCmChanged() { grid.requestPaint() }
                     function onGridStepCmChanged() { grid.requestPaint() }
+                    function onGoalWidthCmChanged() { grid.requestPaint() }
+                    function onGoalDepthCmChanged() { grid.requestPaint() }
+                    function onCenterCircleCmChanged() { grid.requestPaint() }
                 }
             }
 
@@ -177,7 +239,11 @@ Item {
                 anchors.left: parent.left
                 anchors.bottom: parent.bottom
                 anchors.margins: 4
-                text: root.fieldXCm.toFixed(0) + " × " + root.fieldYCm.toFixed(0) + " cm"
+                // Reihenfolge wie im BILD: waagerecht × senkrecht. Die lange
+                // Achse (Nord) liegt waagerecht, also 240 × 180 und nicht
+                // 180 × 240 — sonst liest man die Beschriftung gegen das,
+                // was man sieht.
+                text: root.fieldYCm.toFixed(0) + " × " + root.fieldXCm.toFixed(0) + " cm"
                 color: Theme.textDim
                 font.pixelSize: Theme.fontSizeSmall
             }
