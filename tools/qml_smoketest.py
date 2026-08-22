@@ -348,6 +348,23 @@ def _verify_positioners(engine) -> list[str]:
     return found
 
 
+def _set_tab(engine, index: int) -> None:
+    """Auf einen Tab umschalten.
+
+    Ein SwipeView baut seine Seiten nicht zwingend alle sofort auf -- wie
+    viele im Voraus entstehen, haengt an Qt-Version und Puffergroesse. Ohne
+    Umschalten kann die Systemansicht in der CI schlicht noch nicht existieren,
+    und dann meldet die Pruefung "OverlayEditor: 0 Instanzen", obwohl an der
+    Oberflaeche nichts falsch ist. Umschalten ist ausserdem das, was ein
+    Bediener tut.
+    """
+    from PyQt6.QtCore import QObject as _QObject
+    for obj in engine.rootObjects()[0].findChildren(_QObject):
+        if obj.metaObject().className().startswith("SwipeView"):
+            obj.setProperty("currentIndex", index)
+            return
+
+
 def _open_channel_picker(engine) -> None:
     """Die Kanalauswahl aufklappen. Ein geschlossenes Popup haengt NICHT im
     sichtbaren Baum — ohne Oeffnen wuerden seine 200 Listenzeilen nie gebaut
@@ -442,6 +459,7 @@ def main() -> int:
     # faellt eine Bindungsschleife auf. Nach jedem Schalten eine Layout-Runde
     # erzwingen, sonst rechnet Qt offscreen gar nicht.
     steps: list = [
+        lambda: _set_tab(engine, 1),               # Plotter
         lambda: bridge._plotter.setTriggerEnabled(True),
         lambda: _visual_types(engine.rootObjects()[0]),
         lambda: bridge._plotter.setTriggerMode("outside"),
@@ -450,6 +468,7 @@ def main() -> int:
         lambda: _visual_types(engine.rootObjects()[0]),
     ]
 
+    steps.append(lambda: _set_tab(engine, 2))   # Systemansicht
     steps += _exercise_editor(bridge)
     steps.append(lambda: _open_channel_picker(engine))
     steps.append(lambda: _warnings.extend(_verify_editor_rendered(engine)))
