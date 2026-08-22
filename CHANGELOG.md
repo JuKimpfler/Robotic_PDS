@@ -52,6 +52,25 @@ welchem Roboter läuft.
   Carriage-Return-Byte (`..\..<CR>equirements.txt`). Die Fehlermeldung
   überschrieb sich dadurch selbst und nannte einen Pfad, den es nicht gibt.
 
+* **Die GUI stürzte beim Beenden ab — auf dem Raspberry Pi, nicht hier.**
+  `FastControlWorker` (Ableitung von `threading.Thread`) hatte ein Attribut
+  `self._stop`. In Python bis einschließlich 3.12 ist `_stop` eine **interne
+  Methode** von `threading.Thread`, die `join()` aufruft, sobald der Thread
+  beendet ist. Das Attribut überdeckte sie, und `join()` lief in
+  `TypeError: 'Event' object is not callable`. Der Absturz riss den
+  Interpreter mit: QML baute anschließend auf eine halb abgeräumte Brücke ab,
+  was vierzig Folgemeldungen und am Ende ein `SIGABRT` ergab.
+
+  Auf dem Entwicklungsrechner fiel es nicht auf, weil Python 3.14 diese
+  Methode nicht mehr hat. Der RPi läuft mit 3.11 — dort war der Fehler live.
+  Der Selbsttest prüft jetzt **versionsunabhängig**, dass keine
+  Thread-Ableitung ein Interna von `threading.Thread` überdeckt: die Liste
+  der betroffenen Namen ist fest hinterlegt, ein Test gegen die eigene
+  Laufzeit hätte auf 3.14 nichts gefunden.
+* **`PlotCanvas.setPlotBridge`** greift beim Abbau nicht mehr auf eine bereits
+  gelöschte Brücke zu. PyQt macht aus dem `RuntimeError` in einem Slot ein
+  `abort()`.
+
 ### Entfernt
 
 * **Die alte PyQt6-Widgets-GUI** (`main.py` + `gui/`, 3748 Zeilen). Sie wurde
@@ -156,6 +175,15 @@ werden.
   deklariert.
 * `tools/selftest.py`: 98 → 148 Prüfungen (Feldschema, Typumwandlung,
   Positionsgrenzen, Konfliktregel Teensy ↔ Handarbeit).
+* Der Smoketest umschließt das **Herunterfahren** und meldet einen Fehler
+  dort als Befund, statt daran zu sterben — genau dort saß der Absturz oben,
+  und aus einer klaren Ursache wurden vierzig Folgemeldungen.
+* `tools/desc_json_check.py` beachtet **CXX**. Ohne das ließ sich der
+  Deskriptor-Test auf einem Rechner ohne `g++` gar nicht ausführen, und er
+  lief erst in der CI zum ersten Mal — wo sich dann zeigte, dass er nie
+  geprüft hatte, was er zu prüfen vorgibt (siehe oben). Mit
+  `pip install ziglang` und `CXX="python -m ziglang c++"` läuft er auch unter
+  Windows.
 * Der Smoketest erzwingt jetzt eine **Layout-Runde** und prüft danach eine
   echte Invariante: *kein Positionierer darf flacher sein als sein höchstes
   Kind.* Offscreen rechnet Qt sonst gar kein Layout, und genau deshalb blieb

@@ -309,13 +309,20 @@ class FastControlWorker(threading.Thread):
     def __init__(self, bridge: "ParamBridge") -> None:
         super().__init__(name="PDS-FastControl", daemon=True)
         self._b = bridge
-        self._stop = threading.Event()
+        # NICHT `self._stop` nennen: threading.Thread hat in Python bis
+        # einschliesslich 3.12 eine INTERNE Methode dieses Namens, die join()
+        # aufruft, sobald der Thread beendet ist. Ein Attribut gleichen Namens
+        # ueberdeckt sie, und join() laeuft dann in
+        #     TypeError: 'Event' object is not callable
+        # Auf dem RPi (3.11) stuerzte die GUI damit beim Beenden ab. Hier fiel
+        # es nicht auf, weil Python 3.14 die Methode nicht mehr hat.
+        self._stop_evt = threading.Event()
         self.loop_count = 0
         self.late_count = 0        # Zyklen, die mehr als eine halbe Periode spaet waren
         self.max_late_ms = 0.0
 
     def stop(self) -> None:
-        self._stop.set()
+        self._stop_evt.set()
 
     def run(self) -> None:
         b = self._b
@@ -342,7 +349,7 @@ class FastControlWorker(threading.Thread):
 
     def _loop(self, b, period, slow_period, disc_period,
                next_tick, next_slow, next_disc) -> None:
-        while not self._stop.is_set():
+        while not self._stop_evt.is_set():
             now = time.perf_counter()
             late = now - next_tick
             if late > period:

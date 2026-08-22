@@ -673,10 +673,19 @@ class PlotCanvas(QQuickPaintedItem):
         if self._bridge is bridge:
             return
         if self._bridge is not None:
-            for sig in (self._bridge.bufferChanged, self._bridge.frozenChanged,
-                        self._bridge.channelsChanged, self._bridge.markersChanged,
-                        self._bridge.triggerChanged):
-                sig.disconnect(self.update)
+            # Beim Abbau der Anwendung kann die Bruecke auf der C++-Seite
+            # bereits weg sein, waehrend QML die Property noch einmal
+            # zuruecksetzt. Der Zugriff auf ihre Signale wirft dann
+            #     RuntimeError: wrapped C/C++ object ... has been deleted
+            # und PyQt macht daraus in einem Slot ein abort(). Abmelden ist zu
+            # diesem Zeitpunkt ohnehin gegenstandslos — das Objekt ist fort.
+            try:
+                for sig in (self._bridge.bufferChanged, self._bridge.frozenChanged,
+                            self._bridge.channelsChanged, self._bridge.markersChanged,
+                            self._bridge.triggerChanged):
+                    sig.disconnect(self.update)
+            except (RuntimeError, TypeError):
+                pass
         self._bridge = bridge
         if bridge is not None:
             for sig in (bridge.bufferChanged, bridge.frozenChanged,

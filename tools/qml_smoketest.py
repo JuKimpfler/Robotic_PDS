@@ -501,7 +501,18 @@ def main() -> int:
     QTimer.singleShot(1200, step_timer.start)
     app.exec()
 
-    bridge.shutdown()
+    # Das Herunterfahren ist selbst Pruefgegenstand: genau hier ist die
+    # Anwendung schon einmal abgestuerzt (ein Attribut, das eine interne
+    # Methode von threading.Thread ueberdeckte). Ohne diesen Rahmen reisst so
+    # ein Fehler den Interpreter mit, QML baut auf eine halb abgeraeumte
+    # Bruecke ab, und aus einer klaren Ursache werden vierzig Folgemeldungen.
+    try:
+        bridge.shutdown()
+    except Exception:
+        import traceback
+        _warnings.append(
+            "Herunterfahren hat eine Ausnahme ausgeloest:\n"
+            + traceback.format_exc())
 
     # Qt meldet fehlende Properties und Typfehler als Warnung, nicht als
     # Fehler — deshalb sind sie hier das eigentliche Pruefkriterium.

@@ -22,6 +22,8 @@ testen kann, und die erfahrungsgemaess die meisten Fehler enthalten:
  12. expand_textgrid          — Rasterlayout vieler Werte auf einem Bild
  13. overlay_schema           — Feldschema und Typumwandlung des Editors,
                                 Konfliktregel Teensy <-> Handarbeit
+ 14. Thread-Ableitungen       — kein Attribut ueberdeckt ein Interna von
+                                threading.Thread (versionsunabhaengig)
 
 Benoetigt nur die Standardbibliothek. numpy/PyQt6/pyserial/pygame duerfen
 fehlen — fehlende Module werden fuer den Test durch Attrappen ersetzt.
@@ -714,12 +716,77 @@ def test_overlay_editor() -> None:
           runtime_config.merge_decision(None, "abc", editing_unsaved=True) == "ask")
 
 
+# ══════════════════════════════════════════════════════════════════════════
+#  14) Thread-Ableitungen duerfen keine Interna von threading.Thread ueberdecken
+# ══════════════════════════════════════════════════════════════════════════
+def test_thread_attribute_clash() -> None:
+    section("14) Thread-Ableitungen")
+    import ast
+    import threading
+
+    # Interna, die threading.Thread ueber die Jahre hatte. Die aktuelle
+    # Laufzeit allein reicht NICHT: Python 3.14 hat _stop entfernt, in 3.11
+    # und 3.12 gibt es die Methode aber weiterhin — und genau dort lief die
+    # GUI in "TypeError: 'Event' object is not callable", weil ein Attribut
+    # namens _stop sie ueberdeckte. Ein Test, der nur die eigene Version
+    # befragt, haette das auf einem 3.14-Rechner nie gesehen.
+    HISTORISCH = {
+        "_stop", "_bootstrap", "_bootstrap_inner", "_delete", "_handle",
+        "_reset_internal_locks", "_set_ident", "_set_native_id",
+        "_set_tstate_lock", "_wait_for_tstate_lock", "_invoke_excepthook",
+        "_target", "_args", "_kwargs", "_name", "_daemonic", "_ident",
+        "_native_id", "_tstate_lock", "_started", "_is_stopped",
+        "_initialized", "_stderr",
+    }
+    verboten = HISTORISCH | {n for n in dir(threading.Thread) if n.startswith("_")}
+
+    def basisnamen(node: ast.ClassDef) -> set[str]:
+        out = set()
+        for b in node.bases:
+            if isinstance(b, ast.Name):
+                out.add(b.id)
+            elif isinstance(b, ast.Attribute):
+                out.add(b.attr)
+        return out
+
+    geprueft = 0
+    treffer: list[str] = []
+    for pfad in sorted(ROOT.rglob("*.py")):
+        if any(teil in (".git", "__pycache__") for teil in pfad.parts):
+            continue
+        try:
+            baum = ast.parse(pfad.read_text(encoding="utf-8"), filename=str(pfad))
+        except SyntaxError:
+            continue
+        for node in ast.walk(baum):
+            if not isinstance(node, ast.ClassDef) or "Thread" not in basisnamen(node):
+                continue
+            geprueft += 1
+            for stmt in ast.walk(node):
+                ziele = []
+                if isinstance(stmt, ast.Assign):
+                    ziele = stmt.targets
+                elif isinstance(stmt, ast.AnnAssign):
+                    ziele = [stmt.target]
+                for ziel in ziele:
+                    if (isinstance(ziel, ast.Attribute)
+                            and isinstance(ziel.value, ast.Name)
+                            and ziel.value.id == "self"
+                            and ziel.attr in verboten):
+                        treffer.append(f"{pfad.relative_to(ROOT)}:{ziel.lineno}: "
+                                       f"{node.name}.self.{ziel.attr}")
+
+    check("mindestens eine Thread-Ableitung gefunden", geprueft >= 1, str(geprueft))
+    check("keine Thread-Ableitung ueberdeckt ein Attribut von threading.Thread",
+          not treffer, "; ".join(treffer))
+
+
 def main() -> int:
     print("Power Debug System — Selbsttest")
     for fn in (test_wire_format, test_frame_assemblers, test_descriptor,
                test_param_io, test_bt_protocol, test_qml_bindings,
                test_aux_uplink, test_runtime_config, test_textgrid,
-               test_overlay_editor):
+               test_overlay_editor, test_thread_attribute_clash):
         try:
             fn()
         except Exception as exc:            # noqa: BLE001
