@@ -301,6 +301,27 @@ def send_descriptor_request(node_ip: str, port: int) -> bool:
 #  Overlay-Defaults: registry.overlays -> visuals_overlays.json-Gruppen
 # ══════════════════════════════════════════════════════════════════════════
 
+def _as_float(value, fallback: float) -> float:
+    """Zahl aus dem Deskriptor, mit Rueckfall statt Ausnahme.
+
+    Der Inhalt kommt ueber UART und WLAN und wird zusaetzlich aus einem
+    `extra`-String zerlegt (siehe _parse_extra_kv) — dort steht also
+    grundsaetzlich beliebiger Text. Ein `int()`/`float()` ohne Netz warf hier
+    bis zuletzt bis in den Aufrufer hoch: im Poll-Timer wurde das nur geloggt
+    (die Overlays des Teensy kamen dann nie an), im Slot
+    `applyPendingTeensyConfig` beendete PyQt dagegen den ganzen Prozess.
+    """
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return fallback
+    return fallback if out != out else out
+
+
+def _as_int(value, fallback: int) -> int:
+    return int(_as_float(value, float(fallback)))
+
+
 def _parse_extra_kv(extra: str) -> dict[str, str]:
     out: dict[str, str] = {}
     for part in extra.split(";"):
@@ -324,9 +345,9 @@ def _teensy_overlay_to_entry(ov: dict) -> tuple[str, dict]:
     if t == "text":
         return "overlays", {
             "label": label,
-            "channel_idx": int(ov.get("channel", 0)),
-            "x_pct": float(ov.get("x_pct", 5.0)),
-            "y_pct": float(ov.get("y_pct", 5.0)),
+            "channel_idx": _as_int(ov.get("channel"), 0),
+            "x_pct": _as_float(ov.get("x_pct"), 5.0),
+            "y_pct": _as_float(ov.get("y_pct"), 5.0),
             "color": "#4ec9b0",
         }
 
@@ -341,12 +362,12 @@ def _teensy_overlay_to_entry(ov: dict) -> tuple[str, dict]:
             "type": "textgrid",
             "label": label,
             "channels": kv.get("channels", ""),
-            "cols": int(float(kv.get("cols", 1))),
-            "dx_pct": float(kv.get("dx", 20.0)),
-            "dy_pct": float(kv.get("dy", 4.5)),
+            "cols": max(1, _as_int(kv.get("cols"), 1)),
+            "dx_pct": _as_float(kv.get("dx"), 20.0),
+            "dy_pct": _as_float(kv.get("dy"), 4.5),
             "labels": kv.get("labels", "1") not in ("0", "false", "False"),
-            "x_pct": float(ov.get("x_pct", 4.0)),
-            "y_pct": float(ov.get("y_pct", 6.0)),
+            "x_pct": _as_float(ov.get("x_pct"), 4.0),
+            "y_pct": _as_float(ov.get("y_pct"), 6.0),
             "color": "#4ec9b0",
         }
 
@@ -354,24 +375,25 @@ def _teensy_overlay_to_entry(ov: dict) -> tuple[str, dict]:
         return "graphics", {
             "type": "gauge",
             "label": label,
-            "channel": int(ov.get("channel", 0)),
-            "min": float(ov.get("min", -1.0)),
-            "max": float(ov.get("max", 1.0)),
+            "channel": _as_int(ov.get("channel"), 0),
+            "min": _as_float(ov.get("min"), -1.0),
+            "max": _as_float(ov.get("max"), 1.0),
         }
 
     if t == "rotation":
-        entry = {"type": "rotation", "label": label, "channel": int(ov.get("channel", 0))}
+        entry = {"type": "rotation", "label": label,
+                 "channel": _as_int(ov.get("channel"), 0)}
         if "max" in ov:
-            entry["max_val"] = float(ov["max"])
+            entry["max_val"] = _as_float(ov["max"], 5.0)
         return "graphics", entry
 
     if t == "vector":
         return "graphics", {
             "type": "vector",
             "label": label,
-            "channel_angle": int(ov.get("channel", -1)),
-            "channel_speed": int(ov.get("channel2", -1)),
-            "max_val": float(ov.get("max", 1.0)),
+            "channel_angle": _as_int(ov.get("channel"), -1),
+            "channel_speed": _as_int(ov.get("channel2"), -1),
+            "max_val": _as_float(ov.get("max"), 1.0),
         }
 
     if t == "table":
@@ -388,11 +410,11 @@ def _teensy_overlay_to_entry(ov: dict) -> tuple[str, dict]:
             return {
                 "label": kv.get(f"{prefix}_label", prefix),
                 "color": kv.get(f"{prefix}_color", "#4ec9b0"),
-                "diameter": float(kv.get(f"{prefix}_diameter", 18.0)),
-                "channel_x": int(kv.get(f"{prefix}_channel_x", -1)),
-                "channel_y": int(kv.get(f"{prefix}_channel_y", -1)),
-                "channel_angle": int(kv.get(f"{prefix}_channel_angle", -1)),
-                "channel_diameter": int(kv.get(f"{prefix}_channel_diameter", -1)),
+                "diameter": _as_float(kv.get(f"{prefix}_diameter"), 18.0),
+                "channel_x": _as_int(kv.get(f"{prefix}_channel_x"), -1),
+                "channel_y": _as_int(kv.get(f"{prefix}_channel_y"), -1),
+                "channel_angle": _as_int(kv.get(f"{prefix}_channel_angle"), -1),
+                "channel_diameter": _as_int(kv.get(f"{prefix}_channel_diameter"), -1),
             }
 
         # Feldmasse in ZENTIMETERN, in derselben Einheit wie die Kanalwerte:
@@ -404,11 +426,11 @@ def _teensy_overlay_to_entry(ov: dict) -> tuple[str, dict]:
         # grosses: das Tor war dann 0,25 % einer Kante breit und die
         # Rasterlinien alle 30 cm verschmolzen zu einer Flaeche.
         if "field_x_cm" in kv or "field_y_cm" in kv:
-            field_x = float(kv.get("field_x_cm", 240.0))
-            field_y = float(kv.get("field_y_cm", 180.0))
+            field_x = _as_float(kv.get("field_x_cm"), 240.0)
+            field_y = _as_float(kv.get("field_y_cm"), 180.0)
         else:
-            field_x = float(kv.get("field_width", 240.0))
-            field_y = float(kv.get("field_height", 180.0))
+            field_x = _as_float(kv.get("field_width"), 240.0)
+            field_y = _as_float(kv.get("field_height"), 180.0)
 
         return "graphics", {
             "type": "bodies",
@@ -445,14 +467,14 @@ def apply_overlay_defaults(local_config: dict, registry: ChannelRegistry,
 
     by_group: dict[int, list[dict]] = {}
     for ov in registry.overlays:
-        by_group.setdefault(int(ov.get("group", 1)), []).append(ov)
+        by_group.setdefault(_as_int(ov.get("group"), 1), []).append(ov)
 
     changed = False
     for group in local_config.get("groups", []):
         if not overwrite and (group.get("overlays") or group.get("graphics")):
             continue   # bereits befuellt -- nicht ueberschreiben
 
-        entries = by_group.get(int(group.get("image_idx", 1)))
+        entries = by_group.get(_as_int(group.get("image_idx"), 1))
         if not entries:
             continue
 

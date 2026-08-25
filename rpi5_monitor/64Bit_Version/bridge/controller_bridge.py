@@ -116,9 +116,36 @@ def _load_mapping() -> dict:
                     CONTROLLER_CONFIG_PATH.name, exc)
         return mapping
 
-    for key in mapping:
-        if key in user:
-            mapping[key] = user[key]
+    if not isinstance(user, dict):
+        log.warning("%s enthält kein Objekt — Standard-Mapping aktiv.",
+                    CONTROLLER_CONFIG_PATH.name)
+        return mapping
+
+    # Typen prüfen, statt den Wert blind zu übernehmen. Die Datei ist
+    # ausdrücklich zum Editieren von Hand gedacht ("ohne Code zu ändern");
+    # ein Tippfehler darf deshalb höchstens dieses eine Feld kosten. Vorher
+    # landete z. B. eine Achsennummer als Zeichenkette im Mapping, und
+    #   float(self._map["deadzone"])   im Konstruktor
+    # riss den Aufbau von ControllerBridge -> ParamBridge -> AppBridge mit:
+    # die GUI startete dann gar nicht mehr, mit einem rohen Traceback.
+    for key, default in DEFAULT_MAPPING.items():
+        if key not in user:
+            continue
+        value = user[key]
+        try:
+            mapping[key] = float(value) if isinstance(default, float) else int(value)
+        except (TypeError, ValueError):
+            log.warning("%s: '%s' = %r ist keine Zahl — Standardwert %r bleibt.",
+                        CONTROLLER_CONFIG_PATH.name, key, value, default)
+
+    # Eine Totzone außerhalb 0..0.9 macht den Stick unbrauchbar (bei >= 1.0
+    # teilt _apply_deadzone() zusätzlich durch 0).
+    if not 0.0 <= mapping["deadzone"] < 0.9:
+        log.warning("%s: deadzone=%r liegt außerhalb 0..0.9 — %r bleibt.",
+                    CONTROLLER_CONFIG_PATH.name, mapping["deadzone"],
+                    DEFAULT_MAPPING["deadzone"])
+        mapping["deadzone"] = DEFAULT_MAPPING["deadzone"]
+
     log.info("Controller-Mapping aus %s übernommen.", CONTROLLER_CONFIG_PATH.name)
     return mapping
 

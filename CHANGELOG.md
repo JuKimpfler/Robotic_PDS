@@ -22,6 +22,82 @@ welchem Roboter läuft.
 
 ---
 
+## 2.4 — Kein einzelner kaputter Wert legt mehr etwas Ganzes lahm
+
+Vier der fünf Funde dieser Runde sind dieselbe Sorte Fehler: ein
+ungeschütztes `int()`/`float()` auf Daten, die über UART und WLAN kommen
+oder aus einer von Hand editierbaren Datei stammen. Je nachdem, wo es
+passierte, kostete das die komplette Konfiguration eines Roboters oder
+gleich die ganze Oberfläche.
+
+### Behoben
+
+* **Ein einziger unbrauchbarer Wert im Teensy-Deskriptor kostete die
+  komplette Parameter-Konfiguration.** `runtime_config._convert_entries()`
+  verspricht im eigenen Docstring, einen unplausiblen Eintrag zu
+  überspringen. Bei `min`/`max` tat es das auch — bei `default` und `step`
+  stand dort ein ungeschütztes `float()`. Ein `"def": null` aus einer halb
+  übertragenen Firmware warf damit bis in `_persist_registry` hoch; gefangen
+  wurde es dort zwar, aber die Konfiguration des Roboters war weg und die
+  GUI lief wortlos mit der Vorlage aus dem Repository weiter — also mit
+  falschen Namen, Bereichen und Gruppen an den Reglern. Gleiches galt für
+  einen unlesbaren Joystick-Bereich; der verwirft jetzt nur noch diesen
+  einen Joystick.
+* **„Teensy übernehmen" im Overlay-Editor konnte die Oberfläche beenden.**
+  Die Overlay-Werte kommen über UART/WLAN und teilweise aus einem frei
+  geschriebenen `extra`-String (`field_x_cm=…;body1_channel_x=…`).
+  `channel_registry._teensy_overlay_to_entry()` rechnete sie ungeschützt um.
+  Im Poll-Timer blieb davon nur ein Logeintrag übrig — die Anordnung des
+  Teensy kam dann nie an, ohne erkennbaren Grund. Im Slot
+  `applyPendingTeensyConfig` macht PyQt aus derselben Ausnahme dagegen ein
+  `abort()`. Jedes Zahlenfeld fällt jetzt auf seinen Standardwert zurück.
+* **Die Trigger-Marke im Plotter war unsichtbar.** `visible_markers()`
+  rechnete gegen `self._total`, den Index des *nächsten* Samples; sichtbar
+  sind aber die Samples bis `_total - 1`. Eine gerade gesetzte Marke landete
+  damit auf Position `count/(count-1) > 1`, also rechts neben der
+  Zeichenfläche. Dazu kam ein zweiter Fehler: die Trigger-Marke trug den
+  Index nach dem ganzen Block statt die Auslösestelle — sie hätte, sichtbar,
+  bis zu fünf Samples zu weit rechts gestanden. `add_marker()` nimmt die
+  Stelle jetzt als Argument.
+* **Der Overlay-Editor meldete Mängel, die keine waren.** Ein *optionaler*
+  Kanal, der schlicht nicht gesetzt ist — ein Körper der Feldansicht braucht
+  weder Winkel noch Durchmesser — lief in `problems()` auf `int(None)` und
+  erschien als „keine gültige Kanalnummer". Ein tadelloser Eintrag hatte so
+  vier Beanstandungen in der Liste. `summary()` und `problems()` laufen
+  außerdem in `pyqtProperty`-Gettern: mit Text an einer Zahlenstelle warfen
+  sie dort, mit demselben `abort()` als Folge.
+* **Die Feldansicht stand in der Editor-Liste als `180x240 cm`**, während die
+  Ansicht daneben 240 × 180 zeichnete — in `overlay_schema.summary()` waren
+  die Rückfallwerte für x und y vertauscht. Die Erkennung des Altformats
+  (`field_width`/`field_height`) läuft jetzt genau wie in
+  `visuals_bridge._graphic_to_entry()` über den ganzen Eintrag statt je Achse.
+* **Ein Tippfehler in `controller_config.json` verhinderte den Start der
+  gesamten Oberfläche.** Die Datei ist ausdrücklich dafür da, eine abweichende
+  SDL-Belegung „ohne Code zu ändern" anzupassen — ihr Inhalt wurde aber
+  ungeprüft ins Mapping übernommen. `float(self._map["deadzone"])` im
+  Konstruktor riss dann den Aufbau ControllerBridge → ParamBridge → AppBridge
+  mit, und die GUI startete gar nicht mehr, mit einem rohen Traceback. Jetzt
+  werden die Typen geprüft: ein unbrauchbares Feld behält seinen
+  Standardwert (mit Warnung im Log), eine Achsennummer als Zeichenkette wird
+  übernommen statt ignoriert, und eine Totzone außerhalb 0…0,9 wird
+  verworfen — bei ≥ 1,0 teilte `_apply_deadzone()` zusätzlich durch null.
+* **`tools/desc_json_check.py` ließ sich mit dem eigens empfohlenen
+  Ersatz-Compiler nicht übersetzen.** Der Dateikopf nennt
+  `CXX="python -m ziglang c++"` für Rechner ohne `g++`; zig macht aus
+  `__DATE__`/`__TIME__` per Default einen **Fehler** (`-Wdate-time`). Die
+  Makros sind der Build-Stempel, den der Deskriptor als `"build"` meldet und
+  gehören dorthin — die Warnung wird jetzt abgeschaltet, g++ und clang++
+  ignorieren die Option.
+
+### Geändert
+
+* **Selbsttest**: 151 → 179 Prüfungen. Neuer Abschnitt 15 (Plotter-Marken
+  und Controller-Mapping, wird ohne PyQt6/numpy sauber übersprungen), dazu
+  Regressionsprüfungen in den Abschnitten 6, 11 und 13. Jede davon schlägt
+  ohne den zugehörigen Fix fehl — nachgeprüft, nicht nur behauptet.
+
+---
+
 ## 2.3 — Spielfeld richtig herum, ehrlicher Paketzähler, Altlasten weg
 
 ### Behoben

@@ -95,6 +95,12 @@ def build_and_run() -> str | None:
         exe = work / ("desc_dump.exe" if sys.platform == "win32" else "desc_dump")
         cmd = [
             *cxx, "-std=c++17", "-O1", "-Wall", "-Wextra", "-Wno-unused-parameter",
+            # __DATE__/__TIME__ stehen absichtlich in der Firmware: sie sind
+            # der Build-Stempel, den der Deskriptor als "build" meldet. Zig
+            # macht daraus per Default einen FEHLER (-Wdate-time), womit der
+            # im Kopf dieser Datei empfohlene Ersatz-Compiler gar nicht erst
+            # uebersetzt hat. g++/clang++ ignorieren die Option.
+            "-Wno-date-time",
             f"-I{work}",
             str(work / "desc_dump.cpp"), str(work / "PDS.cpp"),
             "-o", str(exe),

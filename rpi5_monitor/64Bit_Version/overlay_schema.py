@@ -220,6 +220,27 @@ def fields_for(kind: str) -> List[dict]:
 #  Werte lesen und schreiben
 # ══════════════════════════════════════════════════════════════════════════
 
+def _as_float(value: Any, fallback: float) -> float:
+    """Zahl aus einem Roheintrag, mit Rueckfall statt Ausnahme.
+
+    Die Eintraege kommen aus visuals_overlays.json — einer Datei, die
+    ausdruecklich auch von Hand editiert werden darf — und aus dem
+    Teensy-Deskriptor. Dort kann an einer Zahlenstelle Text stehen.
+    summary()/problems() laufen aber in pyqtProperty-Gettern (entryList,
+    selectedProblems): eine Ausnahme dort beendet den Prozess, statt nur
+    diesen einen Eintrag unbrauchbar zu machen.
+    """
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return fallback
+    return fallback if out != out else out
+
+
+def _as_int(value: Any, fallback: int) -> int:
+    return int(_as_float(value, float(fallback)))
+
+
 def _split(key: str) -> tuple[list[str], str]:
     parts = key.split(".")
     return parts[:-1], parts[-1]
@@ -421,6 +442,14 @@ def problems(entry: dict) -> List[str]:
         if field["type"] != "channel":
             continue
         raw = get_value(entry, field["key"])
+        if raw is None:
+            # Schluessel gar nicht vorhanden = "nicht gesetzt". Das ist bei
+            # einem optionalen Kanal der Normalfall (ein Koerper der
+            # Feldansicht braucht weder Winkel noch Durchmesser) und darf
+            # keine Beanstandung geben — describe() zeigt dort ebenfalls -1.
+            if not field.get("allowNone"):
+                out.append(f"{field['label']}: kein Kanal gewaehlt")
+            continue
         try:
             chn = int(raw)
         except (TypeError, ValueError):
@@ -452,8 +481,8 @@ def problems(entry: dict) -> List[str]:
 
     if kind == "bodies":
         for prefix in ("body1", "body2"):
-            has_x = int(get_value(entry, f"{prefix}.channel_x") or -1) >= 0
-            has_y = int(get_value(entry, f"{prefix}.channel_y") or -1) >= 0
+            has_x = _as_int(get_value(entry, f"{prefix}.channel_x"), -1) >= 0
+            has_y = _as_int(get_value(entry, f"{prefix}.channel_y"), -1) >= 0
             if has_x != has_y:
                 out.append(f"{prefix}: x und y muessen beide gesetzt sein")
 
@@ -466,19 +495,32 @@ def summary(entry: dict, name_for: Callable[[int], str]) -> str:
     label = str(entry.get("label") or entry.get("title") or "").strip()
 
     if kind == "text":
-        chn = int(entry.get("channel_idx", entry.get("channel", 0)) or 0)
+        chn = _as_int(entry.get("channel_idx", entry.get("channel", 0)), 0)
         return f"{label or '(ohne Beschriftung)'} — {name_for(chn)}"
     if kind in ("textgrid", "table"):
         chans = parse_channels(entry.get("channels", ""))
         rng = f"{len(chans)} Kanaele" if chans else "keine Kanaele"
         return f"{label or 'Block'} — {rng}"
     if kind in ("gauge", "rotation"):
-        return f"{label} — {name_for(int(entry.get('channel', 0) or 0))}"
+        return f"{label} — {name_for(_as_int(entry.get('channel'), 0))}"
     if kind == "vector":
-        a = name_for(int(entry.get("channel_angle", 0) or 0))
-        s = name_for(int(entry.get("channel_speed", 0) or 0))
+        a = name_for(_as_int(entry.get("channel_angle"), 0))
+        s = name_for(_as_int(entry.get("channel_speed"), 0))
         return f"{label} — {a} / {s}"
     if kind == "bodies":
+        # x ist die WAAGERECHTE Kante (240 cm), y die senkrechte (180 cm) —
+        # dieselben Vorgaben wie in new_entry(), _graphic_to_entry() und
+        # BodiesField.qml. Hier standen sie vertauscht, ein Eintrag ohne
+        # Feldmasse wurde in der Liste deshalb als "180x240 cm" gefuehrt,
+        # waehrend die Ansicht daneben 240 x 180 zeichnete.
+        # field_width/field_height sind das Altformat und meinen dasselbe.
+        # Die Fallunterscheidung laeuft wie in visuals_bridge._graphic_to_entry
+        # ueber den GANZEN Eintrag, nicht je Achse — sonst zeigte ein
+        # gemischter Eintrag hier andere Masse als die Ansicht daneben.
+        if "field_x_cm" in entry or "field_y_cm" in entry:
+            fx, fy = entry.get("field_x_cm"), entry.get("field_y_cm")
+        else:
+            fx, fy = entry.get("field_width"), entry.get("field_height")
         return (f"{label or 'Spielfeld'} — "
-                f"{entry.get('field_x_cm', 180):.0f}x{entry.get('field_y_cm', 240):.0f} cm")
+                f"{_as_float(fx, 240.0):.0f}x{_as_float(fy, 180.0):.0f} cm")
     return label

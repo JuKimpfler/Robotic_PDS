@@ -24,6 +24,9 @@ testen kann, und die erfahrungsgemaess die meisten Fehler enthalten:
                                 Konfliktregel Teensy <-> Handarbeit
  14. Thread-Ableitungen       — kein Attribut ueberdeckt ein Interna von
                                 threading.Thread (versionsunabhaengig)
+ 15. Plotter-Marken /         — Marken bleiben im Bild, Trigger-Marke sitzt
+     Controller-Mapping         an der Flanke; controller_config.json haelt
+                                die GUI nie vom Start ab
 
 Benoetigt nur die Standardbibliothek. numpy/PyQt6/pyserial/pygame duerfen
 fehlen — fehlende Module werden fuer den Test durch Attrappen ersetzt.
@@ -249,6 +252,45 @@ def test_descriptor() -> None:
           local["groups"][1]["overlays"] == [{"label": "eigen"}])
     check("zweiter Aufruf aendert nichts mehr",
           apply_overlay_defaults(local, reg) is False)
+
+    # ── Unlesbare Zahlen aus dem Deskriptor ───────────────────────────────
+    #  Die Overlay-Werte kommen ueber UART/WLAN und teilweise aus einem frei
+    #  geschriebenen `extra`-String — an einer Zahlenstelle kann also Text
+    #  stehen. Ein ungeschuetztes int()/float() beendete den Prozess, sobald
+    #  jemand im Editor "Teensy uebernehmen" gedrueckt hat
+    #  (applyPendingTeensyConfig ist ein Slot, PyQt macht daraus ein abort()).
+    kaputt = ChannelRegistry()
+    kaputt.overlays = [
+        {"type": "gauge", "label": "G", "group": 1, "channel": "nope",
+         "min": "a", "max": None},
+        {"type": "rotation", "label": "R", "group": 1, "channel": 2, "max": "schnell"},
+        {"type": "textgrid", "label": "B", "group": "1",
+         "extra": "channels=0-3;cols=zwei;dx=;dy=4"},
+        {"type": "bodies", "label": "F", "group": 1,
+         "extra": "field_x_cm=xx;body1_channel_x=3;body1_diameter=nan"},
+    ]
+    ziel = {"groups": [{"name": "A", "image_idx": 1, "overlays": [], "graphics": []}]}
+    try:
+        apply_overlay_defaults(ziel, kaputt, overwrite=True)
+        ok = True
+    except Exception as exc:                                   # noqa: BLE001
+        ok = False
+        print(f"       {type(exc).__name__}: {exc}")
+    check("unlesbare Overlay-Zahlen werfen keine Ausnahme", ok)
+    if ok:
+        grafiken = {g["type"]: g for g in ziel["groups"][0]["graphics"]}
+        check("Zeiger faellt auf brauchbare Grenzen zurueck",
+              grafiken["gauge"]["min"] < grafiken["gauge"]["max"],
+              str(grafiken.get("gauge")))
+        check("Feldmasse fallen auf 240 x 180 cm zurueck",
+              (grafiken["bodies"]["field_x_cm"],
+               grafiken["bodies"]["field_y_cm"]) == (240.0, 180.0),
+              str(grafiken.get("bodies")))
+        check("Kanal aus dem extra-String bleibt erhalten",
+              grafiken["bodies"]["body1"]["channel_x"] == 3)
+        raster = ziel["groups"][0]["overlays"][0]
+        check("unlesbare Spaltenzahl wird zu mindestens 1",
+              raster["cols"] >= 1, str(raster))
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -518,6 +560,38 @@ def test_runtime_config() -> None:
     check("Unsinn statt dict -> None",
           rc.param_config_from_descriptor("nope") is None)
 
+    # ── Ein unbrauchbarer Eintrag darf nicht die ganze Datei kosten ───────
+    #  Der Deskriptor kommt ueber UART und WLAN. Bis hierher warf ein
+    #  `float(None)` auf einem einzigen Feld bis in _persist_registry hoch —
+    #  gefangen wurde es dort zwar, aber die KOMPLETTE Parameter-
+    #  Konfiguration des Roboters war damit weg, und die GUI lief still mit
+    #  der Vorlage aus dem Repository weiter.
+    muell = rc.param_config_from_descriptor({
+        "slow_floats": [
+            {"i": 0, "n": "Gut", "w": "slider", "min": 0, "max": 10, "def": 1.0},
+            {"i": 1, "n": "DefNull", "w": "slider", "min": 0, "max": 10, "def": None},
+            {"i": 2, "n": "StepText", "w": "slider", "step": "abc"},
+            {"i": 3, "n": "MinText", "w": "slider", "min": "lo"},
+            {"i": 4, "n": "DefNaN", "w": "slider", "def": float("nan")},
+            {"i": 5, "n": "AuchGut", "w": "slider", "min": 0, "max": 4, "def": 3.0},
+        ],
+        "joysticks": [{"n": "BereichText", "s": "fast", "x": 0, "y": 1,
+                        "xr": ["a", "b"]},
+                       {"n": "Gut", "s": "fast", "x": 2, "y": 3}],
+    })
+    check("unlesbare Einzelwerte werfen keine Ausnahme", muell is not None)
+    if muell:
+        namen = [e["name"] for e in muell["floats"]]
+        check("brauchbare Eintraege bleiben erhalten",
+              "Gut" in namen and "AuchGut" in namen, str(namen))
+        check("unlesbare Zahlenfelder verwerfen nur ihren Eintrag",
+              "StepText" not in namen and "MinText" not in namen, str(namen))
+        check("NaN landet nie in der Konfiguration",
+              all(e["default"] == e["default"] for e in muell["floats"]))
+        check("unlesbarer Joystick-Bereich verwirft nur diesen Joystick",
+              [j["name"] for j in muell["joysticks"]] == ["Gut"],
+              str(muell["joysticks"]))
+
     # ── Fingerabdruck + atomares Speichern ────────────────────────────────
     h1 = rc.teensy_hash({"a": 1, "b": [2, 3]})
     h2 = rc.teensy_hash({"b": [2, 3], "a": 1})
@@ -700,6 +774,46 @@ def test_overlay_editor() -> None:
     check("Kanal ausserhalb des Wire-Formats wird gemeldet",
           any("999" in p for p in osch.problems(tg)))
 
+    # Ein OPTIONALER Kanal, der schlicht nicht gesetzt ist, ist kein Mangel —
+    # ein Koerper der Feldansicht braucht weder Winkel noch Durchmesser.
+    # Vorher lief get_value() dort auf None, int(None) warf, und der Editor
+    # meldete fuer jeden nicht belegten Kanal "keine gueltige Kanalnummer".
+    knapp = {"type": "bodies", "body1": {"channel_x": 5, "channel_y": 6}, "body2": {}}
+    check("nicht gesetzter optionaler Kanal ist kein Mangel",
+          osch.problems(knapp) == [], str(osch.problems(knapp)))
+
+    # ── summary()/problems() laufen in pyqtProperty-Gettern ──────────────
+    #  Eine Ausnahme dort beendet den Prozess. Die Eintraege kommen aber aus
+    #  einer von Hand editierbaren JSON-Datei, an einer Zahlenstelle kann
+    #  also Text stehen.
+    def _name(i):
+        return f"K{i}"
+
+    for entry in ({"label": "T", "channel_idx": "x"},
+                   {"type": "gauge", "label": "G", "channel": "x"},
+                   {"type": "vector", "label": "V", "channel_angle": None},
+                   {"type": "bodies", "label": "F", "field_x_cm": "240"},
+                   {"type": "bodies", "body1": {"channel_x": "abc"}}):
+        try:
+            osch.summary(entry, _name)
+            osch.problems(entry)
+            ok = True
+        except Exception as exc:                               # noqa: BLE001
+            ok = False
+            print(f"       {type(exc).__name__}: {exc}")
+        check(f"unlesbare Zahl in {osch.entry_kind(entry)} wirft nicht", ok)
+
+    # Die Feldansicht ist 240 cm BREIT und 180 cm hoch — x waagerecht,
+    # y senkrecht. In summary() standen die Rueckfallwerte vertauscht, ein
+    # Eintrag ohne Feldmasse erschien in der Liste deshalb als 180x240 cm,
+    # waehrend die Ansicht daneben 240 x 180 zeichnete.
+    check("Feldansicht ohne Masse wird als 240x180 cm zusammengefasst",
+          "240x180" in osch.summary({"type": "bodies", "label": "F"}, _name),
+          osch.summary({"type": "bodies", "label": "F"}, _name))
+    check("Feldansicht im Altformat behaelt ihre Masse",
+          "300x200" in osch.summary(
+              {"type": "bodies", "field_width": 300, "field_height": 200}, _name))
+
     # ── Konfliktregel Teensy <-> Handarbeit ──────────────────────────────
     H, E = runtime_config.TEENSY_HASH_KEY, runtime_config.LOCAL_EDIT_KEY
     check("nichts gespeichert -> Teensy befuellt",
@@ -781,12 +895,103 @@ def test_thread_attribute_clash() -> None:
           not treffer, "; ".join(treffer))
 
 
+# ══════════════════════════════════════════════════════════════════════════
+#  15) Plotter-Marken und Controller-Mapping
+# ══════════════════════════════════════════════════════════════════════════
+#  Beide brauchen PyQt6 (und numpy). Fehlen sie, wird der Abschnitt sauber
+#  uebersprungen — die CI installiert beides, dort laeuft er also immer.
+def test_plot_markers_and_controller() -> None:
+    section("15) Plotter-Marken und Controller-Mapping")
+    for mod in ("PyQt6.QtCore", "numpy"):
+        if importlib.util.find_spec(mod) is None:
+            print(f"  [ -- ] uebersprungen: {mod} ist nicht installiert")
+            return
+
+    import numpy as np
+    from bridge.plot_bridge import PlotBridge
+
+    # ── Marken duerfen nie ausserhalb der Zeichenflaeche landen ───────────
+    #  Sichtbar sind die Samples first..total-1. Gerechnet wurde gegen
+    #  `total`, eine gerade gesetzte Marke kam damit auf count/(count-1) > 1
+    #  heraus — und wurde rechts neben das Bild gezeichnet, also gar nicht.
+    pb = PlotBridge()
+    pb.setPointsCount(100)
+    pb.append_block(np.zeros((100, 8), dtype=np.float32))
+    pb.add_marker("Ereignis", 1)
+    marken = pb.visible_markers(pb.pointsCount)
+    check("Marke am rechten Rand bleibt sichtbar",
+          len(marken) == 1 and 0.0 <= marken[0][0] <= 1.0, str(marken))
+
+    # ── Die Trigger-Marke gehoert an die Ausloesestelle ───────────────────
+    #  add_marker() laeuft NACH append_block(); ohne die uebergebene Stelle
+    #  landete die Marke am Ende des ganzen Blocks statt an der Flanke.
+    tp = PlotBridge()
+    tp.setPointsCount(100)
+    tp.setTriggerChannel(0)
+    tp.setTriggerMode("above")
+    tp.setTriggerLevel(0.5)
+    tp.setTriggerMarkOnly(True)       # nur markieren, nicht einfrieren
+    tp.setTriggerEnabled(True)
+    tp.append_block(np.zeros((97, 8), dtype=np.float32))
+    block = np.zeros((5, 8), dtype=np.float32)
+    block[1:, 0] = 1.0                # ab Sample 1 des Blocks ueber der Schwelle
+    tp.append_block(block)
+    check("Trigger loest an der Flanke aus", tp._trig_fired_at == 98,
+          str(tp._trig_fired_at))
+    tmark = tp.visible_markers(tp.pointsCount)
+    check("Trigger-Marke steht an der Ausloesestelle", len(tmark) == 1
+          and abs(tmark[0][0] - (98 - (tp._total - 100)) / 99.0) < 1e-9,
+          str(tmark))
+    check("Trigger-Marke liegt im Bild", tmark and 0.0 <= tmark[0][0] <= 1.0)
+
+    # ── controller_config.json darf die GUI nicht am Start hindern ────────
+    #  Die Datei ist ausdruecklich zum Editieren von Hand gedacht. Ein
+    #  Tippfehler lief bis zuletzt in float(self._map["deadzone"]) im
+    #  Konstruktor und riss den kompletten Aufbau der Oberflaeche mit.
+    import config
+    import bridge.controller_bridge as cb
+
+    original = config.CONTROLLER_CONFIG_PATH
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "controller_config.json"
+            for inhalt, erwartet in (
+                ({"deadzone": None}, cb.DEFAULT_MAPPING["deadzone"]),
+                ({"deadzone": 1.5}, cb.DEFAULT_MAPPING["deadzone"]),
+                ({"deadzone": "0.2"}, 0.2),
+            ):
+                path.write_text(json.dumps(inhalt), encoding="utf-8")
+                cb.CONTROLLER_CONFIG_PATH = path
+                m = cb._load_mapping()
+                check(f"deadzone={inhalt['deadzone']!r} ergibt {erwartet}",
+                      m["deadzone"] == erwartet, str(m["deadzone"]))
+
+            path.write_text(json.dumps({"axis_r2": "fuenf", "axis_left_x": "3"}),
+                             encoding="utf-8")
+            cb.CONTROLLER_CONFIG_PATH = path
+            m = cb._load_mapping()
+            check("unlesbarer Achsenindex behaelt den Standardwert",
+                  m["axis_r2"] == cb.DEFAULT_MAPPING["axis_r2"], str(m["axis_r2"]))
+            check("Achsenindex als Text wird zu int",
+                  m["axis_left_x"] == 3 and isinstance(m["axis_left_x"], int),
+                  repr(m["axis_left_x"]))
+
+            path.write_text('["kein", "objekt"]', encoding="utf-8")
+            cb.CONTROLLER_CONFIG_PATH = path
+            check("Datei ohne Objekt faellt auf das Standard-Mapping zurueck",
+                  cb._load_mapping() == cb.DEFAULT_MAPPING)
+    finally:
+        cb.CONTROLLER_CONFIG_PATH = original
+        config.CONTROLLER_CONFIG_PATH = original
+
+
 def main() -> int:
     print("Power Debug System — Selbsttest")
     for fn in (test_wire_format, test_frame_assemblers, test_descriptor,
                test_param_io, test_bt_protocol, test_qml_bindings,
                test_aux_uplink, test_runtime_config, test_textgrid,
-               test_overlay_editor, test_thread_attribute_clash):
+               test_overlay_editor, test_thread_attribute_clash,
+               test_plot_markers_and_controller):
         try:
             fn()
         except Exception as exc:            # noqa: BLE001

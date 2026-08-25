@@ -428,9 +428,20 @@ class PlotBridge(QObject):
     #  Marken
     # ══════════════════════════════════════════════════════════════════════
 
-    def add_marker(self, text: str, level: int = 0) -> None:
-        """Ereignis vom Teensy als senkrechte Marke eintragen."""
-        self._markers.append((self._total, str(text)[:32], int(level)))
+    def add_marker(self, text: str, level: int = 0, at: int | None = None) -> None:
+        """Ereignis als senkrechte Marke eintragen.
+
+        `at` ist der ABSOLUTE Sample-Index, an dem die Marke stehen soll.
+        Ohne Angabe gilt `self._total` — der Index des naechsten Samples, das
+        geschrieben wird. Das ist fuer Ereignisse aus dem Aux-Uplink genau
+        richtig: die werden im Poll-Durchlauf VOR append_block() verteilt,
+        die Marke sitzt damit am Anfang des gleich eintreffenden Blocks.
+
+        Der Trigger ruft dagegen NACH append_block() auf und muss seine
+        Ausloesestelle mitgeben (siehe _evaluate_trigger).
+        """
+        idx = self._total if at is None else int(at)
+        self._markers.append((idx, str(text)[:32], int(level)))
         # Alles, was aus dem Ring herausgelaufen ist, kann nie wieder sichtbar
         # werden -> wegwerfen, damit die Liste im Dauerbetrieb nicht waechst.
         cutoff = self._total - self._cap
@@ -443,12 +454,18 @@ class PlotBridge(QObject):
         count = min(points, self._filled)
         if count <= 1:
             return []
-        first = self._total - count
+        # Sichtbar sind die Samples first .. self._total - 1; der letzte davon
+        # liegt am rechten Rand. Ohne das -1 kam eine gerade erst gesetzte
+        # Marke auf Position count/(count-1) > 1 heraus und wurde damit
+        # ausserhalb der Zeichenflaeche gezeichnet, also gar nicht.
+        last = self._total - 1
+        first = last - (count - 1)
         out = []
         for abs_idx, text, level in self._markers:
             if abs_idx < first:
                 continue
-            out.append(((abs_idx - first) / (count - 1), text, level))
+            pos = (min(abs_idx, last) - first) / (count - 1)
+            out.append((pos, text, level))
         return out
 
     @pyqtSlot()
@@ -583,7 +600,10 @@ class PlotBridge(QObject):
         fire_offset = int(where[0])
         self._trig_fired_at = self._total - n_new + fire_offset
         self._trig_count += 1
-        self.add_marker(f"Trigger {self._trig_count}", 1)
+        # Die Marke gehoert an die AUSLOESESTELLE, nicht an das Ende des
+        # gerade verarbeiteten Blocks: add_marker() laeuft hier nach
+        # append_block(), self._total zeigt also schon hinter den Block.
+        self.add_marker(f"Trigger {self._trig_count}", 1, at=self._trig_fired_at)
         if not self._trig_auto_rearm:
             post = int(self._points * self._trig_post)
             self._trig_capture_at = self._trig_fired_at + max(1, post)

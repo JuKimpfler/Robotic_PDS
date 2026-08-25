@@ -166,6 +166,35 @@ _JOY_KEY_MAP = {
 # Muss zu param_io._VALID_WIDGETS passen.
 _VALID_WIDGETS = {"number", "slider", "toggle", "button", "joystick_axis", "text"}
 
+# Kennzeichnet einen Wert, der sich nicht in eine Zahl umwandeln laesst.
+# Bewusst ein eigenes Objekt und nicht None: `None` ist im Deskriptor ein
+# moeglicher (wenn auch unsinniger) Wert, und "fehlt" muss von "steht drin,
+# ist aber Unsinn" unterscheidbar bleiben.
+_BAD = object()
+
+
+def _num(value: Any, fallback: float | None = None):
+    """Einen Wert aus dem Deskriptor in ein float wandeln.
+
+    Gibt `fallback` zurueck, wenn der Schluessel gar nicht da war (value is
+    None und fallback gesetzt), und `_BAD`, wenn etwas drinsteht, das keine
+    Zahl ist. Der Aufrufer ueberspringt den Eintrag dann — genau so, wie es
+    der Docstring von _convert_entries beschreibt.
+
+    Ohne diese Stelle riss ein einziger unplausibler Eintrag (`"def": null`
+    aus einer halb uebertragenen Firmware) die KOMPLETTE Parameter-
+    Konfiguration mit: der TypeError lief bis in _persist_registry hoch, und
+    dort wurde er nur geloggt — der Roboter stand danach mit der Vorlage aus
+    dem Repository da statt mit seiner eigenen Konfiguration.
+    """
+    if value is None and fallback is not None:
+        return fallback
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return _BAD
+    return _BAD if out != out or out in (float("inf"), float("-inf")) else out
+
 
 def _convert_entries(raw: Any, bool_like: bool) -> list[dict]:
     """Eine Teensy-Liste in param_config.json-Eintraege wandeln.
@@ -208,17 +237,17 @@ def _convert_entries(raw: Any, bool_like: bool) -> list[dict]:
             entry["momentary"] = bool(entry.get("momentary", False))
         else:
             entry.pop("momentary", None)
-            try:
-                lo = float(entry.get("min", 0.0))
-                hi = float(entry.get("max", 1.0))
-            except (TypeError, ValueError):
+            lo = _num(entry.get("min"), 0.0)
+            hi = _num(entry.get("max"), 1.0)
+            default = _num(entry.get("default"), 0.0)
+            step = _num(entry.get("step"), 0.01)
+            if _BAD in (lo, hi, default, step):
                 continue
             if hi <= lo:
                 # Ein leerer Bereich macht jeden Regler unbedienbar.
                 hi = lo + 1.0
             entry["min"], entry["max"] = lo, hi
-            entry["default"] = min(max(float(entry.get("default", 0.0)), lo), hi)
-            step = float(entry.get("step", 0.01) or 0.01)
+            entry["default"] = min(max(default, lo), hi)
             entry["step"] = abs(step) or 0.01
         seen.add(idx)
         out.append(entry)
@@ -244,12 +273,19 @@ def _convert_joysticks(raw: Any) -> list[dict]:
         except (KeyError, TypeError, ValueError):
             continue
         entry.setdefault("name", "Joystick")
+        bad_range = False
         for key in ("x_range", "y_range"):
             rng = entry.get(key)
             if not (isinstance(rng, list) and len(rng) == 2):
                 entry[key] = [-100.0, 100.0]
-            else:
-                entry[key] = [float(rng[0]), float(rng[1])]
+                continue
+            lo, hi = _num(rng[0]), _num(rng[1])
+            if _BAD in (lo, hi):
+                bad_range = True
+                break
+            entry[key] = [lo, hi]
+        if bad_range:
+            continue          # ein unlesbarer Bereich verwirft nur DIESEN Joystick
         entry["return_to_center"] = bool(entry.get("return_to_center", True))
         out.append(entry)
     return out

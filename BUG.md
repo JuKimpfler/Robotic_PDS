@@ -1,5 +1,54 @@
 # Gemeldete Fehler — Stand: alle behoben
 
+## Runde 4
+
+- [x] **Ein einziger unbrauchbarer Wert im Teensy-Deskriptor kostete die
+  KOMPLETTE Parameter-Konfiguration.** `runtime_config._convert_entries()`
+  verspricht im eigenen Docstring, einen unplausiblen Eintrag zu
+  überspringen — bei `min`/`max` tat es das auch, bei `default` und `step`
+  aber nicht: dort stand ein ungeschütztes `float()`. Ein `"def": null` aus
+  einer halb übertragenen Firmware warf damit bis in `_persist_registry`
+  hoch. Gefangen wurde es dort zwar, aber die ganze Konfiguration war weg
+  und die GUI lief still mit der Vorlage aus dem Repository weiter — mit
+  falschen Namen, Bereichen und Gruppen an den Reglern. Dasselbe galt für
+  einen unlesbaren Joystick-Bereich.
+- [x] **„Teensy übernehmen" im Overlay-Editor konnte die GUI beenden.** Die
+  Overlay-Werte kommen über UART/WLAN und teilweise aus einem frei
+  geschriebenen `extra`-String; `channel_registry._teensy_overlay_to_entry()`
+  rechnete sie mit ungeschütztem `int()`/`float()` um. Im Poll-Timer war das
+  nur ein Logeintrag (die Anordnung des Teensy kam dann nie an), im Slot
+  `applyPendingTeensyConfig` dagegen macht PyQt aus einer Ausnahme ein
+  `abort()`. Alle Zahlenfelder fallen jetzt auf ihren Standardwert zurück.
+- [x] **Die Trigger-Marke im Plotter war unsichtbar.** `visible_markers()`
+  rechnete gegen `self._total` — den Index des NÄCHSTEN Samples. Eine gerade
+  gesetzte Marke kam damit auf Position `count/(count-1) > 1` heraus und
+  wurde rechts neben die Zeichenfläche gemalt. Zusätzlich trug die
+  Trigger-Marke den Blockindex statt der Auslösestelle: sie hätte, sichtbar,
+  bis zu fünf Samples zu weit rechts gestanden.
+- [x] **Der Overlay-Editor meldete Mängel, die keine waren.** Ein optionaler
+  Kanal, der schlicht nicht gesetzt ist (ein Körper der Feldansicht braucht
+  weder Winkel noch Durchmesser), lief in `problems()` auf `int(None)` und
+  wurde als „keine gültige Kanalnummer" gezählt. `summary()` und
+  `problems()` laufen in `pyqtProperty`-Gettern — mit Text an einer
+  Zahlenstelle warfen sie dort ebenfalls, mit demselben `abort()` als Folge.
+- [x] **Die Feldansicht stand in der Editor-Liste als `180x240 cm`**, während
+  die Ansicht daneben 240 × 180 zeichnete: in `overlay_schema.summary()`
+  waren die Rückfallwerte für x und y vertauscht.
+- [x] **Ein Tippfehler in `controller_config.json` verhinderte den Start der
+  gesamten Oberfläche.** Die Datei ist ausdrücklich zum Bearbeiten von Hand
+  gedacht, ihr Inhalt wurde aber ungeprüft übernommen; `float(map["deadzone"])`
+  im Konstruktor von `ControllerBridge` riss dann den Aufbau
+  ControllerBridge → ParamBridge → AppBridge mit. Jetzt werden die Typen
+  geprüft, unbrauchbare Felder behalten ihren Standardwert, und eine
+  Totzone außerhalb 0…0,9 wird verworfen (bei ≥ 1,0 teilte
+  `_apply_deadzone()` zusätzlich durch null).
+- [x] **`tools/desc_json_check.py` ließ sich mit dem eigens empfohlenen
+  Ersatz-Compiler nicht ausführen.** Der Dateikopf nennt
+  `CXX="python -m ziglang c++"` für Rechner ohne `g++` — zig macht aus
+  `__DATE__`/`__TIME__` per Default einen Fehler (`-Wdate-time`). Die
+  Makros sind der Build-Stempel der Firmware und sollen dort stehen; die
+  Warnung wird jetzt abgeschaltet (g++/clang++ ignorieren die Option).
+
 ## Runde 3
 
 - [x] **Die GUI stürzte beim Beenden ab — nur auf dem Raspberry Pi, nicht auf
