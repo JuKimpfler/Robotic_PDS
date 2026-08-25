@@ -902,9 +902,19 @@ def test_thread_attribute_clash() -> None:
 #  uebersprungen — die CI installiert beides, dort laeuft er also immer.
 def test_plot_markers_and_controller() -> None:
     section("15) Plotter-Marken und Controller-Mapping")
-    for mod in ("PyQt6.QtCore", "numpy"):
-        if importlib.util.find_spec(mod) is None:
-            print(f"  [ -- ] uebersprungen: {mod} ist nicht installiert")
+    # Wirklich importieren statt nur find_spec(): das pip-Paket PyQt6 kann
+    # vollstaendig installiert sein und sich trotzdem nicht laden lassen,
+    # weil die Qt-Systembibliotheken fehlen — auf einem nackten Linux wirft
+    # schon `import PyQt6.QtGui` "libEGL.so.1: cannot open shared object
+    # file". find_spec() findet dort die Moduldatei, und der Import
+    # scheiterte erst mitten im Abschnitt statt ihn zu ueberspringen.
+    # import_module() statt `import X`: sonst meldet pyflakes den
+    # ungenutzten Namen (siehe pyserial-Attrappe oben).
+    for mod in ("numpy", "PyQt6.QtCore", "PyQt6.QtGui", "PyQt6.QtQuick"):
+        try:
+            importlib.import_module(mod)
+        except ImportError as exc:
+            print(f"  [ -- ] uebersprungen: {mod} laesst sich nicht laden ({exc})")
             return
 
     import numpy as np
