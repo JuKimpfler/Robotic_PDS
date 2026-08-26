@@ -472,26 +472,34 @@ Item {
                                     }
                                     SpinBox {
                                         id: spin
+                                        // Eine QML-SpinBox rechnet ausschliesslich in ganzen
+                                        // Zahlen. Der Parameterwert (0.001-Schritte) wird
+                                        // deshalb mit einem festen Faktor multipliziert
+                                        // dargestellt — settings.json -> "params.spinBoxFactor".
+                                        // Wer mehr Nachkommastellen braucht, dreht dort die 1000
+                                        // hoch; die Anzeige unten folgt automatisch.
+                                        readonly property int f: appBridge.settings.paramUi.spinBoxFactor
+                                        readonly property int digits: Math.max(0, Math.round(Math.log(f) / Math.LN10))
                                         height: Theme.touchTargetMin
                                         width: 190
                                         // editable:true = Eingabe per (USB-)Tastatur möglich,
                                         // zusätzlich zu den +/- Tasten.
                                         editable: true
                                         inputMethodHints: Qt.ImhFormattedNumbersOnly
-                                        from: Math.round(modelData.min * 1000)
-                                        to: Math.round(modelData.max * 1000)
-                                        stepSize: Math.max(1, Math.round(modelData.step * 1000))
+                                        from: Math.round(modelData.min * f)
+                                        to: Math.round(modelData.max * f)
+                                        stepSize: Math.max(1, Math.round(modelData.step * f))
                                         readonly property bool _controllerActive:
                                             modelData.kind === "fast" && params.controller.connected
                                         enabled: !_controllerActive
                                         opacity: _controllerActive ? 0.55 : 1.0
                                         value: _controllerActive
                                                && params.controller.values.length > modelData.index
-                                               ? Math.round(params.controller.values[modelData.index] * 1000)
-                                               : Math.round(modelData.default * 1000)
-                                        textFromValue: (v) => (v / 1000).toFixed(3)
-                                        valueFromText: (t) => Math.round(parseFloat(t.replace(",", ".")) * 1000)
-                                        onValueModified: pageCol._send(modelData, value / 1000)
+                                               ? Math.round(params.controller.values[modelData.index] * f)
+                                               : Math.round(modelData.default * f)
+                                        textFromValue: (v) => (v / f).toFixed(digits)
+                                        valueFromText: (t) => Math.round(parseFloat(t.replace(",", ".")) * f)
+                                        onValueModified: pageCol._send(modelData, value / f)
 
                                         // Große, gut treffbare +/- Tasten für Touch, statt der
                                         // sehr kleinen Standard-Pfeilsymbole.

@@ -129,8 +129,13 @@ Item {
                     anchors.verticalCenter: parent.verticalCenter
                 }
                 SpinBox {
+                    // Grenzen aus settings.json -> "ranges.plotPoints"
+                    // (siehe app_settings.py). PlotBridge begrenzt auf
+                    // denselben Bereich, zusaetzlich auf die tatsaechliche
+                    // Groesse des Ringpuffers.
+                    readonly property var rng: appBridge.settings.ranges.plotPoints
                     height: Theme.touchTargetMin
-                    from: 50; to: 600; stepSize: 50
+                    from: rng.min; to: rng.max; stepSize: rng.step
                     value: root.plotter.pointsCount
                     onValueModified: root.plotter.setPointsCount(value)
                 }
@@ -257,8 +262,14 @@ Item {
                         anchors.verticalCenter: parent.verticalCenter
                     }
                     SpinBox {
+                        // settings.json -> "ranges.plotTriggerPost", dort als
+                        // Anteil 0..1 notiert. Die SpinBox rechnet nur in
+                        // ganzen Zahlen, deshalb ueberall x100 (= Prozent).
+                        readonly property var rng: appBridge.settings.ranges.plotTriggerPost
                         height: Theme.touchTargetMin
-                        from: 5; to: 95; stepSize: 5
+                        from: Math.round(rng.min * 100)
+                        to: Math.round(rng.max * 100)
+                        stepSize: Math.max(1, Math.round(rng.step * 100))
                         enabled: root.plotter.triggerEnabled
                         value: Math.round(root.plotter.triggerPostFraction * 100)
                         textFromValue: (v) => v + " %"

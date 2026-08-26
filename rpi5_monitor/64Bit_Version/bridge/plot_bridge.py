@@ -40,19 +40,22 @@ from PyQt6.QtCore import Qt, QObject, QRectF, QPointF, pyqtSignal, pyqtProperty,
 from PyQt6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
 from PyQt6.QtQuick import QQuickPaintedItem
 
+import app_settings
 from config import MAX_FLOATS, PLOT_BUFFER_SIZE, VARIABLE_NAMES
 
 log = logging.getLogger("bridge.plot")
 
+# Alles hier kommt aus settings.json -> "plotter" (siehe app_settings.py).
+# Gelesen wird beim IMPORT: der Ringpuffer wird damit dimensioniert, eine
+# Aenderung wirkt deshalb erst beim naechsten Start.
+
 # Bis zu so viele Kurven gleichzeitig. Mehr wird unlesbar, und der Ringpuffer
-# ist mit dieser Zahl fest dimensioniert (8 x 500 x 4 B = 16 kB).
-MAX_CURVES = 8
+# ist mit dieser Zahl fest dimensioniert (8 x 1000 x 4 B = 32 kB).
+MAX_CURVES = max(1, int(app_settings.get("plotter.maxCurves", 8)))
 
 # Gut unterscheidbar auch auf einem hellen Hintergrund im Freien.
-CURVE_COLORS = [
-    "#00d4ff", "#f0a500", "#4ec9b0", "#f48771",
-    "#c586c0", "#9cdcfe", "#b5cea8", "#ffd700",
-]
+CURVE_COLORS = list(app_settings.get("plotter.curveColors")
+                    or app_settings.DEFAULTS["plotter"]["curveColors"])
 
 # Trigger-Bedingungen. Die Namen gehen 1:1 an QML (siehe PlotterView.qml).
 TRIGGER_MODES = ("above", "below", "rising", "falling", "change", "outside")
@@ -80,7 +83,8 @@ class PlotBridge(QObject):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self._cap = int(PLOT_BUFFER_SIZE)
-        self._points = min(500, self._cap)
+        self._points = self._clamp_points(
+            int(app_settings.get("plotter.defaultPoints", 500)))
 
         # ── Ringpuffer: Zeile = Kurve, Spalte = Zeitpunkt ─────────────────
         #  NaN heisst "kein Wert" — der Kanal war in diesem Paket nicht
@@ -257,9 +261,20 @@ class PlotBridge(QObject):
     def pointsCount(self) -> int:
         return self._points
 
+    def _clamp_points(self, n: int) -> int:
+        """Auf denselben Bereich begrenzen, den auch das Drehfeld in QML
+        anbietet (settings.json -> "ranges.plotPoints") — zusaetzlich
+        gedeckelt durch den tatsaechlichen Ringpuffer, denn mehr Punkte, als
+        gespeichert werden, kann niemand anzeigen."""
+        rng = app_settings.get("ranges.plotPoints",
+                                app_settings.DEFAULTS["ranges"]["plotPoints"])
+        lo = max(1, int(rng["min"]))
+        hi = min(self._cap, int(rng["max"]))
+        return max(lo, min(hi, int(n)))
+
     @pyqtSlot(int)
     def setPointsCount(self, n: int) -> None:
-        n = max(50, min(self._cap, int(n)))
+        n = self._clamp_points(n)
         if n == self._points:
             return
         self._points = n
@@ -383,7 +398,10 @@ class PlotBridge(QObject):
 
     @pyqtSlot(float)
     def setTriggerPostFraction(self, value: float) -> None:
-        value = min(0.95, max(0.05, float(value)))
+        # Grenzen wie im Drehfeld: settings.json -> "ranges.plotTriggerPost".
+        rng = app_settings.get("ranges.plotTriggerPost",
+                                app_settings.DEFAULTS["ranges"]["plotTriggerPost"])
+        value = min(rng["max"], max(rng["min"], float(value)))
         if value != self._trig_post:
             self._trig_post = value
             self.triggerChanged.emit()
@@ -678,8 +696,10 @@ class PlotCanvas(QQuickPaintedItem):
 
     _GRID_COLOR   = QColor(255, 255, 255, 25)
     _BG_COLOR     = QColor("#1a1a1a")
-    _MARKER_COLOR = (QColor(120, 200, 255, 160), QColor(255, 190, 60, 200),
-                     QColor(255, 90, 70, 220))
+    # settings.json -> "plotter.markerColors" (Stufe 0/1/2, #aarrggbb).
+    _MARKER_COLOR = tuple(
+        QColor(c) for c in (app_settings.get("plotter.markerColors")
+                            or app_settings.DEFAULTS["plotter"]["markerColors"]))
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)

@@ -61,6 +61,7 @@ from config import (
     DISCOVERY_ECHO_MAGIC, DISCOVERY_ECHO_PACKET_BYTES, DISCOVERY_ECHO_STRUCT,
     UDP_DISCOVERY_PORT_NODE1, UDP_DISCOVERY_PORT_NODE2,
 )
+import app_settings
 from param_io import (
     ParamConfig, ParamEntry, JoystickEntry,
     load_param_config, write_param_defaults_h, read_param_defaults_h,
@@ -75,8 +76,9 @@ _ECHO_MAGIC_BYTES = struct.pack("<I", DISCOVERY_ECHO_MAGIC)
 # Zwei Aenderungen desselben Reglers innerhalb dieser Zeit gelten als EIN
 # Schritt fuer "Rueckgaengig". Ohne das erzeugt ein einziges Ziehen an einem
 # Schieberegler dutzende Undo-Schritte.
-_UNDO_COALESCE_S = 1.5
-_UNDO_DEPTH = 50
+# settings.json -> "params" (siehe app_settings.py).
+_UNDO_COALESCE_S = float(app_settings.get("params.undoCoalesceSeconds", 1.5))
+_UNDO_DEPTH = max(1, int(app_settings.get("params.undoDepth", 50)))
 
 # Ab dieser Abweichung gilt ein Float als "weicht ab" (Anzeige B5/B6).
 _DIFF_EPS = 1e-4

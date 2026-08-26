@@ -11,12 +11,19 @@ import "components"
 ApplicationWindow {
     id: window
     visible: true
-    width: 1280
-    height: 800
     title: "Power Debug Monitor"
+
+    // Fenstermasse, Kopfzeilenhoehe und Blinktakt stehen in settings.json
+    // (Abschnitt "window", siehe app_settings.py) — frueher standen sie als
+    // Zahl genau hier. `win` ist nur die Abkuerzung dafuer.
+    readonly property var win: appBridge.settings.window
+
+    width: win.width
+    height: win.height
     // 13"-Touchscreen-Kiosk-Betrieb: startet direkt im Vollbild statt in
-    // einem verschiebbaren Fenster.
-    visibility: Window.FullScreen
+    // einem verschiebbaren Fenster. Auf dem Entwicklungsrechner ist ein
+    // Fenster oft angenehmer — settings.json -> "window.fullscreen".
+    visibility: win.fullscreen ? Window.FullScreen : Window.Windowed
 
     Material.theme: Theme.dark ? Material.Dark : Material.Light
     Material.accent: Theme.highlight
@@ -118,6 +125,17 @@ ApplicationWindow {
             // swipeView.currentIndex hat dessen Binding beim ersten Tab-Wechsel
             // zerstört (klassischer QML-Bindungsschleifen-Fehler).
             currentIndex: tabBar.currentIndex
+
+            // Mit welchem Tab die Oberflaeche startet: settings.json ->
+            // "ui.startTab". setCurrentIndex() statt einer Zuweisung auf
+            // currentIndex — eine Zuweisung wuerde die Bindung oben zerstoeren
+            // (genau der Fehler, der im Kommentar darueber beschrieben ist),
+            // die Methode laesst sie stehen.
+            Component.onCompleted: {
+                var t = appBridge.settings.startTab
+                if (t > 0 && t < count) tabBar.setCurrentIndex(t)
+            }
+
             // Während ein Touch-Widget wie der Joystick exklusiv einen Drag
             // braucht (siehe UiState.qml / Joystick.qml), darf das Wischen
             // zwischen den Tabs nicht mitlaufen.
@@ -159,7 +177,7 @@ ApplicationWindow {
 
         Rectangle {
             width: parent.width
-            height: Math.round(72 * Theme.fontScale)
+            height: Math.round(window.win.headerHeight * Theme.fontScale)
             color: Theme.bgMid
 
             Row {
@@ -168,7 +186,7 @@ ApplicationWindow {
                 spacing: Theme.spacingM
 
                 NodeSelector {
-                    width: 360
+                    width: window.win.nodeSelectorWidth
                     height: parent.height
                     activeNode: appBridge.activeNode
                     node1Connected: appBridge.node1Connected
@@ -183,7 +201,7 @@ ApplicationWindow {
                 // keyCatcher weiter oben — der ist am Spielfeldrand ohnehin
                 // schneller zu treffen als ein Ziel auf dem Touchscreen.
                 AppButton {
-                    width: 150
+                    width: window.win.namesButtonWidth
                     height: parent.height
                     text: "🏷 Kanalnamen"
                     onClicked: appBridge.requestChannelNames()
@@ -191,7 +209,8 @@ ApplicationWindow {
 
                 TabBar {
                     id: tabBar
-                    width: parent.width - 360 - 150 - Theme.spacingM * 2
+                    width: parent.width - window.win.nodeSelectorWidth
+                           - window.win.namesButtonWidth - Theme.spacingM * 2
                     height: parent.height
                     currentIndex: swipeView.currentIndex
                     Material.background: "transparent"
@@ -263,7 +282,7 @@ ApplicationWindow {
         Behavior on opacity { NumberAnimation { duration: 250 } }
 
         Timer {
-            interval: 500
+            interval: window.win.alarmBlinkMs
             repeat: true
             running: alarmFrame.visible && appBridge.diag.alarmLevel >= 2
             onTriggered: alarmFrame.blinkOn = !alarmFrame.blinkOn

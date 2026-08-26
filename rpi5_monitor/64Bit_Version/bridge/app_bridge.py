@@ -22,6 +22,7 @@ from time import monotonic
 import numpy as np
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal, pyqtProperty, pyqtSlot
 
+import app_settings
 import runtime_config
 from config import (
     GUI_TIMER_MS, NODE1_IP, NODE2_IP, VARIABLE_NAMES, NODE_TIMEOUT_SEC,
@@ -41,7 +42,8 @@ log = logging.getLogger("bridge.app")
 
 
 # Wie lange eine Statusmeldung in der Fußzeile stehen bleibt.
-_STATUS_MESSAGE_MS = 6000
+# settings.json -> "window.statusMessageSeconds" (siehe app_settings.py).
+_STATUS_MESSAGE_MS = int(1000 * app_settings.get("window.statusMessageSeconds", 6.0))
 
 # Frühestens so oft dürfen die Kanalnamen automatisch neu angefordert werden.
 # Bewusst träge: jede Anfrage kostet den Teensy mehrere Sekunden UART-Zeit,
@@ -113,6 +115,12 @@ class AppBridge(QObject):
         self._visuals.notice.connect(self.statusMessage)
         self._params.setKeyboardEnabled(self._settings.keyboardControl)
         self._settings.settingsChanged.connect(self._apply_settings)
+        # Ein geladenes Profil bringt eine eigene Akku-Warnung mit; ohne das
+        # hier liefe die alte Schwelle weiter, waehrend in der Oberflaeche
+        # bereits die neue steht.
+        self._settings.settingsReplaced.connect(self._apply_replaced_settings)
+        # Meldungen der Einstellungen ("Profil geladen") in dieselbe Fusszeile.
+        self._settings.notice.connect(self.statusMessage)
 
         # Zeitpunkt des letzten empfangenen Pakets je Node, für die
         # Verbindungs-LEDs (siehe _poll_data).
@@ -204,6 +212,13 @@ class AppBridge(QObject):
 
     @safe_slot
     def _apply_settings(self) -> None:
+        self._params.setKeyboardEnabled(self._settings.keyboardControl)
+
+    @safe_slot
+    def _apply_replaced_settings(self) -> None:
+        """Nach einem Profilwechsel: alles nachziehen, was nicht schon an
+        einer Property der SettingsBridge haengt."""
+        self._diag.load_battery_config(self._settings.battery())
         self._params.setKeyboardEnabled(self._settings.keyboardControl)
 
     def _store_battery_config(self) -> None:

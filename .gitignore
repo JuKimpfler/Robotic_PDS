@@ -19,3 +19,12 @@ rpi5_monitor/64Bit_Version/controller_config.json
 # Vom Teensy uebernommene, lokal gespeicherte Laufzeit-Konfiguration.
 # Geraetespezifisch (je Pi anders) und wird zur Laufzeit erzeugt.
 rpi5_monitor/64Bit_Version/runtime_config/
+
+# Einstellungen der Oberflaeche (Schieberegler, Bereiche, Farben, ...).
+# Wird beim ersten Start neben main_qml.py angelegt, siehe app_settings.py.
+# Geraetespezifisch und zur Laufzeit beschrieben -- deshalb wie
+# runtime_config/ nicht im Repository: sonst scheitert `git pull` auf dem Pi
+# an lokal geaenderten Einstellungen.
+rpi5_monitor/64Bit_Version/settings.json
+# ... und die gespeicherten Einstellungssaetze (Profile).
+rpi5_monitor/64Bit_Version/settings.*.json

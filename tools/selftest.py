@@ -27,6 +27,10 @@ testen kann, und die erfahrungsgemaess die meisten Fehler enthalten:
  15. Plotter-Marken /         — Marken bleiben im Bild, Trigger-Marke sitzt
      Controller-Mapping         an der Flanke; controller_config.json haelt
                                 die GUI nie vom Start ab
+ 16. app_settings            — settings.json: fehlende und unsinnige Werte,
+                                die Grenzen der Schieberegler, Profile
+                                speichern/laden, Uebernahme der alten
+                                ui_settings.json
 
 Benoetigt nur die Standardbibliothek. numpy/PyQt6/pyserial/pygame duerfen
 fehlen — fehlende Module werden fuer den Test durch Attrappen ersetzt.
@@ -995,13 +999,145 @@ def test_plot_markers_and_controller() -> None:
         config.CONTROLLER_CONFIG_PATH = original
 
 
+# ══════════════════════════════════════════════════════════════════════════
+def test_app_settings() -> None:
+    section("16) app_settings (settings.json)")
+    import copy
+    import app_settings as aps
+
+    # Die Datei ist ausdruecklich zum Bearbeiten von Hand gedacht. Jeder
+    # Fall hier ist ein Tippfehler, der die GUI frueher haette aufhalten
+    # koennen — geprueft wird deshalb nicht nur "kein Absturz", sondern dass
+    # genau EIN Feld verloren geht und der Rest stehen bleibt.
+    kaputt = {
+        "ui": {"dark": "ja", "fontScale": 1.2},       # dark unbrauchbar
+        "ranges": {"fontScale": {"min": 2.0, "max": 1.0, "step": 0.05}},
+        "theme": {"colors": {"dark": {"bg": "gruen"}}},
+        "plotter": {"maxCurves": "acht"},
+        "eigenerKram": 42,
+    }
+    d = aps.normalize(kaputt)
+    check("unbrauchbarer Wahrheitswert faellt auf den Standard zurueck",
+          d["ui"]["dark"] is aps.DEFAULTS["ui"]["dark"], repr(d["ui"]["dark"]))
+    check("die gueltige Nachbar-Einstellung bleibt stehen",
+          d["ui"]["fontScale"] == 1.2, repr(d["ui"]["fontScale"]))
+    check("Bereich mit max <= min wird ersetzt",
+          d["ranges"]["fontScale"] == aps.DEFAULTS["ranges"]["fontScale"],
+          repr(d["ranges"]["fontScale"]))
+    check("Farbe ohne # faellt auf den Standard zurueck",
+          d["theme"]["colors"]["dark"]["bg"]
+          == aps.DEFAULTS["theme"]["colors"]["dark"]["bg"])
+    check("Zahl als Text an einer Zahlenstelle wird abgelehnt",
+          d["plotter"]["maxCurves"] == aps.DEFAULTS["plotter"]["maxCurves"])
+    check("unbekannter Schluessel geht nicht verloren",
+          d.get("eigenerKram") == 42)
+    check("fehlender Abschnitt wird vollstaendig ergaenzt",
+          set(d["controller"]) == set(aps.DEFAULTS["controller"]))
+    check("leere Datei ergibt genau die Standardwerte",
+          aps.normalize({}) == aps.DEFAULTS)
+
+    # Ein Wert ausserhalb seines eigenen Bereichs macht den zugehoerigen
+    # Regler unbedienbar: er kann gar nicht erst dorthin zeigen.
+    d = aps.normalize({"ui": {"fontScale": 12.0}, "battery": {"channel": -5}})
+    check("fontScale wird in den Bereich gelegt",
+          d["ui"]["fontScale"] == aps.DEFAULTS["ranges"]["fontScale"]["max"],
+          repr(d["ui"]["fontScale"]))
+    check("Akku-Kanal wird in den Bereich gelegt",
+          d["battery"]["channel"] == aps.DEFAULTS["ranges"]["batteryChannel"]["min"],
+          repr(d["battery"]["channel"]))
+
+    # Profilnamen werden zu Dateinamen — hier darf nichts durchrutschen,
+    # was aus dem Ordner ausbricht.
+    for name in ("../geheim", "a/b", "a" + chr(92) + "b", "", "   ", "a.b"):
+        check(f"Profilname {name!r} wird abgelehnt",
+              aps.profile_path(name) is None)
+    check("normaler Profilname ist erlaubt",
+          aps.profile_path("Spiel 2") is not None)
+
+    # Speichern/Laden/Loeschen gegen ein echtes Verzeichnis, damit auch die
+    # Glob-Suche und der atomare Schreibvorgang mitgeprueft werden.
+    # Der Block unten schreibt in ein Wegwerf-Verzeichnis UND veraendert den
+    # aktiven Stand (ensure_file). Beides wird danach zurueckgedreht, damit
+    # ein Selbsttest nicht die Einstellungen des Entwicklers verbiegt.
+    original_base, original_path = aps.BASE_DIR, aps.SETTINGS_PATH
+    gemerkt = copy.deepcopy(aps.SETTINGS)
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            aps.BASE_DIR = Path(tmp)
+            aps.SETTINGS_PATH = Path(tmp) / "settings.json"
+
+            eigen = aps.defaults()
+            eigen["ui"]["fontScale"] = 1.35
+            check("Profil laesst sich speichern", aps.save_profile("Spiel", eigen))
+            check("Profil taucht in der Liste auf", aps.list_profiles() == ["Spiel"],
+                  str(aps.list_profiles()))
+            zurueck = aps.load_profile("Spiel")
+            check("Profil kommt unveraendert zurueck",
+                  zurueck is not None and zurueck["ui"]["fontScale"] == 1.35)
+            check("unbekanntes Profil liefert None", aps.load_profile("Gibtsnicht") is None)
+            check("Profil laesst sich loeschen", aps.delete_profile("Spiel"))
+            check("Liste ist danach leer", aps.list_profiles() == [])
+
+            # settings.json fehlt -> ensure_file() legt sie mit den
+            # Standardwerten an, damit man sie ueberhaupt von Hand finden
+            # und aendern kann. Der blosse Import darf das NICHT tun (siehe
+            # Kommentar an ensure_file) — deshalb wird hier ausdruecklich
+            # geprueft, dass load() die Datei in Ruhe laesst.
+            check("load() legt nichts an", not aps.SETTINGS_PATH.exists()
+                  and aps.load() == aps.DEFAULTS)
+            aps.replace(aps.defaults())        # so sieht ein frischer Start aus
+            aps.ensure_file()
+            check("ensure_file() legt die fehlende Datei an", aps.SETTINGS_PATH.exists())
+            check("und schreibt den aktiven Stand hinein",
+                  json.loads(aps.SETTINGS_PATH.read_text(encoding="utf-8"))
+                  == aps.DEFAULTS)
+
+            # Uebernahme der Vorgaenger-Datei: sie wird eingelesen, in
+            # settings.json geschrieben und danach umbenannt.
+            alt = Path(tmp) / "runtime_config" / "ui_settings.json"
+            alt.parent.mkdir(parents=True, exist_ok=True)
+            alt.write_text(json.dumps({"fontScale": 0.85, "kiosk": True,
+                                       "battery": {"channel": 7}}),
+                           encoding="utf-8")
+            original_legacy = aps.LEGACY_UI_SETTINGS_PATH
+            try:
+                aps.LEGACY_UI_SETTINGS_PATH = alt
+                aps.ensure_file()
+                geladen = dict(aps.SETTINGS)
+            finally:
+                aps.LEGACY_UI_SETTINGS_PATH = original_legacy
+            check("alte Schriftgroesse wird uebernommen", geladen["ui"]["fontScale"] == 0.85)
+            check("alter Kiosk-Modus wird uebernommen", geladen["ui"]["kiosk"] is True)
+            check("alte Akku-Einstellung wird uebernommen",
+                  geladen["battery"]["channel"] == 7)
+            check("die uebernommene Datei ist umbenannt", not alt.exists())
+            auf_platte = json.loads(aps.SETTINGS_PATH.read_text(encoding="utf-8"))
+            check("und steht wirklich in settings.json",
+                  auf_platte["ui"]["fontScale"] == 0.85)
+            aps.ensure_file()
+            check("ein zweiter Start uebernimmt nicht noch einmal",
+                  aps.SETTINGS["ui"]["fontScale"] == 0.85)
+    finally:
+        aps.BASE_DIR, aps.SETTINGS_PATH = original_base, original_path
+        aps.replace(gemerkt)
+
+    # replace() darf die Objekt-Identitaet nicht verlieren: config.py und die
+    # Bruecken halten genau dieses dict fest.
+    vorher = aps.SETTINGS
+    aps.replace(aps.defaults())
+    check("replace() behaelt dasselbe dict", aps.SETTINGS is vorher)
+    check("get() liest ueber einen Pfad", aps.get("theme.spacing.m") == 16,
+          repr(aps.get("theme.spacing.m")))
+    check("get() erfindet nichts", aps.get("gibt.es.nicht", "-") == "-")
+
+
 def main() -> int:
     print("Power Debug System — Selbsttest")
     for fn in (test_wire_format, test_frame_assemblers, test_descriptor,
                test_param_io, test_bt_protocol, test_qml_bindings,
                test_aux_uplink, test_runtime_config, test_textgrid,
                test_overlay_editor, test_thread_attribute_clash,
-               test_plot_markers_and_controller):
+               test_plot_markers_and_controller, test_app_settings):
         try:
             fn()
         except Exception as exc:            # noqa: BLE001

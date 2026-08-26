@@ -40,16 +40,24 @@ ROOT = Path(__file__).resolve().parent.parent
 GUI = ROOT / "rpi5_monitor" / "64Bit_Version"
 sys.path.insert(0, str(GUI))
 
-# Der Test speichert (Einstellungen, Overlay-Editor). Das darf NICHT in die
-# echte Konfiguration des Geraets laufen — sonst haette ein Testlauf auf dem
-# RPi 5 die Anordnung des Bedieners ueberschrieben. config.runtime_config_path
+# Der Test speichert (Einstellungen, Profile, Overlay-Editor). Das darf NICHT
+# in die echte Konfiguration des Geraets laufen — sonst haette ein Testlauf auf
+# dem RPi 5 die Anordnung des Bedieners ueberschrieben. config.runtime_config_path
 # liest RUNTIME_CONFIG_DIR bei jedem Aufruf aus dem Modul-Namensraum, deshalb
 # genuegt es, den Namen VOR dem Import der Bruecken umzubiegen.
+#
+# Dasselbe fuer settings.json: der GELADENE Stand bleibt der echte (so laeuft
+# der Test mit den Einstellungen, die das Geraet wirklich benutzt), geschrieben
+# wird aber ins Wegwerf-Verzeichnis — auch die Profile, die
+# _verify_profile_roundtrip anlegt.
 import tempfile                                              # noqa: E402
+import app_settings                                          # noqa: E402
 import config                                                # noqa: E402
 _tmp_cfg = tempfile.TemporaryDirectory(prefix="pds-smoketest-")
 config.RUNTIME_CONFIG_DIR = Path(_tmp_cfg.name)
 config.UI_SETTINGS_PATH = config.RUNTIME_CONFIG_DIR / "ui_settings.json"
+app_settings.BASE_DIR = Path(_tmp_cfg.name)
+app_settings.SETTINGS_PATH = app_settings.BASE_DIR / "settings.json"
 
 import numpy as np                                          # noqa: E402
 from PyQt6.QtCore import QTimer, QUrl                       # noqa: E402
@@ -420,6 +428,43 @@ def _verify_editor_rendered(engine) -> list[str]:
     return out
 
 
+def _verify_profile_roundtrip(bridge) -> list[str]:
+    """Einstellungssatz speichern -> etwas verstellen -> wieder laden.
+
+    Der Weg ueber die Bruecke ist genau der, den die Knoepfe im Tab
+    "Diagnose" gehen. Geprueft wird das Ergebnis und nicht nur "keine
+    Ausnahme": ein Profil, das beim Laden nichts zurueckholt, waere an der
+    Oberflaeche kaum zu bemerken — man haelt den eigenen Stand fuer
+    gespeichert und merkt am Spielfeldrand, dass er es nie war.
+    """
+    out: list[str] = []
+    name = "Smoketest"
+    vorher = bridge._settings.fontScale
+    rng = app_settings.get("ranges.fontScale")
+
+    bridge._settings.saveProfile(name)
+    if name not in bridge._settings.profiles:
+        out.append(f"Profil {name!r} steht nach dem Speichern nicht in der Liste")
+
+    # Bewusst der aeusserste erlaubte Wert: der ist garantiert ungleich dem
+    # gespeicherten, egal womit der Entwicklungsrechner gerade laeuft.
+    anders = rng["max"] if vorher != rng["max"] else rng["min"]
+    bridge._settings.setFontScale(anders)
+    if bridge._settings.fontScale != anders:
+        out.append(f"fontScale liess sich nicht auf {anders} stellen "
+                   f"(ist {bridge._settings.fontScale})")
+
+    bridge._settings.loadProfile(name)
+    if bridge._settings.fontScale != vorher:
+        out.append(f"Profil {name!r} hat fontScale nicht zurueckgeholt "
+                   f"({bridge._settings.fontScale} statt {vorher})")
+
+    bridge._settings.deleteProfile(name)
+    if name in bridge._settings.profiles:
+        out.append(f"Profil {name!r} liess sich nicht loeschen")
+    return out
+
+
 def main() -> int:
     app = QGuiApplication(sys.argv[:1])
 
@@ -476,6 +521,15 @@ def main() -> int:
     steps.append(lambda: bridge._settings.setFontScale(1.4))   # Layout skaliert
     steps.append(lambda: bridge._settings.setFontScale(1.0))
     steps.append(lambda: bridge._visuals.setEditing(False))
+
+    # Der Tab "Diagnose" wurde bis hierher nie aufgebaut — und genau dort
+    # sitzen die Einstellungen samt Reglergrenzen und Profilverwaltung. Eine
+    # SwipeView baut nicht besuchte Seiten gar nicht erst auf, ein Fehler
+    # dort waere also unbemerkt geblieben.
+    steps.append(lambda: _set_tab(engine, 4))                  # Diagnose
+    steps.append(lambda: _visual_types(engine.rootObjects()[0]))
+    steps.append(lambda: _warnings.extend(_verify_positioners(engine)))
+    steps.append(lambda: _warnings.extend(_verify_profile_roundtrip(bridge)))
     step_timer = QTimer()
     step_timer.setInterval(40)
     pos = {"i": 0}

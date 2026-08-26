@@ -22,6 +22,88 @@ welchem Roboter läuft.
 
 ---
 
+## 2.5 — Alle Einstellungen in einer Datei, mehrere Einstellungssätze
+
+Bis hierher war „einstellbar" eine Frage des Fundorts: die
+Bedienereinstellungen lagen in `runtime_config/ui_settings.json`, Farben,
+Abstände und Schriftgrößen fest verdrahtet in `qml/Theme.qml`, und die
+**Grenzen** der Schieberegler und Drehfelder als Zahlenliteral direkt am
+jeweiligen Bedienelement (`from: 0.8; to: 1.6; stepSize: 0.05`). Wer die
+Schrift größer stellen können wollte als vorgesehen, musste eine `.qml`-Datei
+ändern — und hatte die Änderung beim nächsten `git pull` im Weg.
+
+### Neu
+
+* **`settings.json` neben `main_qml.py`** (neu: `app_settings.py`) hält jetzt
+  alles Einstellbare: Farbschema und Schriftgröße, sämtliche Farben für hell
+  und dunkel, Abstände/Radien/Schriftgrößen, die **Grenzen aller
+  Schieberegler und Drehfelder**, Fenstermaße, Akku-Warnung, Plotter-Puffer
+  und Kurvenfarben, Node-Adressen, Poll-Takt und die Controller-Belegung.
+  Die Datei wird beim ersten Start mit den Standardwerten angelegt und ist
+  zum Bearbeiten von Hand gedacht; `app_settings.DEFAULTS` ist zugleich die
+  vollständige Liste aller Schlüssel.
+* **Mehrere Einstellungssätze.** Jede Datei `settings.<Name>.json` im selben
+  Ordner ist ein Profil. Im Tab **Diagnose → Einstellungssätze** lässt sich
+  der aktuelle Stand unter einem Namen ablegen, ein Profil laden oder löschen
+  und alles auf die Standardwerte zurücksetzen — „Spiel" mit Kiosk-Modus und
+  großer Schrift, „Werkstatt" mit hellem Schema und Tastatursteuerung. Ein
+  Einstellungssatz ist bewusst eine Datei: kopieren, sichern und per USB-Stick
+  auf den zweiten Pi bringen geht damit ohne die Oberfläche.
+* **Start-Tab einstellbar.** Die Einstellung `startTab` gab es schon, benutzt
+  hat sie niemand — die Oberfläche startete immer auf „Tabelle". Sie steht
+  jetzt als Auswahl in den Einstellungen und wird beim Start angewandt (über
+  `TabBar.setCurrentIndex()`, das die Zwei-Wege-Bindung zur SwipeView im
+  Gegensatz zu einer Zuweisung stehen lässt).
+
+### Geändert
+
+* **`config.py`** trennt jetzt sichtbar zwei Sorten Konstanten: was zur
+  Firmware passen muss (Ports, Magic-Zahlen, Paketgrößen — unverändert dort,
+  von `tools/check_wire_format.py` geprüft) und was Geschmackssache ist. Das
+  Zweite kommt aus `settings.json`.
+* **`qml/Theme.qml`** enthält keine Farb- und Maßliterale mehr, sondern liest
+  `appBridge.settings.theme`. Ein Profilwechsel stellt die komplette
+  Oberfläche ohne Neustart um, weil alle Bindungen ohnehin durch dieses
+  Singleton laufen.
+* **`settings.json` und `settings.*.json` sind git-ignoriert** — dieselbe
+  Überlegung wie bei `runtime_config/`: die Datei wird zur Laufzeit
+  beschrieben, und ein `git pull` auf dem Pi soll nicht an lokal geänderten
+  Einstellungen scheitern.
+* **Übernahme des alten Standes:** eine vorhandene
+  `runtime_config/ui_settings.json` wird beim ersten Start einmalig
+  eingelesen, nach `settings.json` geschrieben und danach in
+  `ui_settings.json.uebernommen` umbenannt. Erst schreiben, dann umbenennen —
+  schlägt das Schreiben fehl, versucht es der nächste Start erneut.
+* **Selbsttest**: 179 → 214 Prüfungen. Neuer Abschnitt 16 (`app_settings`):
+  falsche Typen, kaputte Bereiche, Farben ohne `#`, Werte außerhalb ihres
+  eigenen Bereichs, Profilnamen mit `../`, Speichern/Laden/Löschen eines
+  Profils und die einmalige Übernahme der alten Datei.
+* **`tools/qml_smoketest.py`** schaltet jetzt auch auf den Tab „Diagnose" und
+  spielt dort einen Profil-Rundlauf durch (speichern → verstellen → laden →
+  löschen). Der Tab war bis dahin der einzige, den der Smoketest nie
+  aufgebaut hat — eine SwipeView erzeugt nicht besuchte Seiten gar nicht
+  erst. Außerdem schreibt der Lauf seine Einstellungen jetzt in ein
+  Wegwerf-Verzeichnis — wie schon bei `runtime_config/`. Vorher hat er die
+  Schriftgröße des Geräts, auf dem er lief, dauerhaft auf 1.0 gezogen.
+
+### Ein Tippfehler kostet höchstens ein Feld
+
+`settings.json` ist von Hand editierbar, also gilt dieselbe Regel wie für
+`controller_config.json`: fehlt ein Schlüssel oder steht Unsinn darin
+(`"dark": "ja"`, eine Farbe ohne `#`, ein Bereich mit `max <= min`), gilt für
+genau dieses Feld der Standardwert, es gibt eine Zeile im Log, und die
+Oberfläche startet normal. Unbekannte Schlüssel bleiben erhalten, statt beim
+nächsten Speichern still zu verschwinden. Werte außerhalb ihres eigenen
+Bereichs werden hineingelegt — sonst zeigte ein Regler nach einer
+Handkorrektur auf etwas, wohin er nie wieder zurückkäme.
+
+Geschrieben wird atomar (`.tmp` + `os.replace`) wie bei `runtime_config.py`,
+und angelegt wird die Datei ausdrücklich in `main_qml.main()` statt beim
+Import: `config.py` wird auch in den Empfängerprozessen importiert, beim
+ersten Start hätten sonst vier Prozesse gleichzeitig dieselbe Datei erzeugt.
+
+---
+
 ## 2.4 — Kein einzelner kaputter Wert legt mehr etwas Ganzes lahm
 
 Vier der fünf Funde dieser Runde sind dieselbe Sorte Fehler: ein

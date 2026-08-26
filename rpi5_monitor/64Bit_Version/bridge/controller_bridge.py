@@ -79,22 +79,34 @@ except Exception as _exc:            # ImportError, aber auch SDL-Ladefehler
 
 from PyQt6.QtCore import QObject, pyqtProperty, pyqtSignal
 
+import app_settings
 from config import CONTROLLER_CONFIG_PATH, CONTROLLER_UI_NOTIFY_MS
 from bridge.utils import safe_slot
 
 log = logging.getLogger("bridge.controller")
 
 # ══════════════════════════════════════════════════════════════════════════
-#  MAPPING — Standardwerte, per controller_config.json überschreibbar
+#  MAPPING — aus settings.json, per controller_config.json überschreibbar
 # ══════════════════════════════════════════════════════════════════════════
+#  Die Belegung steht seit der Zusammenfassung aller Einstellungen in
+#  settings.json -> "controller". controller_config.json bleibt daneben
+#  gültig: die Datei ist in der Doku (PS4_Controller_Implementierung.md)
+#  beschrieben, liegt auf eingerichteten Geräten schon herum und ist
+#  ausdrücklich gerätespezifisch (git-ignoriert). Sie wird deshalb ZULETZT
+#  angewandt und gewinnt.
+#
+#  Die Achsen-/Buttonnummern sind die von SDL gemeldeten Indizes.
 DEFAULT_MAPPING = {
-    "axis_left_x":  0,    # linker Stick, links/rechts  -> fast_floats[0] (Joystick_X)
-    "axis_left_y":  1,    # linker Stick, hoch/runter   -> fast_floats[1] (Joystick_Y)
-    "axis_right_x": 2,    # rechter Stick, links/rechts -> fast_floats[2] (Rotation)
-    "axis_r2":      5,    # R2-Trigger (ruhend -1, voll +1) -> fast_floats[3] (Speed)
-    "button_r1":   10,    # -> fast_floats[4] (Dribbler) = Maximalwert solange gehalten
-    "button_l1":    9,    # -> fast_floats[4] (Dribbler) = Minimalwert solange gehalten
-    "deadzone":  0.08,
+    key: app_settings.get(f"controller.{key}", fallback)
+    for key, fallback in (
+        ("axis_left_x",  0),    # linker Stick, links/rechts  -> fast_floats[0] (Joystick_X)
+        ("axis_left_y",  1),    # linker Stick, hoch/runter   -> fast_floats[1] (Joystick_Y)
+        ("axis_right_x", 2),    # rechter Stick, links/rechts -> fast_floats[2] (Rotation)
+        ("axis_r2",      5),    # R2-Trigger (ruhend -1, voll +1) -> fast_floats[3] (Speed)
+        ("button_r1",   10),    # -> fast_floats[4] (Dribbler) = Maximalwert solange gehalten
+        ("button_l1",    9),    # -> fast_floats[4] (Dribbler) = Minimalwert solange gehalten
+        ("deadzone",  0.08),
+    )
 }
 
 

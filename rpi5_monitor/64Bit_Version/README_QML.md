@@ -38,7 +38,7 @@ python3 main_qml.py
 | Tab 4 — Parameter | `qml/ParamsView.qml`, `bridge/param_bridge.py`, `qml/components/{Joystick,TouchSlider}.qml` | ✅ vollständig (Slider/Zahl/Text/Toggle/Button/Joystick, Fast+Slow-Downlink, Save-Default) |
 | Tab 5 — Diagnose | `qml/DiagnosticsView.qml`, `bridge/diag_bridge.py` | ✅ vollständig — Verbindungsqualität, Round-Trip-Zeit, Node-Systemstatus, Akku-Warnung, Logbuch, Einstellungen (siehe Architektur-Übersicht in der Haupt-`README.md`, Abschnitt 3b) |
 | PS4-Controller | `bridge/controller_bridge.py` | ✅ vollständig — übernimmt den Fast-Channel automatisch, sobald ein DualShock 4 verbunden ist; siehe `Doku/PS4_Controller_Implementierung.md` |
-| Einstellungen (Theme, Schriftgröße, Kiosk-Modus) | `bridge/settings_bridge.py` | ✅ vollständig, persistiert unter `runtime_config/` |
+| Einstellungen (alles: Theme, Schriftgröße, Reglergrenzen, Fenster, Akku, Controller) | `app_settings.py`, `settings.json`, `bridge/settings_bridge.py` | ✅ vollständig — eine Datei neben `main_qml.py`, mehrere Einstellungssätze speicher-/ladbar (siehe unten) |
 | Kanal-/Param-Namen + Overlay-Defaults vom Teensy | `channel_registry.py` (Modulwurzel), `bridge/app_bridge.py::_poll_descriptor`/`requestChannelNames` | ✅ vollständig — siehe `Doku/Kanalnamen_Implementierung.md`; Namens-Refresh baut `params.groups` neu auf, gibt dabei aber die aktuellen Live-Werte statt der JSON-Defaults mit, damit kein Regler zurückspringt |
 
 ## Der Editor der Systemansicht
@@ -84,6 +84,68 @@ Rückfrage wäre eine halbe Stunde Positionierarbeit beim nächsten Flashen weg,
 und zwar ohne jeden Hinweis. Die Regel selbst steht als reine Funktion in
 `runtime_config.merge_decision()` und wird im Selbsttest durchgespielt.
 
+## Einstellungen: `settings.json`
+
+Alles Einstellbare steht in **einer** Datei neben `main_qml.py`:
+
+```
+rpi5_monitor/64Bit_Version/settings.json
+```
+
+Sie wird beim ersten Start mit den Standardwerten angelegt (`app_settings.py`,
+dort ist `DEFAULTS` gleichzeitig die vollständige Liste aller Schlüssel) und
+ist ausdrücklich zum Bearbeiten von Hand gedacht. Sie liegt **nicht** im
+Repository — genau wie `runtime_config/`, damit ein `git pull` auf dem Pi
+nicht an lokal geänderten Einstellungen scheitert.
+
+Was dort steht, stand vorher an drei Stellen verteilt: in
+`runtime_config/ui_settings.json`, fest verdrahtet in `qml/Theme.qml` und als
+Zahlenliteral am jeweiligen Bedienelement (`from: 0.8; to: 1.6`).
+
+| Abschnitt | Inhalt | Wirkt |
+|---|---|---|
+| `ui` | Farbschema, Schriftgröße, Kiosk, Tastatursteuerung, Start-Tab | sofort |
+| `battery` | Akku-Warnung: Kanal, Schwellen, Haltezeit | sofort |
+| `ranges` | **Grenzen aller Schieberegler und Drehfelder** (min/max/step) | sofort |
+| `theme` | alle Farben (hell/dunkel), Abstände, Radien, Schriftgrößen | sofort |
+| `window` | Fenstergröße, Vollbild, Kopfzeilenhöhe, Blinktakt | nach Neustart |
+| `plotter` | Verlaufslänge, Kurvenzahl, Kurven-/Markenfarben | nach Neustart |
+| `params` | Undo-Tiefe, Anzeigefaktor der Parameter-Drehfelder | nach Neustart |
+| `network` | Node-Adressen, Poll-Takt, Zeitüberschreitung, Puffergrößen | nach Neustart |
+| `diagnostics` | Länge des Logbuchs | nach Neustart |
+| `controller` | Achsen-/Buttonbelegung und Totzone des PS4-Controllers | nach Neustart |
+
+Nicht dabei sind Ports, Magic-Zahlen und Paketgrößen: die müssen zur Firmware
+passen und stehen weiterhin in `config.py` (`tools/check_wire_format.py`
+prüft sie dagegen).
+
+**Ein Tippfehler kostet höchstens ein Feld.** Fehlt ein Schlüssel oder steht
+Unsinn darin (`"dark": "ja"`, eine Farbe ohne `#`, ein Bereich mit
+`max <= min`), gilt für genau dieses Feld der Standardwert, es gibt eine
+Zeile im Log, und die Oberfläche startet normal. Unbekannte Schlüssel bleiben
+erhalten. Werte außerhalb ihres eigenen Bereichs werden hineingelegt — sonst
+zeigte ein Regler auf etwas, wohin er nie wieder zurückkäme.
+
+### Mehrere Einstellungssätze
+
+Jede Datei `settings.<Name>.json` im selben Ordner ist ein Profil:
+
+```
+settings.Spiel.json        # Kiosk an, große Schrift, dunkel
+settings.Werkstatt.json    # Kiosk aus, helles Schema, Tastatur an
+```
+
+Im Tab **Diagnose → Einstellungssätze** lässt sich der aktuelle Stand unter
+einem Namen ablegen, ein Profil laden oder löschen und alles auf die
+Standardwerte zurücksetzen. Von Hand geht dasselbe mit einem Kopieren der
+Datei — ein Einstellungssatz ist absichtlich eine Datei und kein verstecktes
+Format.
+
+Beim ersten Start nach dem Update wird eine vorhandene
+`runtime_config/ui_settings.json` einmalig übernommen (Schriftgröße,
+Kiosk-Modus, Akku-Warnung) und danach in `ui_settings.json.uebernommen`
+umbenannt.
+
 ## Bewusste Abweichungen vom Original
 
 - **Keine virtuelle Bildschirmtastatur** — auf Wunsch, da eine externe
@@ -111,6 +173,9 @@ und zwar ohne jeden Hinweis. Die Regel selbst steht als reine Funktion in
 ```
 rpi5_monitor/64Bit_Version/
 ├── main_qml.py               # QML-Einstiegspunkt (--simulate, PDS_LOGLEVEL)
+├── app_settings.py            # settings.json: laden, prüfen, speichern, Profile
+├── settings.json              # git-ignored: ALLE Einstellungen (wird beim 1. Start angelegt)
+├── settings.<Name>.json       # git-ignored: gespeicherte Einstellungssätze (Profile)
 ├── starter.bat                # Windows-Starter für main_qml.py
 ├── overlay_schema.py          # Felder der Anzeige-Elemente als Daten (ohne PyQt)
 ├── runtime_config.py          # vom Teensy uebernommene Konfiguration, je Node
@@ -126,7 +191,7 @@ rpi5_monitor/64Bit_Version/
 │   ├── param_bridge.py        # Tab 4 (ParamStore, Fast-Channel-Thread)
 │   ├── diag_bridge.py         # Tab 5: Link-Qualität, Node-Status, Akku-Alarm, Logbuch
 │   ├── controller_bridge.py   # PS4-Controller (übernimmt Fast-Channel automatisch)
-│   ├── settings_bridge.py     # Theme, Schriftgröße, Kiosk-Modus (persistiert)
+│   ├── settings_bridge.py     # Fenster nach QML auf settings.json (inkl. Profile)
 │   └── utils.py                # parse_channels, expand_textgrid
 └── qml/
     ├── Theme.qml               # als App-1.0-Singleton registriert (main_qml.py)
@@ -154,5 +219,7 @@ rpi5_monitor/64Bit_Version/
         └── ChannelPicker.qml       # Kanalauswahl mit Suche
 ```
 
-Unverändert wiederverwendet: `config.py`, `network_worker.py`, `param_io.py`,
-`param_config.json`, `visuals_overlays.json`, `bild/`.
+Unverändert wiederverwendet: `network_worker.py`, `param_io.py`,
+`param_config.json`, `visuals_overlays.json`, `bild/`. `config.py` hält
+weiterhin alles, was zur Firmware passen muss; die einstellbaren Werte holt es
+aus `settings.json`.

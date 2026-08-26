@@ -3,9 +3,26 @@ config.py — Zentrale Konfiguration des Power Debug Monitors
 =============================================================
 Alle IPs, Ports, Paket-Parameter und GUI-Konstanten
 an einem einzigen Ort.
+
+────────────────────────────────────────────────────────────────────────────
+WAS STEHT HIER — UND WAS IN settings.json?
+────────────────────────────────────────────────────────────────────────────
+Hier steht, was zur FIRMWARE passen muss: Ports, Magic-Zahlen, Paketgroessen,
+Anzahl der Parameter. Das ist kein Geschmack — eine abweichende Zahl macht
+die GUI wortlos taub, deshalb hat sie in einer von Hand editierbaren Datei
+nichts verloren (tools/check_wire_format.py prueft sie gegen die Firmware).
+
+Alles, was man einstellen KANN, steht in settings.json neben main_qml.py
+(siehe app_settings.py): Farben, Schriftgroessen, die Grenzen aller
+Schieberegler, Akku-Warnung, Controller-Belegung, Node-Adressen.
+Die Konstanten weiter unten, die von dort kommen, sind entsprechend
+markiert — sie werden beim START gelesen, eine Aenderung wirkt also erst
+beim naechsten Start.
 """
 
 import platform
+
+import app_settings
 
 # Muss mit teensy_firmware/src/params.h (PDS_WIRE_VERSION) uebereinstimmen.
 # tools/check_wire_format.py prueft das.
@@ -14,16 +31,18 @@ PDS_WIRE_VERSION = 2
 # ── Automatische OS-Erkennung für Testbetrieb ──────────────────────────────────
 IS_WINDOWS = platform.system() == "Windows"
 
-if IS_WINDOWS:
-    # Lokaler Testmodus auf dem PC
+# Adressen: settings.json -> "network" (siehe app_settings.DEFAULTS).
+if IS_WINDOWS and app_settings.get("network.loopbackOnWindows", True):
+    # Lokaler Testmodus auf dem PC — alles auf die Loopback-Adresse, damit
+    # `--simulate` ohne Umkonfigurieren laeuft.
     RPI5_IP  = "127.0.0.1"
     NODE1_IP = "127.0.0.1"
     NODE2_IP = "127.0.0.1"
 else:
     # Realer Betrieb auf dem Raspberry Pi 5
-    RPI5_IP  = "127.0.0.1" # oder "192.168.42.1"
-    NODE1_IP = "192.168.42.11"
-    NODE2_IP = "192.168.42.12"
+    RPI5_IP  = app_settings.get("network.rpi5Ip",  "127.0.0.1")
+    NODE1_IP = app_settings.get("network.node1Ip", "192.168.42.11")
+    NODE2_IP = app_settings.get("network.node2Ip", "192.168.42.12")
 
 # Die Ports können gleich bleiben
 UDP_PORT_NODE1      = 5001
@@ -66,7 +85,8 @@ PARAM_FAST_SEND_INTERVAL_MS = int(1000 / PARAM_FAST_SEND_HZ)   # 10
 # unabhängig davon mit PARAM_FAST_SEND_HZ gesendet — die Anzeige muss dem
 # aber nicht mit 100 Hz folgen (das Display schafft max. 60 fps und jedes
 # Signal kostet GUI-Thread-Zeit, die dem Sendetimer fehlt).
-CONTROLLER_UI_NOTIFY_MS = 40    # 25 Hz
+# settings.json -> "controller.uiNotifyMs".
+CONTROLLER_UI_NOTIFY_MS = int(app_settings.get("controller.uiNotifyMs", 40))    # 25 Hz
 
 # ── Discovery/Keepalive (GUI -> Node, 1 Hz an BEIDE Nodes) ────────────────────
 #  Der Node schickt seine Telemetrie per Unicast an die Adresse, von der er
@@ -144,7 +164,8 @@ NODE_STATUS_FLAG_WIFI    = 0x02
 NODE_STATUS_FLAG_UNICAST = 0x04
 
 # Wie viele Ereignisse/Logzeilen das Logbuch der GUI vorhaelt.
-EVENT_LOG_MAXLEN = 500
+# settings.json -> "diagnostics.eventLogMax".
+EVENT_LOG_MAXLEN = int(app_settings.get("diagnostics.eventLogMax", 500))
 
 # ── Param-Downlink: Konfigurations- & Persistenzdateien ────────────────────────
 from pathlib import Path as _Path
@@ -173,20 +194,20 @@ def runtime_config_path(node_id: int, name: str) -> "_Path":
 
 # Oberflaechen-Einstellungen (Theme, Schriftgroesse, Akku-Warnung, ...).
 # Nicht node-spezifisch — das ist die Einstellung des Bedieners, nicht des
-# Roboters.
+# Roboters. Seit der Umstellung auf settings.json steht das alles in
+# app_settings.SETTINGS_PATH; dieser Pfad ist nur noch die alte Fassung, aus
+# der beim ersten Start einmalig uebernommen wird (app_settings._take_over_legacy).
 UI_SETTINGS_PATH = RUNTIME_CONFIG_DIR / "ui_settings.json"
 
 # Startwerte der Akku-Warnung (C3). Kanal -1 = aus; ueber den Tab
-# "Diagnose" zur Laufzeit einstellbar und in UI_SETTINGS_PATH gespeichert.
-BATTERY_ALARM_DEFAULTS = {
-    "enabled": False,
-    "channel": -1,
-    "warn_below": 11.5,
-    "critical_below": 10.8,
-    # So lange muss der Wert am Stueck darunter liegen, bevor gewarnt wird.
-    # Ohne das loest jeder Anlaufstrom-Einbruch eines Motors Alarm aus.
-    "hold_seconds": 2.0,
-}
+# "Diagnose" zur Laufzeit einstellbar.
+#
+# Bewusst die STANDARDWERTE und nicht der gespeicherte Stand aus
+# settings.json: die gespeicherten Werte kommen ueber
+# SettingsBridge.battery() -> DiagBridge.load_battery_config() herein. Stuende
+# hier schon der gespeicherte Stand, gaebe es zwei Wege fuer dieselbe
+# Information — und der Name waere gelogen.
+BATTERY_ALARM_DEFAULTS = dict(app_settings.DEFAULTS["battery"])
 
 # ── Paket-Format ──────────────────────────────────────────────────────────────
 # MAX_FLOATS ist Wire-Format und muss mit teensy_firmware/src/PDS.cpp
@@ -197,22 +218,25 @@ MAX_FLOATS          = 200           # Maximale Anzahl float32 pro Paket
 PACKET_SIZE_BYTES   = HEADER_SIZE + MAX_FLOATS * 4   # 808 Bytes
 DUMMY_VALUE         = 9898.0         # Füllwert für inaktive Kanäle
 
-# ── Netzwerk-Worker Performance ───────────────────────────────────────────────
-UDP_RECV_BUFFER     = 1024 * 1024    # 1 MB Kernel-Empfangspuffer
-DATA_QUEUE_MAXSIZE  = 300            # Maximale Queue-Tiefe (dann: Drop älteste)
+# ── Netzwerk-Worker Performance (settings.json -> "network") ──────────────────
+UDP_RECV_BUFFER     = int(app_settings.get("network.recvBufferBytes", 1024 * 1024))
+DATA_QUEUE_MAXSIZE  = int(app_settings.get("network.queueMaxSize", 300))
 
-# ── GUI Timing ────────────────────────────────────────────────────────────────
-GUI_FPS             = 20
+# ── GUI Timing (settings.json -> "network.guiFps") ────────────────────────────
+# max(1, ...) statt roher Uebernahme: guiFps = 0 waere eine Division durch
+# Null beim IMPORT — die GUI startete dann gar nicht mehr, nur weil jemand
+# in der Datei eine 0 stehen liess.
+GUI_FPS             = max(1, int(app_settings.get("network.guiFps", 20)))
 GUI_TIMER_MS        = 1000 // GUI_FPS        # 50 ms
 
 # Nach dieser Zeit ohne empfangenes Telemetriepaket gilt ein Node als
 # getrennt (Verbindungs-LED in der StatusBar, siehe app_bridge.py).
-NODE_TIMEOUT_SEC    = 1.5
+NODE_TIMEOUT_SEC    = float(app_settings.get("network.nodeTimeoutSeconds", 1.5))
 
-# ── Plotter ───────────────────────────────────────────────────────────────────
-PLOT_HISTORY_SEC    = 10              # Sekunden sichtbarer Verlauf
-PLOT_SAMPLE_RATE    = 100            # Erwartete Pakete/s vom Teensy
-PLOT_BUFFER_SIZE    = PLOT_HISTORY_SEC * PLOT_SAMPLE_RATE   # 500 Samples
+# ── Plotter (settings.json -> "plotter") ──────────────────────────────────────
+PLOT_HISTORY_SEC    = max(1, int(app_settings.get("plotter.historySeconds", 10)))
+PLOT_SAMPLE_RATE    = max(1, int(app_settings.get("plotter.sampleRate", 100)))
+PLOT_BUFFER_SIZE    = PLOT_HISTORY_SEC * PLOT_SAMPLE_RATE   # 1000 Spalten je Kurve
 
 # ── Variablen-Mapping ─────────────────────────────────────────────────────────
 # Index → lesbarer Name. Standardmäßig generisch.

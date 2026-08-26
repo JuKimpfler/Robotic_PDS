@@ -39,6 +39,7 @@ from PyQt6.QtGui import QGuiApplication
 from PyQt6.QtQml import QQmlApplicationEngine, qmlRegisterType, qmlRegisterSingletonType
 from PyQt6.QtCore import QUrl, QCoreApplication
 
+import app_settings
 from network_worker import NetworkManager
 from bridge.app_bridge import AppBridge
 from bridge.plot_bridge import PlotCanvas
@@ -188,6 +189,21 @@ def main() -> None:
     args = parser.parse_args()
 
     mp.freeze_support()
+
+    # settings.json neben DIESER Datei anlegen bzw. die alte
+    # runtime_config/ui_settings.json einmalig uebernehmen (siehe
+    # app_settings.py). Bewusst hier und nicht beim Import: gleich darunter
+    # entstehen die Empfaenger-Prozesse, die config.py — und damit
+    # app_settings — ebenfalls importieren; auf Windows als eigenstaendige
+    # Prozesse. Beim ersten Start haetten sonst vier Prozesse gleichzeitig
+    # dieselbe Datei angelegt.
+    app_settings.ensure_file()
+    # Bewusst hier und nicht in app_settings: das Modul wird beim IMPORT
+    # geladen, und zwar bevor logging.basicConfig() weiter oben gelaufen
+    # ist — eine INFO-Zeile von dort saehe niemand. Wo die Einstellungen
+    # herkommen, ist aber genau die Frage, die man sich stellt, wenn die
+    # Oberflaeche anders aussieht als erwartet.
+    log.info("Einstellungen: %s", app_settings.SETTINGS_PATH)
 
     QCoreApplication.setApplicationName("Power Debug Monitor")
     QCoreApplication.setOrganizationName("RoboCup Debug System")

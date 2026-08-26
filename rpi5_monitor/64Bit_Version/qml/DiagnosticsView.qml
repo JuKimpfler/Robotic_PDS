@@ -255,6 +255,24 @@ Item {
                             checked: root.settings.autoApplyTeensyConfig
                             onToggled: (v) => root.settings.setAutoApplyTeensyConfig(v)
                         }
+
+                        Row {
+                            spacing: Theme.spacingXs
+                            Label {
+                                text: "Start-Tab:"
+                                color: Theme.text
+                                anchors.verticalCenter: parent.verticalCenter
+                            }
+                            ComboBox {
+                                width: 200
+                                height: Theme.touchTargetMin
+                                // Reihenfolge wie die SwipeView in Main.qml.
+                                model: ["Tabelle", "Plotter", "Systemansicht",
+                                        "Parameter", "Diagnose"]
+                                currentIndex: root.settings.startTab
+                                onActivated: (idx) => root.settings.setStartTab(idx)
+                            }
+                        }
                     }
 
                     RowLayout {
@@ -266,8 +284,14 @@ Item {
                         }
                         Slider {
                             id: fontSlider
+                            // Grenzen aus settings.json -> "ranges.fontScale"
+                            // (siehe app_settings.py). SettingsBridge begrenzt
+                            // auf denselben Bereich — der Regler kann also gar
+                            // nicht erst irgendwohin zeigen, wo der Wert nicht
+                            // hinkommt.
+                            readonly property var rng: root.settings.ranges.fontScale
                             Layout.preferredWidth: 260
-                            from: 0.8; to: 1.6; stepSize: 0.05
+                            from: rng.min; to: rng.max; stepSize: rng.step
                             value: root.settings.fontScale
                             onMoved: root.settings.setFontScale(value)
                         }
@@ -304,8 +328,11 @@ Item {
                                 anchors.verticalCenter: parent.verticalCenter
                             }
                             SpinBox {
+                                // settings.json -> "ranges.batteryChannel";
+                                // min ist bewusst -1 = "aus".
+                                readonly property var rng: root.settings.ranges.batteryChannel
                                 height: Theme.touchTargetMin
-                                from: -1; to: 199
+                                from: rng.min; to: rng.max; stepSize: rng.step
                                 value: root.diag.batteryConfig.channel
                                 textFromValue: (v) => v < 0 ? "—" : String(v)
                                 onValueModified: root.diag.setBatteryConfig({ "channel": value })
@@ -358,11 +385,18 @@ Item {
                                 anchors.verticalCenter: parent.verticalCenter
                             }
                             SpinBox {
+                                // settings.json -> "ranges.batteryHoldSeconds",
+                                // dort in SEKUNDEN. Die SpinBox rechnet nur in
+                                // ganzen Zahlen, deshalb der Faktor 1/Schritt
+                                // (0,1 s -> 10) statt einer festen 10.
+                                readonly property var rng: root.settings.ranges.batteryHoldSeconds
+                                readonly property real f: 1.0 / rng.step
+                                readonly property int digits: Math.max(0, Math.round(Math.log(f) / Math.LN10))
                                 height: Theme.touchTargetMin
-                                from: 0; to: 100
-                                value: Math.round(root.diag.batteryConfig.hold_seconds * 10)
-                                textFromValue: (v) => (v / 10).toFixed(1) + " s"
-                                onValueModified: root.diag.setBatteryConfig({ "hold_seconds": value / 10 })
+                                from: Math.round(rng.min * f); to: Math.round(rng.max * f)
+                                value: Math.round(root.diag.batteryConfig.hold_seconds * f)
+                                textFromValue: (v) => (v / f).toFixed(digits) + " s"
+                                onValueModified: root.diag.setBatteryConfig({ "hold_seconds": value / f })
                             }
                         }
                     }
@@ -374,6 +408,79 @@ Item {
                         font.pixelSize: Theme.fontSizeSmall
                         text: "Rein optisch — es wird nichts am Roboter verändert. Die Haltezeit "
                               + "verhindert Fehlalarme durch die Spannungseinbrüche beim Anfahren."
+                    }
+
+                    // ── Einstellungssätze (Profile) ──────────────────────
+                    //  Jedes Profil ist eine Datei settings.<Name>.json neben
+                    //  main_qml.py (siehe app_settings.py) — also auch von
+                    //  Hand kopierbar, ohne die Oberfläche zu bemühen.
+                    Text {
+                        text: "Einstellungssätze"
+                        color: Theme.text
+                        font.bold: true
+                        font.pixelSize: Theme.fontSizeBase
+                    }
+
+                    Flow {
+                        Layout.fillWidth: true
+                        spacing: Theme.spacingM
+
+                        Row {
+                            spacing: Theme.spacingXs
+                            ComboBox {
+                                id: profileBox
+                                width: 220
+                                height: Theme.touchTargetMin
+                                model: root.settings.profiles
+                            }
+                            AppButton {
+                                text: "Laden"
+                                enabled: profileBox.count > 0
+                                onClicked: root.settings.loadProfile(profileBox.currentText)
+                            }
+                            AppButton {
+                                text: "Löschen"
+                                danger: true
+                                enabled: profileBox.count > 0
+                                onClicked: root.settings.deleteProfile(profileBox.currentText)
+                            }
+                        }
+
+                        Row {
+                            spacing: Theme.spacingXs
+                            TextField {
+                                id: profileName
+                                width: 220
+                                height: Theme.touchTargetMin
+                                placeholderText: "Name des Einstellungssatzes"
+                            }
+                            AppButton {
+                                text: "Speichern unter"
+                                // Ein leerer Name ergäbe die Datei
+                                // "settings..json" — der Knopf bleibt deshalb
+                                // grau, statt die Python-Seite ablehnen zu lassen.
+                                enabled: profileName.text.trim().length > 0
+                                onClicked: root.settings.saveProfile(profileName.text.trim())
+                            }
+                        }
+
+                        AppButton {
+                            text: "Auf Standardwerte zurücksetzen"
+                            danger: true
+                            onClicked: root.settings.resetToDefaults()
+                        }
+                    }
+
+                    Text {
+                        Layout.fillWidth: true
+                        wrapMode: Text.WordWrap
+                        color: Theme.textDim
+                        font.pixelSize: Theme.fontSizeSmall
+                        text: "Alles auf dieser Seite steht in " + root.settings.settingsPath
+                              + " — dort lassen sich auch die Grenzen der Regler, Farben und "
+                              + "Schriftgrößen ändern. Farben, Maße und Reglergrenzen gelten "
+                              + "sofort; Fenstergröße, Netzwerkadressen, Puffergrößen und die "
+                              + "Controller-Belegung erst nach einem Neustart."
                     }
 
                     // ── Gespeicherte Konfiguration ───────────────────────

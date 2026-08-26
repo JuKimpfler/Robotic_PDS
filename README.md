@@ -182,13 +182,14 @@ Full API, build flags and integration options:
   - `starter.bat`: Windows launcher for `main_qml.py`.
   - `network_worker.py`: UDP receiver processes and network backend.
   - `aux_receiver.py`: receiver for the aux uplink (events, parameter feedback, node health) — the parsing is a plain function so it can be unit-tested without a socket.
-  - `config.py`: Ports, IPs, packet specifications and GUI timing constants.
-  - `bridge/`: the QML backend — one bridge per tab, plus `controller_bridge.py` (PS4 controller), `param_bridge.py` (parameter downlink + the 100 Hz control thread), `diag_bridge.py` (link quality, node health, battery alarm, log book) and `settings_bridge.py` (theme, font size, kiosk mode — persisted).
+  - `config.py`: everything that has to match the firmware — ports, magic numbers, packet specifications (checked by `tools/check_wire_format.py`). The adjustable values it exposes (addresses, GUI timing, buffer sizes) come from `settings.json`.
+  - `app_settings.py` + `settings.json` *(git-ignored, created on first start)*: **all** settings in one file next to `main_qml.py` — colour scheme, every colour, spacings and font sizes, the **min/max/step of every slider and spin box**, window size, battery alarm, plotter buffer, node addresses and the controller mapping. A copy named `settings.<name>.json` is a profile and can be saved/loaded from the Diagnostics tab. A typo costs at most that one field — see `README_QML.md`.
+  - `bridge/`: the QML backend — one bridge per tab, plus `controller_bridge.py` (PS4 controller), `param_bridge.py` (parameter downlink + the 100 Hz control thread), `diag_bridge.py` (link quality, node health, battery alarm, log book) and `settings_bridge.py` (the QML-facing window onto `settings.json`, including the profiles).
   - `channel_registry.py`: Receives/parses the descriptor from the Teensy (see Architecture Overview, section 3).
   - `runtime_config.py`: turns the Teensy's configuration into `param_config.json`/`visuals_overlays.json` and stores it per node under `runtime_config/` — including the fingerprint that decides who wins on a conflict.
   - `param_config.json`, `visuals_overlays.json`: **templates**. Once a Teensy has reported its configuration, the copies under `runtime_config/nodeN/` are used instead; these two stay untouched.
   - `controller_config.json` *(optional, git-ignored)*: overrides the controller axis/button mapping — see the PS4 doc.
-  - `runtime_config/` *(git-ignored)*: everything the GUI persists — per-node configuration from the Teensy plus the UI settings.
+  - `runtime_config/` *(git-ignored)*: the per-node configuration the GUI persists from the Teensy. The UI settings used to live here too; they moved to `settings.json` and are taken over from the old file once, on the first start.
 - **`rpi_zero_node/`**: Python scripts and setup scripts for the RPi Zero 2 W nodes.
   - `setup_node.sh`: Auto-installer script for the Pi Zero.
   - `uart_receiver.py`: Receives serial data from the Teensy and forwards it over UDP; also relays the parameter downlink and the channel/param descriptor.
