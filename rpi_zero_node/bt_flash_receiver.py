@@ -46,10 +46,10 @@ auf 3.9 sonst ein `TypeError` (PEP 604 `X | Y` gibt es erst ab 3.10).
 SOFTWARE-BOOTLOADER-TRIGGER (kein manueller Knopfdruck mehr nötig)
 ────────────────────────────────────────────────────────────────────────────
 Vorher musste vor jedem Flash-Vorgang der physische Bootloader-Taster am
-Teensy 4.0 gedrückt werden, weil `check_teensy_present()` nur per `lsusb`
-prüfte, ob der Teensy *bereits* im HalfKay-Bootloader (16c0:0478) oder im
-USB-CDC-Serial-Modus (16c0:0483) sichtbar ist — ohne aktiv etwas zu
-unternehmen, wenn das nicht der Fall war.
+Teensy 4.0 gedrückt werden: geprüft wurde nur per `lsusb`, ob der Teensy
+*bereits* im HalfKay-Bootloader (16c0:0478) oder im USB-CDC-Serial-Modus
+(16c0:0483) sichtbar ist — ohne aktiv etwas zu unternehmen, wenn das nicht
+der Fall war.
 
 Der Teensy 4.0 unterstützt (wie Teensy 3.x) einen Software-Reboot in den
 Bootloader: Öffnet man den USB-CDC-Serial-Port, den der laufende Sketch
@@ -60,9 +60,14 @@ Sprung in den HalfKay-Bootloader aus. Das ist exakt dieselbe Technik, die
 `teensy_loader_cli -s` (soft_reboot(), siehe dessen Quellcode) und die
 Arduino-IDE/Teensyduino beim automatischen Hochladen ohne Knopfdruck
 verwenden — hier wird sie eigenständig vor dem eigentlichen Aufruf von
-`teensy_loader_cli` durchgeführt (`trigger_bootloader_mode()`), damit
-`check_teensy_present()` den Teensy zuverlässig findet, *bevor* überhaupt
-FLASH_START bestätigt wird.
+`teensy_loader_cli` durchgeführt (`trigger_bootloader_mode()`).
+
+WICHTIG — Reihenfolge: der Sprung in den Bootloader passiert ERST, wenn die
+.hex-Datei vollständig übertragen und ihr SHA-256 verifiziert ist. Bei
+FLASH_START wird nur geprüft, ob überhaupt ein Teensy am USB hängt
+(`check_teensy_connected()`). Vorher wurde schon bei FLASH_START
+umgeschaltet — brach die Übertragung danach ab (Funkloch, falscher Hash,
+geschlossenes Fenster), stand der Roboter ohne laufende Firmware da.
 
 Voraussetzungen auf dem Pi:
   - Paket `pyserial` (z. B. `pip3 install pyserial` oder
@@ -79,8 +84,8 @@ Voraussetzungen auf dem Pi:
     öffnet. Nutzt der Sketch einen anderen USB-Typ (z. B. reines
     "Keyboard+Mouse+Joystick" ohne Serial) oder ist der Teensy abgestürzt/
     hängt, kann der Software-Trigger den Port nicht finden — dann bleibt
-    der manuelle Knopfdruck als Fallback nötig, was `check_teensy_present()`
-    in der Fehlermeldung entsprechend kommuniziert.
+    der manuelle Knopfdruck als Fallback nötig, was in der Fehlermeldung
+    entsprechend kommuniziert wird.
 ────────────────────────────────────────────────────────────────────────────
 """
 from __future__ import annotations
@@ -127,7 +132,7 @@ RFCOMM_CHANNEL = int(os.environ.get("BT_FLASH_CHANNEL", "4"))
 SPP_UUID = "00001101-0000-1000-8000-00805f9b34fb"
 PROFILE_DBUS_PATH = "/pds/bt_flash_profile"
 AGENT_DBUS_PATH = "/pds/bt_flash_agent"
-TEENSY_USB_IDS = ("16c0:0483", "16c0:0478")  # HalfKay-Bootloader / Teensy CDC-Serial
+TEENSY_USB_IDS = ("16c0:0483", "16c0:0478")  # CDC-Serial / HalfKay-Bootloader
 TEENSY_VID = 0x16C0
 TEENSY_SERIAL_PID = 0x0483    # normaler Betrieb: USB-CDC-Serial (Teensyduino USB-Typ "Serial")
 TEENSY_BOOTLOADER_PID = 0x0478  # HalfKay-Bootloader
@@ -137,6 +142,10 @@ BOOTLOADER_WAIT_TIMEOUT_S = 6.0
 BOOTLOADER_POLL_INTERVAL_S = 0.25
 FLASH_TIMEOUT_S = 20
 KEEP_OLD_HEX_FILES = 5
+# Ein Teensy-4.0-Image ist im Extremfall ~2 MB gross (2 MB Flash, Intel-HEX
+# etwa Faktor 2,5). 16 MB sind grosszuegig und verhindern trotzdem, dass ein
+# fehlerhafter oder boesartiger Sender die SD-Karte des Nodes vollschreibt.
+MAX_HEX_BYTES = 16 * 1024 * 1024
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("bt-flash-receiver")
@@ -292,12 +301,36 @@ def handle_client(raw_fd: int, peer_path: str) -> None:
         if cmd != Cmd.FLASH_START:
             log.warning("Unerwartetes Kommando statt FLASH_START: %s", cmd)
             return
-        meta = json.loads(payload.decode("utf-8"))
-        filename = meta["filename"]
-        size = int(meta["size"])
-        sha256_expected = meta["sha256"]
+        try:
+            meta = json.loads(payload.decode("utf-8"))
+            filename = str(meta["filename"])
+            size = int(meta["size"])
+            sha256_expected = str(meta["sha256"])
+        except (KeyError, TypeError, ValueError, UnicodeDecodeError) as exc:
+            msg = f"FLASH_START-Metadaten unbrauchbar: {exc}"
+            log.warning("%s", msg)
+            send_frame(sock, Cmd.FLASH_START_ACK,
+                       json.dumps({"ok": False, "msg": msg}).encode("utf-8"))
+            return
 
-        teensy_ok, teensy_msg = check_teensy_present()
+        if not (0 < size <= MAX_HEX_BYTES):
+            msg = f"Dateigröße {size} B unplausibel (erlaubt: 1..{MAX_HEX_BYTES} B)"
+            log.warning("%s", msg)
+            send_frame(sock, Cmd.FLASH_START_ACK,
+                       json.dumps({"ok": False, "msg": msg}).encode("utf-8"))
+            return
+
+        # Hier wird BEWUSST nur geprueft, OB ein Teensy am USB haengt — der
+        # Sprung in den Bootloader passiert erst nach der vollstaendigen,
+        # per SHA-256 verifizierten Uebertragung (siehe unten).
+        #
+        # Vorher wurde der Teensy schon an dieser Stelle in den Bootloader
+        # versetzt. Brach die Uebertragung danach ab (Funkloch, falscher
+        # Hash, geschlossenes Fenster), blieb der Roboter ohne laufende
+        # Firmware stehen und musste von Hand wieder zum Leben erweckt
+        # werden. Jetzt ist dieses Zeitfenster nur noch so lang wie der
+        # eigentliche Flash-Vorgang.
+        teensy_ok, teensy_msg = check_teensy_connected()
         send_frame(sock, Cmd.FLASH_START_ACK, json.dumps({"ok": teensy_ok, "msg": teensy_msg}).encode("utf-8"))
         if not teensy_ok:
             log.warning("FLASH_START abgelehnt: %s", teensy_msg)
@@ -317,6 +350,9 @@ def handle_client(raw_fd: int, peer_path: str) -> None:
                     break
                 if cmd != Cmd.DATA_CHUNK:
                     continue
+                if received + len(payload) > size:
+                    log.warning("Sender schickt mehr Daten als angekündigt — abgebrochen.")
+                    break
                 f.write(payload)
                 hasher.update(payload)
                 received += len(payload)
@@ -340,8 +376,18 @@ def handle_client(raw_fd: int, peer_path: str) -> None:
 
         log.info("Datei vollständig empfangen und verifiziert: %s (%d Bytes)", target_path, received)
 
-        # --- Flashen ---------------------------------------------------------------
+        # --- Bootloader + Flashen --------------------------------------------------
+        #  Erst JETZT den Teensy in den Bootloader versetzen: ab hier laeuft
+        #  die Roboter-Firmware nicht mehr, und das soll so kurz wie moeglich
+        #  der Fall sein.
+        boot_ok, boot_msg = trigger_bootloader_mode()
+        if not boot_ok:
+            log.warning("Bootloader-Sprung nicht bestätigt (%s) — Flash-Versuch trotzdem, "
+                        "teensy_loader_cli wartet ggf. auf den Taster.", boot_msg)
+
         ok, returncode, output = flash_teensy(target_path)
+        if not boot_ok and not ok:
+            output = boot_msg + "\n" + output
         send_frame(sock, Cmd.FLASH_RESULT, json.dumps(
             {"ok": ok, "returncode": returncode, "output": output[-2000:]}
         ).encode("utf-8"))
@@ -447,20 +493,23 @@ def trigger_bootloader_mode() -> tuple[bool, str]:
     )
 
 
-def check_teensy_present() -> tuple[bool, str]:
-    ok, msg = trigger_bootloader_mode()
-    if ok:
-        return True, msg
+def check_teensy_connected() -> tuple[bool, str]:
+    """Prüft NUR, ob ein Teensy am USB hängt — im Normalbetrieb (CDC-Serial)
+    oder bereits im HalfKay-Bootloader. Versetzt ihn bewusst NICHT in den
+    Bootloader; das passiert erst unmittelbar vor dem Flashen, damit der
+    Roboter bei einer abgebrochenen Übertragung weiterläuft."""
+    if _usb_id_present(TEENSY_BOOTLOADER_USB_ID):
+        return True, "Teensy im Bootloader-Modus gefunden"
 
-    # Fallback: falls trigger_bootloader_mode() aus anderen Gründen (z. B.
-    # pyserial fehlt) nichts tun konnte, aber der Bootloader-Taster bereits
-    # manuell gedrückt wurde, ist der Teensy evtl. trotzdem schon bereit.
     out = _lsusb_output()
     if out is None:
-        return False, f"lsusb fehlgeschlagen ({msg})"
+        return False, "lsusb fehlgeschlagen — Teensy-Erkennung nicht möglich"
     if any(vid_pid in out for vid_pid in TEENSY_USB_IDS):
         return True, "Teensy per USB gefunden"
-    return False, f"Kein Teensy per USB gefunden ({msg})"
+    if _find_teensy_serial_port():
+        return True, "Teensy per CDC-Serial-Port gefunden"
+    return False, ("Kein Teensy per USB gefunden — Kabel prüfen "
+                   "(oder Bootloader-Taster drücken)")
 
 
 def flash_teensy(hex_path: Path) -> tuple[bool, int, str]:

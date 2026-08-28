@@ -3,7 +3,7 @@ bridge/ — Python↔QML-Brückenschicht des Power Debug Monitors
 ================================================================
 Diese Pakete kapseln die gesamte Anwendungslogik als QObject-Klassen,
 die per Context-Property bzw. qmlRegisterType an das QML-Frontend
-(gui_qml/) angebunden werden.
+(qml/) angebunden werden.
 
 Kein Modul hier importiert QtWidgets — die Bridge-Schicht kennt nur
 QtCore/QtGui/QtQml/QtQuick, damit die alte Widgets-GUI (gui/) und die

@@ -3,14 +3,38 @@ import QtQuick.Controls
 import App
 import "components"
 
-// Migrationsplan Abschnitt 4.6. Baut die komplette Parameter-Oberfläche
-// deklarativ aus appBridge.params.groups auf (siehe param_bridge.py::
-// _build_groups) — kein Python-Widget-Factory-Code mehr nötig.
-// Werte-Zustand lebt bewusst nur hier in QML (siehe Docstring in
-// param_bridge.py); Python bekommt nur Change-Events zum Weitersenden.
+// Baut die komplette Parameter-Oberfläche deklarativ aus appBridge.params.groups
+// auf (siehe param_bridge.py::_build_groups) — kein Python-Widget-Factory-Code.
+// Der Werte-Zustand lebt in den Delegates; Python bekommt nur Change-Events
+// zum Weitersenden und schickt bei einem Neuaufbau die Live-Werte mit.
+//
+// ── Suchfeld (F5) ───────────────────────────────────────────────────────────
+// Ist etwas eingetippt, wird statt der gewählten Gruppe eine gruppenübergreifende
+// Trefferliste angezeigt. Dafür trägt JEDER Eintrag sein `kind` ("fast"/"slow"/
+// "bool") mit sich — sonst wüsste die Trefferliste nicht, in welchen Kanal ein
+// geänderter Wert gehört.
 Item {
     id: root
     property var params: appBridge.params
+
+    // Gruppenübergreifende Suche. Läuft nur beim Tippen, nicht im Datentakt.
+    function _search(query) {
+        var q = query.trim().toLowerCase()
+        var floats = [], bools = []
+        if (q.length === 0)
+            return { "kind": "search", "title": "Suche", "floats": floats,
+                     "bools": bools, "joysticks": [] }
+        var gs = params.groups
+        for (var i = 0; i < gs.length; ++i) {
+            var g = gs[i]
+            for (var j = 0; j < g.floats.length; ++j)
+                if (g.floats[j].name.toLowerCase().indexOf(q) >= 0) floats.push(g.floats[j])
+            for (var k = 0; k < g.bools.length; ++k)
+                if (g.bools[k].name.toLowerCase().indexOf(q) >= 0) bools.push(g.bools[k])
+        }
+        return { "kind": "search", "title": "Suche", "floats": floats,
+                 "bools": bools, "joysticks": [] }
+    }
 
     Column {
         anchors.fill: parent
@@ -21,23 +45,30 @@ Item {
         // ── Toolbar ────────────────────────────────────────────────────────
         Rectangle {
             width: parent.width
-            height: 56
+            height: Math.round(56 * Theme.fontScale)
             radius: Theme.radiusM
             color: Theme.bgMid
             border.color: Theme.border
 
+            // Nur SEITLICHE Raender: mit anchors.margins blieben der Zeile von
+            // den 56 px des Kastens nur 40 uebrig, waehrend AppButton und
+            // AppSwitch 56 px hoch sind. Die Knoepfe ragten dann oben und
+            // unten aus der Leiste heraus und ueberlappten die Zeile darunter.
             Row {
                 anchors.fill: parent
-                anchors.margins: Theme.spacingS
+                anchors.leftMargin: Theme.spacingS
+                anchors.rightMargin: Theme.spacingS
                 spacing: Theme.spacingM
 
                 Text {
                     text: params.statusText
-                    color: Theme.accentGreen
+                    // Grün nur, wenn wirklich eine Gegenstelle da ist. Ohne
+                    // Node ist die Zeile eine Warnung, keine Erfolgsmeldung.
+                    color: params.linkUp ? Theme.accentGreen : Theme.accentAmber
                     font.family: Theme.fontMono
                     font.pixelSize: Theme.fontSizeSmall
                     anchors.verticalCenter: parent.verticalCenter
-                    width: 460
+                    width: 470
                     elide: Text.ElideRight
                 }
 
@@ -45,7 +76,14 @@ Item {
                     text: "Übertragung aktiv"
                     checked: params.enabled
                     anchors.verticalCenter: parent.verticalCenter
-                    onToggled: params.setEnabled(checked)
+                    onToggled: (v) => params.setEnabled(v)
+                }
+
+                AppButton {
+                    text: params.canUndo ? "↶ Rückgängig" : "↶"
+                    enabled: params.canUndo
+                    anchors.verticalCenter: parent.verticalCenter
+                    onClicked: params.undo()
                 }
 
                 AppButton {
@@ -53,20 +91,58 @@ Item {
                     anchors.verticalCenter: parent.verticalCenter
                     onClicked: params.saveDefaults()
                 }
+
+                AppButton {
+                    text: "Abweichungen (" + params.diffCount + ")"
+                    enabled: params.diffCount > 0
+                    anchors.verticalCenter: parent.verticalCenter
+                    onClicked: diffPopup.open()
+                }
+            }
+        }
+
+        // ── Rückmeldung des Teensy (B6) ────────────────────────────────────
+        // Der Downlink war bis hierher fire-and-forget: niemand hat gemerkt,
+        // wenn ein Wert gar nicht angekommen ist. Jetzt meldet der Teensy 2x/s
+        // zurück, was er wirklich hält.
+        Rectangle {
+            width: parent.width
+            height: Math.round(34 * Theme.fontScale)
+            radius: Theme.radiusM
+            color: params.ackMismatches.length > 0 ? Theme.warnBg
+                 : (params.ackAvailable ? Theme.okBg : Theme.bgMid)
+            border.color: params.ackMismatches.length > 0 ? Theme.accentAmber
+                        : (params.ackAvailable ? Theme.accentGreen : Theme.border)
+
+            Row {
+                anchors.fill: parent
+                anchors.leftMargin: Theme.spacingS
+                anchors.rightMargin: Theme.spacingS
+                spacing: Theme.spacingS
+
+                Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    font.pixelSize: Theme.fontSizeSmall
+                    color: params.ackMismatches.length > 0 ? Theme.accentAmber
+                         : (params.ackAvailable ? Theme.accentGreen : Theme.textDim)
+                    text: (params.ackAvailable ? "↩ " : "· ") + params.ackText
+                }
+                AppButton {
+                    anchors.verticalCenter: parent.verticalCenter
+                    visible: params.ackMismatches.length > 0
+                    text: "anzeigen"
+                    onClicked: ackPopup.open()
+                }
             }
         }
 
         // ── Controller-Statusbanner ─────────────────────────────────────────
-        // Nur auf der "Fast Params"-Seite relevant (dort greift der
-        // Controller in den Store ein) — wird trotzdem immer angezeigt,
-        // damit auch bei anderer Gruppen-Auswahl klar ist, dass ein
-        // Controller aktiv ist.
         Rectangle {
             width: parent.width
-            height: 40
+            height: Math.round(40 * Theme.fontScale)
             radius: Theme.radiusM
-            visible: params.controller.connected
-            color: "#1f3a2a"
+            visible: params.controller.connected || params.keyboardActive
+            color: Theme.okBg
             border.color: Theme.accentGreen
             Text {
                 anchors.fill: parent
@@ -75,29 +151,63 @@ Item {
                 color: Theme.accentGreen
                 font.family: Theme.fontMono
                 font.pixelSize: Theme.fontSizeSmall
-                text: "🎮  Controller verbunden: " + params.controller.name +
-                      "  — Touch-Eingabe der Fast Params ist gesperrt, Steuerung erfolgt über den Controller."
+                elide: Text.ElideRight
+                text: params.controller.connected
+                      ? "🎮  Controller verbunden: " + params.controller.name
+                        + "  — Touch-Eingabe der Fast Params ist gesperrt."
+                      : "⌨  Tastatursteuerung aktiv (WASD fahren, Q/E drehen, "
+                        + "Shift schneller, R/F Dribbler, Leertaste Not-Aus)."
             }
         }
 
-        // ── Gruppen-Auswahl ───────────────────────────────────────────────
+        // ── Gruppen-Auswahl + Suche ───────────────────────────────────────
         Row {
+            id: selectorRow
             width: parent.width
             spacing: Theme.spacingS
-            Label { text: "Gruppe:"; color: Theme.accentBlue; font.bold: true; anchors.verticalCenter: parent.verticalCenter }
+            Label {
+                text: "Gruppe:"
+                color: Theme.accentBlue
+                font.bold: true
+                anchors.verticalCenter: parent.verticalCenter
+            }
             ComboBox {
                 id: groupCombo
-                width: 320
+                width: 300
                 height: Theme.touchTargetMin
+                enabled: searchField.text.length === 0
                 model: params.groups.map(g => g.title)
+            }
+            TextField {
+                id: searchField
+                width: 300
+                height: Theme.touchTargetMin
+                placeholderText: "🔍 Parameter suchen …"
+                inputMethodHints: Qt.ImhNoPredictiveText
+            }
+            Text {
+                anchors.verticalCenter: parent.verticalCenter
+                visible: searchField.text.length > 0
+                color: Theme.textDim
+                font.pixelSize: Theme.fontSizeSmall
+                text: {
+                    var r = root._search(searchField.text)
+                    return (r.floats.length + r.bools.length) + " Treffer"
+                }
             }
         }
 
         // ── Aktive Gruppen-Seite ─────────────────────────────────────────
         Flickable {
             width: parent.width
-            height: parent.height - 56 - Theme.touchTargetMin - Theme.spacingS * 3
-                    - (params.controller.connected ? (40 + Theme.spacingS) : 0)
+            // Math.max(0, ...): bei sehr grosser Schrift auf einem kleinen
+            // Display kann die Rechnung sonst negativ werden, und die Seite
+            // verschwindet komplett statt nur zu scrollen.
+            height: Math.max(0, parent.height - Math.round(56 * Theme.fontScale)
+                    - Math.round(34 * Theme.fontScale)
+                    - Theme.touchTargetMin - Theme.spacingS * 4
+                    - ((params.controller.connected || params.keyboardActive)
+                       ? (Math.round(40 * Theme.fontScale) + Theme.spacingS) : 0))
             clip: true
             contentHeight: pageLoader.item ? pageLoader.item.implicitHeight : 0
             // Während der Joystick bedient wird, soll diese Seite nicht
@@ -108,9 +218,170 @@ Item {
             Loader {
                 id: pageLoader
                 width: parent.width
-                property var groupData: params.groups.length > groupCombo.currentIndex
-                                         ? params.groups[groupCombo.currentIndex] : null
+                property var groupData: {
+                    if (searchField.text.length > 0)
+                        return root._search(searchField.text)
+                    return params.groups.length > groupCombo.currentIndex
+                           ? params.groups[groupCombo.currentIndex] : null
+                }
                 sourceComponent: groupPageComp
+            }
+        }
+    }
+
+    // ── Abweichungs-Fenster (B5) ────────────────────────────────────────
+    Popup {
+        id: diffPopup
+        modal: true
+        focus: true
+        width: Math.min(root.width * 0.7, 620)
+        height: Math.min(root.height * 0.7, 520)
+        anchors.centerIn: Overlay.overlay
+        padding: Theme.spacingM
+        background: Rectangle { color: Theme.bgMid; border.color: Theme.border; radius: Theme.radiusM }
+
+        Column {
+            anchors.fill: parent
+            spacing: Theme.spacingS
+
+            Text {
+                text: "Abweichungen vom gespeicherten Default"
+                color: Theme.accentBlue
+                font.bold: true
+                font.pixelSize: Theme.fontSizeLarge
+            }
+            Text {
+                width: parent.width
+                wrapMode: Text.WordWrap
+                color: Theme.textDim
+                font.pixelSize: Theme.fontSizeSmall
+                text: "Verglichen wird gegen param_defaults.h — also gegen den Stand, "
+                      + "der zuletzt über \"Als Default speichern\" abgelegt wurde."
+            }
+
+            ListView {
+                width: parent.width
+                height: parent.height - 150
+                clip: true
+                model: params.diffEntries
+                ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+                delegate: Row {
+                    required property var modelData
+                    width: parent ? parent.width : 0
+                    height: Math.round(24 * Theme.fontScale)
+                    spacing: Theme.spacingS
+                    Text {
+                        width: 220
+                        anchors.verticalCenter: parent.verticalCenter
+                        elide: Text.ElideRight
+                        color: Theme.text
+                        font.pixelSize: Theme.fontSizeSmall
+                        text: modelData.name
+                    }
+                    Text {
+                        width: 140
+                        anchors.verticalCenter: parent.verticalCenter
+                        font.family: Theme.fontMono
+                        font.pixelSize: Theme.fontSizeSmall
+                        color: Theme.accentAmber
+                        text: modelData.current
+                    }
+                    Text {
+                        anchors.verticalCenter: parent.verticalCenter
+                        font.family: Theme.fontMono
+                        font.pixelSize: Theme.fontSizeSmall
+                        color: Theme.textDim
+                        text: "war " + modelData.reference
+                    }
+                }
+            }
+
+            Row {
+                spacing: Theme.spacingS
+                AppButton {
+                    text: "Alle zurücksetzen"
+                    danger: true
+                    onClicked: { params.resetToDefaults(); diffPopup.close() }
+                }
+                AppButton {
+                    text: "Schließen"
+                    onClicked: diffPopup.close()
+                }
+            }
+        }
+    }
+
+    // ── Rückmeldungs-Fenster (B6) ───────────────────────────────────────
+    Popup {
+        id: ackPopup
+        modal: true
+        focus: true
+        width: Math.min(root.width * 0.7, 620)
+        height: Math.min(root.height * 0.7, 520)
+        anchors.centerIn: Overlay.overlay
+        padding: Theme.spacingM
+        background: Rectangle { color: Theme.bgMid; border.color: Theme.border; radius: Theme.radiusM }
+
+        Column {
+            anchors.fill: parent
+            spacing: Theme.spacingS
+
+            Text {
+                text: "Soll (GUI) gegen Ist (Teensy)"
+                color: Theme.accentBlue
+                font.bold: true
+                font.pixelSize: Theme.fontSizeLarge
+            }
+            Text {
+                width: parent.width
+                wrapMode: Text.WordWrap
+                color: Theme.textDim
+                font.pixelSize: Theme.fontSizeSmall
+                text: "Weicht hier etwas ab, ist der Wert nicht angekommen — meist eine "
+                      + "schlechte Funkstrecke oder ein neu gestarteter Teensy, der den "
+                      + "Slow-Kanal noch nicht wieder empfangen hat."
+            }
+
+            ListView {
+                width: parent.width
+                height: parent.height - 150
+                clip: true
+                model: params.ackMismatches
+                ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+                delegate: Row {
+                    required property var modelData
+                    width: parent ? parent.width : 0
+                    height: Math.round(24 * Theme.fontScale)
+                    spacing: Theme.spacingS
+                    Text {
+                        width: 220
+                        anchors.verticalCenter: parent.verticalCenter
+                        elide: Text.ElideRight
+                        color: Theme.text
+                        font.pixelSize: Theme.fontSizeSmall
+                        text: modelData.name
+                    }
+                    Text {
+                        width: 140
+                        anchors.verticalCenter: parent.verticalCenter
+                        font.family: Theme.fontMono
+                        font.pixelSize: Theme.fontSizeSmall
+                        color: Theme.accentGreen
+                        text: "Soll " + modelData.current
+                    }
+                    Text {
+                        anchors.verticalCenter: parent.verticalCenter
+                        font.family: Theme.fontMono
+                        font.pixelSize: Theme.fontSizeSmall
+                        color: Theme.accentRed
+                        text: "Ist " + modelData.reference
+                    }
+                }
+            }
+
+            AppButton {
+                text: "Schließen"
+                onClicked: ackPopup.close()
             }
         }
     }
@@ -120,17 +391,18 @@ Item {
         anchors.fill: parent
         anchors.margins: Theme.spacingM
         visible: params.configError.length > 0
-        color: "#3a1f1f"
+        color: Theme.errorBg
         radius: Theme.radiusM
         Text {
             anchors.fill: parent
             anchors.margins: Theme.spacingM
             wrapMode: Text.WordWrap
-            color: "#e74c3c"
+            color: Theme.accentRed
             font.family: Theme.fontMono
-            text: "ACHTUNG: param_config.json ist ungültig — Parameter-Tab deaktiviert.\n\n" +
-                  params.configError +
-                  "\n\nBitte param_config.json korrigieren und die GUI neu starten."
+            text: "ACHTUNG: Die Parameter-Konfiguration ist ungültig — Parameter-Tab deaktiviert.\n\n"
+                  + params.configError
+                  + "\n\nQuelle: " + params.configSource
+                  + "\n\nKorrigieren und die GUI neu starten."
         }
     }
 
@@ -151,7 +423,8 @@ Item {
                 // Links: Slider / Zahlen / Text / Bools
                 Column {
                     id: leftCol
-                    width: (pageCol.g && pageCol.g.joysticks.length > 0) ? pageCol.width * 0.62 : pageCol.width
+                    width: (pageCol.g && pageCol.g.joysticks.length > 0)
+                           ? pageCol.width * 0.62 : pageCol.width
                     spacing: Theme.spacingXs
 
                     Repeater {
@@ -174,12 +447,14 @@ Item {
                                     label: modelData.name
                                     from: modelData.min; to: modelData.max
                                     value: modelData.default
-                                    // Nur auf der Fast-Seite greift der Controller ein
+                                    // Nur auf Fast-Einträgen greift der Controller ein
                                     // (Slow-Params bleiben immer per Touch bedienbar).
-                                    externalControl: pageCol.g.kind === "fast" && params.controller.connected
+                                    externalControl: modelData.kind === "fast"
+                                                     && params.controller.connected
                                     externalValue: params.controller.values.length > modelData.index
-                                                   ? params.controller.values[modelData.index] : modelData.default
-                                    onMoved: (v) => pageCol._sendFloat(modelData.index, v)
+                                                   ? params.controller.values[modelData.index]
+                                                   : modelData.default
+                                    onMoved: (v) => pageCol._send(modelData, v)
                                 }
                             }
                             Component {
@@ -190,35 +465,41 @@ Item {
                                     spacing: Theme.spacingS
                                     Label {
                                         text: modelData.name
-                                        width: 150
+                                        width: 160
                                         color: Theme.text
                                         anchors.verticalCenter: parent.verticalCenter
                                         elide: Text.ElideRight
                                     }
                                     SpinBox {
                                         id: spin
+                                        // Eine QML-SpinBox rechnet ausschliesslich in ganzen
+                                        // Zahlen. Der Parameterwert (0.001-Schritte) wird
+                                        // deshalb mit einem festen Faktor multipliziert
+                                        // dargestellt — settings.json -> "params.spinBoxFactor".
+                                        // Wer mehr Nachkommastellen braucht, dreht dort die 1000
+                                        // hoch; die Anzeige unten folgt automatisch.
+                                        readonly property int f: appBridge.settings.paramUi.spinBoxFactor
+                                        readonly property int digits: Math.max(0, Math.round(Math.log(f) / Math.LN10))
                                         height: Theme.touchTargetMin
                                         width: 190
                                         // editable:true = Eingabe per (USB-)Tastatur möglich,
-                                        // zusätzlich zu den +/- Tasten unten. Vorher fehlte
-                                        // dieses Flag -> nur die Tasten funktionierten.
+                                        // zusätzlich zu den +/- Tasten.
                                         editable: true
                                         inputMethodHints: Qt.ImhFormattedNumbersOnly
-                                        from: Math.round(modelData.min * 1000)
-                                        to: Math.round(modelData.max * 1000)
-                                        stepSize: Math.max(1, Math.round(modelData.step * 1000))
-                                        // Falls ein fast_floats-Eintrag als "number" statt "slider"
-                                        // konfiguriert ist, greift der Controller genauso hier ein.
+                                        from: Math.round(modelData.min * f)
+                                        to: Math.round(modelData.max * f)
+                                        stepSize: Math.max(1, Math.round(modelData.step * f))
                                         readonly property bool _controllerActive:
-                                            pageCol.g.kind === "fast" && params.controller.connected
+                                            modelData.kind === "fast" && params.controller.connected
                                         enabled: !_controllerActive
                                         opacity: _controllerActive ? 0.55 : 1.0
-                                        value: _controllerActive && params.controller.values.length > modelData.index
-                                               ? Math.round(params.controller.values[modelData.index] * 1000)
-                                               : Math.round(modelData.default * 1000)
-                                        textFromValue: (v) => (v / 1000).toFixed(3)
-                                        valueFromText: (t) => Math.round(parseFloat(t.replace(",", ".")) * 1000)
-                                        onValueModified: pageCol._sendFloat(modelData.index, value / 1000)
+                                        value: _controllerActive
+                                               && params.controller.values.length > modelData.index
+                                               ? Math.round(params.controller.values[modelData.index] * f)
+                                               : Math.round(modelData.default * f)
+                                        textFromValue: (v) => (v / f).toFixed(digits)
+                                        valueFromText: (t) => Math.round(parseFloat(t.replace(",", ".")) * f)
+                                        onValueModified: pageCol._send(modelData, value / f)
 
                                         // Große, gut treffbare +/- Tasten für Touch, statt der
                                         // sehr kleinen Standard-Pfeilsymbole.
@@ -280,43 +561,61 @@ Item {
                         delegate: Item {
                             required property var modelData
                             width: leftCol.width
-                            height: 64
+                            height: Math.round(64 * Theme.fontScale)
 
                             // "toggle": normaler Ein/Aus-Schalter, Zustand bleibt bis
                             // zum nächsten Antippen erhalten.
                             AppSwitch {
+                                id: boolSwitch
                                 anchors.verticalCenter: parent.verticalCenter
                                 visible: modelData.widget !== "button"
                                 text: modelData.name
+                                // Der Zustand lebt hier in QML — Python meldet
+                                // nichts zurueck, also setzt der Handler ihn
+                                // selbst. Bei einem Neuaufbau der Gruppen wird
+                                // der Delegate ohnehin neu erzeugt und startet
+                                // wieder auf modelData.default.
                                 checked: modelData.default
-                                onToggled: pageCol._sendBool(modelData.index, checked)
+                                onToggled: (v) => {
+                                    boolSwitch.checked = v
+                                    params.setSlowBool(modelData.index, v)
+                                }
                             }
 
                             // "button": Taster — bei momentary:true wird der Wert NUR
                             // gesendet solange gedrückt gehalten wird (true bei Press,
                             // false bei Release), bei momentary:false verhält er sich
-                            // wie ein klickbarer Umschalt-Button. Vorher landete JEDER
-                            // Bool-Eintrag im generischen Switch, der momentary-Fall
-                            // wurde dort explizit ignoriert -> Taster taten nichts.
+                            // wie ein klickbarer Umschalt-Button.
                             AppButton {
+                                id: boolButton
                                 anchors.verticalCenter: parent.verticalCenter
                                 visible: modelData.widget === "button"
                                 danger: true
                                 checkable: !modelData.momentary
                                 checked: modelData.default
                                 text: modelData.name
+                                // momentary: der Wert gilt NUR solange gedrueckt
+                                // wird (true bei Press, false bei Release).
                                 onPressedChanged: {
-                                    if (modelData.momentary) {
-                                        pageCol._sendBool(modelData.index, pressed)
-                                    }
+                                    if (modelData.momentary)
+                                        params.setSlowBool(modelData.index, pressed)
                                 }
-                                onClicked: {
-                                    if (!modelData.momentary) {
-                                        pageCol._sendBool(modelData.index, checked)
-                                    }
+                                // sonst Umschalter — der Zustand lebt hier in
+                                // QML, Python meldet nichts zurueck.
+                                onToggled: (v) => {
+                                    boolButton.checked = v
+                                    params.setSlowBool(modelData.index, v)
                                 }
                             }
                         }
+                    }
+
+                    Text {
+                        visible: pageCol.g && pageCol.g.kind === "search"
+                                 && pageCol.g.floats.length === 0
+                                 && pageCol.g.bools.length === 0
+                        color: Theme.textDim
+                        text: "Keine Treffer."
                     }
                 }
 
@@ -338,14 +637,12 @@ Item {
                                 returnToCenter: modelData.returnToCenter
                                 // Nur der/die Joystick(s) auf der Fast-Seite werden vom
                                 // Controller übernommen (Slow-Joysticks bleiben Touch).
-                                // Es wird der linke Stick des Controllers gespiegelt —
-                                // bei mehreren Fast-Joysticks in param_config.json müsste
-                                // hier zusätzlich nach modelData.xIndex unterschieden werden.
-                                externalControl: pageCol.g.kind === "fast" && params.controller.connected
+                                externalControl: modelData.source === "fast"
+                                                 && params.controller.connected
                                 externalNormX: params.controller.stickNormX
                                 externalNormY: params.controller.stickNormY
                                 onMoved: (x, y) => {
-                                    if (pageCol.g.kind === "fast") {
+                                    if (modelData.source === "fast") {
                                         params.setFastFloat(modelData.xIndex, x)
                                         params.setFastFloat(modelData.yIndex, y)
                                     } else {
@@ -359,12 +656,12 @@ Item {
                 }
             }
 
-            function _sendFloat(index, value) {
-                if (g.kind === "fast") params.setFastFloat(index, value)
-                else params.setSlowFloat(index, value)
-            }
-            function _sendBool(index, value) {
-                params.setSlowBool(index, value)
+            // Der Zielkanal steckt im Eintrag selbst, nicht in der Gruppe —
+            // sonst könnte die gruppenübergreifende Trefferliste einen Wert
+            // in den falschen Kanal schreiben.
+            function _send(entry, value) {
+                if (entry.kind === "fast") params.setFastFloat(entry.index, value)
+                else params.setSlowFloat(entry.index, value)
             }
         }
     }

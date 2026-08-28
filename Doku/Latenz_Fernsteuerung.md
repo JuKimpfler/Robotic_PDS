@@ -9,7 +9,7 @@ Betroffener Pfad (der „Fast-Kanal“, 5 Floats, 100 Hz):
 
 ```
 PS4-Controller ─USB─▶ RPi 5 / PC (GUI) ─WLAN/UDP :7011─▶ RPi Zero 2 W ─UART─▶ Teensy 4.0
-                      controller_bridge     param_bridge      spi_receiver        PDS.cpp
+                      controller_bridge     param_bridge      uart_receiver        PDS.cpp
 ```
 
 ---
@@ -92,7 +92,7 @@ Der Node lernt jetzt die Adresse der GUI aus den eingehenden Param-Paketen
 und sendet danach per Unicast. Solange nichts gelernt wurde (und wenn länger
 als 10 s nichts mehr von der GUI kam), bleibt es beim Broadcast — das
 Verhalten ist also **nie schlechter als vorher**, siehe `TelemetryTarget`
-in `rpi_zero_node/spi_receiver.py`.
+in `rpi_zero_node/uart_receiver.py`.
 
 ### 1.4 Zwei ungekoppelte 10-ms-Timer in der GUI  (mittel)
 
@@ -232,7 +232,7 @@ In dieser Reihenfolge prüfen — von „kostet nichts“ zu „kostet Aufwand�
    irgendwo (`delay()`, langsame I2C-Sensoren), wirkt sich das 1:1 auf die
    Reaktionszeit aus.
 5. **Baudrate erhöhen.** `UART_DBG_BAUD` in `params.h` und `UART_BAUD` in
-   `spi_receiver.py` **gemeinsam** auf 2 Mbps. Der Uplink liegt bei 1 Mbps
+   `uart_receiver.py` **gemeinsam** auf 2 Mbps. Der Uplink liegt bei 1 Mbps
    schon bei ~81 % Auslastung; darüber gibt es keine Reserve mehr für die
    Deskriptor-Chunks.
 
@@ -244,8 +244,84 @@ In dieser Reihenfolge prüfen — von „kostet nichts“ zu „kostet Aufwand�
 |---|---|
 | `teensy_firmware/src/PDS.cpp` | Parser-Fix (1.1), RX-Puffer (1.2), `sampleBoundChannels()` nur noch vor dem Packen, Deskriptor-Chunk nur bei freiem TX-Puffer, Bereichsprüfung in `DBG()`, Überlauf-Fix im JSON-Bau |
 | `teensy_firmware/src/PDS.h` | Diagnose-Zähler + `fastParamAgeMs()`, korrigierter Kopfkommentar (808 statt 1608 Byte), `enum.h` optional |
-| `rpi_zero_node/spi_receiver.py` | Unicast-Ziel (1.3), Coalescing überholter Pakete, `ioctl` statt `subprocess`, Teilschreib-Erkennung, Deskriptor-Assembler ohne Dauerkopieren |
+| `bridge/param_bridge.py` (v7) | **Discovery-Paket an BEIDE Nodes (1 Hz, 4 Byte, Magic `0xD15C0BE5`, Port 7031/7032)**: der inaktive Node hatte vorher nie eine Zieladresse gelernt und seine kompletten 80 kB/s dauerhaft gebroadcastet — das hat den Funkkanal auch fuer den aktiven Node belastet. Das Paket enthaelt keine Parameter und wird vom Node nicht an den Teensy weitergeleitet. |
+| `rpi_zero_node/uart_receiver.py` | Unicast-Ziel (1.3), Coalescing überholter Pakete, `ioctl` statt `subprocess`, Teilschreib-Erkennung, Deskriptor-Assembler ohne Dauerkopieren |
 | `.../bridge/controller_bridge.py` | kein eigener Timer mehr (1.4), UI-Drosselung, Event-Queue leeren, Warmup gegen Trigger-Fehlstand, konfigurierbares Mapping |
 | `.../bridge/param_bridge.py` | Poll+Senden im selben Tick (1.4), `PreciseTimer`, nicht-blockierender Socket, Drop-Zähler |
 | `.../bridge/app_bridge.py` | beide Node-Queues leeren, LED-Timeout |
 | `.../config.py` | `NODE_TIMEOUT_SEC`, `CONTROLLER_UI_NOTIFY_MS`, `CONTROLLER_CONFIG_PATH` |
+
+
+---
+
+# Nachtrag 2: Der 100-Hz-Takt lief im GUI-Thread
+
+Nach den Massnahmen oben blieb ein Effekt uebrig, den die Latenzrechnung
+nicht erklaert: **die Joystick-Abfrage stockt** — nicht dauerhaft traege,
+sondern unregelmaessig.
+
+## Ursache
+
+Der 10-ms-Timer, der das Fast-Paket verschickt, war ein `QTimer` im
+Qt-GUI-Thread. Ein QTimer feuert aber nicht *zur Zeit*, sondern **wenn die
+Ereignisschleife wieder drankommt**. Im selben Thread liefen:
+
+* das Rendern der Oberflaeche,
+* das Neuzeichnen des Plotters (bis zu 8 Kurven x 500 Punkte),
+* die Verarbeitung der eingehenden Telemetrie (20 Hz, bis zu 200 Kanaele),
+* die Neuberechnung der Parametertabelle,
+* und das Auslesen des PS4-Controllers.
+
+Jedes davon hat den Sendezeitpunkt verschoben. Nicht um viel — aber um
+schwankende Betraege, und Jitter faellt subjektiv staerker auf als eine
+konstante Verzoegerung. `PreciseTimer` hilft dagegen nicht: er verhindert nur
+das *Zusammenlegen* von Timern, nicht das Warten auf die Ereignisschleife.
+
+## Loesung
+
+Die komplette Regelstrecke liegt jetzt in einem **eigenen Thread**
+(`FastControlWorker` in `bridge/param_bridge.py`):
+
+```
+Controller lesen -> Tastatur anwenden -> Paket packen -> senden
+   -> alle 500 ms zusaetzlich das Slow-Paket
+   -> alle 1000 ms Discovery + Antworten abholen
+   -> bis zum naechsten Takt schlafen
+```
+
+Der GUI-Thread fasst diese Kette nicht mehr an; er liest nur noch Zaehler
+fuer die Anzeige.
+
+### Was dabei zu beachten war
+
+| Punkt | Umsetzung |
+|---|---|
+| Gemeinsamer Wertespeicher | `ParamStore` mit `threading.Lock`. Das Lock wird **nie** ueber ein `sendto()` gehalten — ein blockierender Socket duerfte den GUI-Thread nicht warten lassen. |
+| pygame/SDL | wird jetzt IM Sende-Thread initialisiert und wieder abgebaut: das Joystick-Subsystem muss aus demselben Thread gepumpt werden, aus dem es aufgesetzt wurde. |
+| Schlafgenauigkeit | `time.sleep()` nutzt seit Python 3.11 auch unter Windows einen hochaufloesenden Timer. Darunter waere die Granularitaet ~15 ms und dieser Takt nicht zu halten. |
+| Verpasste Zyklen | werden **nicht** nachgeholt. Bei einer Fernsteuerung zaehlt nur der aktuelle Stand; ein Nachholen wuerde alte Joystick-Positionen abarbeiten. Zu spaete Zyklen werden gezaehlt und in der Statuszeile des Parameter-Tabs angezeigt. |
+| Qt-Signale aus dem Thread | Signalemission ist in Qt threadsicher; die Verbindung zu QML-Bindungen wird automatisch als Queued Connection zugestellt. |
+
+### Nebenbei mitgenommen
+
+* `pygame.joystick.get_count()` lief 100x/s und geht in SDL ueber die
+  Geraeteliste. Hot-Plug braucht keine 100 Hz — jetzt 2x/s.
+* `pygame.event.pump()` **und** `pygame.event.clear()` waren zwei komplette
+  Durchlaeufe der Ereigniswarteschlange pro Zyklus. `clear()` pumpt intern
+  selbst; das `pump()` ist entfallen.
+* `fast_float_ranges()` baute bei jedem Poll ein neues dict — jetzt gecacht.
+
+## Jetzt messbar statt vermutet
+
+Der Diagnose-Tab zeigt je Node:
+
+* **Pakete/s** und **Paketverlust**, geschaetzt aus den `micros()`-Zeitstempeln
+  des Teensy (er sendet exakt alle 10 ms, jede groessere Luecke sind fehlende
+  Pakete — kostet kein Byte Wire-Format),
+* die **echte Round-Trip-Zeit** GUI → Node → GUI aus dem gespiegelten
+  Discovery-Paket,
+* **CPU-Temperatur, Last, Speicher und WLAN-Pegel** des Pi Zero.
+
+Damit laesst sich beim naechsten Verdacht unterscheiden, ob der Node
+ueberlastet, das WLAN schwach oder der Teensy stumm ist — vorher war das
+Raten.

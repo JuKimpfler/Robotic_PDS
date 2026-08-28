@@ -27,10 +27,18 @@ wartet dann volle 10 ms auf den nächsten Sendeslot. Im Mittel kostete das
 5 ms, im Maximum 10 ms, und zwar schwankend (Jitter fühlt sich subjektiv
 schlimmer an als eine konstante Verzögerung).
 
-Jetzt ruft ParamBridge._send_fast_tick() direkt vor dem Packen poll() auf
+Jetzt ruft ParamBridge._worker_tick() direkt vor dem Packen poll() auf
 (siehe param_bridge.py). Damit ist der gesendete Stand garantiert der
-zuletzt gelesene, und es läuft nur noch EIN 100-Hz-Timer im GUI-Thread
-statt zwei.
+zuletzt gelesene.
+
+Und zwar aus einem EIGENEN THREAD, nicht mehr aus dem GUI-Thread: ein
+QTimer feuert erst, wenn die Ereignisschleife wieder drankommt, also erst
+nachdem der Plotter neu gezeichnet, die Tabelle neu berechnet und das Bild
+gerendert wurde. Der Abtastzeitpunkt des Controllers ist dadurch
+unregelmäßig gewandert — genau das fühlt sich als "die Joystick-Abfrage
+stockt" an. Deshalb wird pygame/SDL hier auch erst beim ersten poll()
+initialisiert: das Joystick-Subsystem muss aus demselben Thread gepumpt
+werden, aus dem es aufgesetzt wurde.
 
 Kalibrierung: Achsen-/Button-Indizes können je nach OS/SDL-Version
 abweichen. Zwei Möglichkeiten ohne Code-Änderung:
@@ -71,21 +79,34 @@ except Exception as _exc:            # ImportError, aber auch SDL-Ladefehler
 
 from PyQt6.QtCore import QObject, pyqtProperty, pyqtSignal
 
+import app_settings
 from config import CONTROLLER_CONFIG_PATH, CONTROLLER_UI_NOTIFY_MS
+from bridge.utils import safe_slot
 
 log = logging.getLogger("bridge.controller")
 
 # ══════════════════════════════════════════════════════════════════════════
-#  MAPPING — Standardwerte, per controller_config.json überschreibbar
+#  MAPPING — aus settings.json, per controller_config.json überschreibbar
 # ══════════════════════════════════════════════════════════════════════════
+#  Die Belegung steht seit der Zusammenfassung aller Einstellungen in
+#  settings.json -> "controller". controller_config.json bleibt daneben
+#  gültig: die Datei ist in der Doku (PS4_Controller_Implementierung.md)
+#  beschrieben, liegt auf eingerichteten Geräten schon herum und ist
+#  ausdrücklich gerätespezifisch (git-ignoriert). Sie wird deshalb ZULETZT
+#  angewandt und gewinnt.
+#
+#  Die Achsen-/Buttonnummern sind die von SDL gemeldeten Indizes.
 DEFAULT_MAPPING = {
-    "axis_left_x":  0,    # linker Stick, links/rechts  -> fast_floats[0] (Joystick_X)
-    "axis_left_y":  1,    # linker Stick, hoch/runter   -> fast_floats[1] (Joystick_Y)
-    "axis_right_x": 2,    # rechter Stick, links/rechts -> fast_floats[2] (Rotation)
-    "axis_r2":      5,    # R2-Trigger (ruhend -1, voll +1) -> fast_floats[3] (Speed)
-    "button_r1":   10,    # -> fast_floats[4] (Dribbler) = Maximalwert solange gehalten
-    "button_l1":    9,    # -> fast_floats[4] (Dribbler) = Minimalwert solange gehalten
-    "deadzone":  0.08,
+    key: app_settings.get(f"controller.{key}", fallback)
+    for key, fallback in (
+        ("axis_left_x",  0),    # linker Stick, links/rechts  -> fast_floats[0] (Joystick_X)
+        ("axis_left_y",  1),    # linker Stick, hoch/runter   -> fast_floats[1] (Joystick_Y)
+        ("axis_right_x", 2),    # rechter Stick, links/rechts -> fast_floats[2] (Rotation)
+        ("axis_r2",      5),    # R2-Trigger (ruhend -1, voll +1) -> fast_floats[3] (Speed)
+        ("button_r1",   10),    # -> fast_floats[4] (Dribbler) = Maximalwert solange gehalten
+        ("button_l1",    9),    # -> fast_floats[4] (Dribbler) = Minimalwert solange gehalten
+        ("deadzone",  0.08),
+    )
 }
 
 
@@ -107,9 +128,36 @@ def _load_mapping() -> dict:
                     CONTROLLER_CONFIG_PATH.name, exc)
         return mapping
 
-    for key in mapping:
-        if key in user:
-            mapping[key] = user[key]
+    if not isinstance(user, dict):
+        log.warning("%s enthält kein Objekt — Standard-Mapping aktiv.",
+                    CONTROLLER_CONFIG_PATH.name)
+        return mapping
+
+    # Typen prüfen, statt den Wert blind zu übernehmen. Die Datei ist
+    # ausdrücklich zum Editieren von Hand gedacht ("ohne Code zu ändern");
+    # ein Tippfehler darf deshalb höchstens dieses eine Feld kosten. Vorher
+    # landete z. B. eine Achsennummer als Zeichenkette im Mapping, und
+    #   float(self._map["deadzone"])   im Konstruktor
+    # riss den Aufbau von ControllerBridge -> ParamBridge -> AppBridge mit:
+    # die GUI startete dann gar nicht mehr, mit einem rohen Traceback.
+    for key, default in DEFAULT_MAPPING.items():
+        if key not in user:
+            continue
+        value = user[key]
+        try:
+            mapping[key] = float(value) if isinstance(default, float) else int(value)
+        except (TypeError, ValueError):
+            log.warning("%s: '%s' = %r ist keine Zahl — Standardwert %r bleibt.",
+                        CONTROLLER_CONFIG_PATH.name, key, value, default)
+
+    # Eine Totzone außerhalb 0..0.9 macht den Stick unbrauchbar (bei >= 1.0
+    # teilt _apply_deadzone() zusätzlich durch 0).
+    if not 0.0 <= mapping["deadzone"] < 0.9:
+        log.warning("%s: deadzone=%r liegt außerhalb 0..0.9 — %r bleibt.",
+                    CONTROLLER_CONFIG_PATH.name, mapping["deadzone"],
+                    DEFAULT_MAPPING["deadzone"])
+        mapping["deadzone"] = DEFAULT_MAPPING["deadzone"]
+
     log.info("Controller-Mapping aus %s übernommen.", CONTROLLER_CONFIG_PATH.name)
     return mapping
 
@@ -126,8 +174,8 @@ class ControllerBridge(QObject):
     """Erkennt PS4-Controller (Hot-Plug-fähig durch Polling) und schreibt
     dessen Werte in den ParamStore der übergebenen ParamBridge.
 
-    poll() wird von ParamBridge._send_fast_tick() mit 100 Hz aufgerufen —
-    siehe Modul-Docstring, Abschnitt LATENZ."""
+    poll() wird von ParamBridge._worker_tick() mit 100 Hz aufgerufen, und zwar
+    aus dem Sende-Thread — siehe Modul-Docstring, Abschnitt LATENZ."""
 
     connectedChanged = pyqtSignal()
     valuesChanged = pyqtSignal()
@@ -164,6 +212,13 @@ class ControllerBridge(QObject):
 
         self._last_debug_dump = 0.0
 
+        # Hot-Plug-Erkennung braucht keine 100 Hz. get_count() geht in SDL
+        # ueber die Geraeteliste; einmal je halbe Sekunde reicht voellig und
+        # spart 98 % der Aufrufe im Regeltakt.
+        self._init_done = False
+        self._last_count_check = 0.0
+        self._count_cache = 0
+
         if pygame is None:
             log.warning(
                 "pygame nicht verfuegbar (%s) — Controller-Unterstuetzung ist "
@@ -172,14 +227,27 @@ class ControllerBridge(QObject):
                 "noch kein pygame-Wheel, dort stattdessen: pip install pygame-ce)",
                 _PYGAME_IMPORT_ERROR,
             )
-            return
 
+    def _ensure_init(self) -> bool:
+        """pygame beim ERSTEN poll() aufsetzen — also im Sende-Thread.
+
+        SDL verlangt, dass das Joystick-Subsystem aus demselben Thread
+        gepumpt wird, in dem es initialisiert wurde. Wuerde das noch im
+        Konstruktor (GUI-Thread) passieren, waere jedes spaetere
+        get_axis() aus dem Sende-Thread ein Thread-Wechsel mitten in SDL.
+        """
+        if self._init_done:
+            return self._available
+        self._init_done = True
+        if pygame is None:
+            return False
         try:
             pygame.init()
             pygame.joystick.init()
             self._available = True
         except pygame.error as exc:
             log.error("pygame/SDL konnte nicht initialisiert werden: %s", exc)
+        return self._available
 
     # ── Properties (für QML) ─────────────────────────────────────────────
     @pyqtProperty(bool, notify=connectedChanged)
@@ -207,30 +275,37 @@ class ControllerBridge(QObject):
         return self._stick_y
 
     # ── Polling ───────────────────────────────────────────────────────────
+    @safe_slot
     def poll(self) -> None:
         """Einen Abtastzyklus ausführen. Wird von ParamBridge unmittelbar vor
-        dem Packen des Fast-Pakets aufgerufen (100 Hz)."""
-        if not self._available:
-            return
-
-        try:
-            pygame.event.pump()
-            count = pygame.joystick.get_count()
-        except pygame.error as exc:
-            log.warning("pygame-Event-Pump fehlgeschlagen: %s", exc)
+        dem Packen des Fast-Pakets aufgerufen (100 Hz, Sende-Thread)."""
+        if not self._ensure_init():
             return
 
         # SDL legt bei jeder Achsenbewegung Events in eine Warteschlange. Wir
         # lesen den Zustand direkt über get_axis()/get_button() und brauchen
         # die Events nicht — ohne dieses clear() läuft die Queue mit rund
         # 1000 Events/s voll, die niemand abholt.
-        # Bewusst in eigenem try: schlägt das Leeren fehl (z. B. weil das
-        # Event-Subsystem in einer exotischen SDL-Konfiguration fehlt), ist
-        # das nur ein Effizienzproblem und darf das Auslesen nicht verhindern.
+        # clear() pumpt intern selbst; ein zusätzliches event.pump() davor
+        # wäre ein zweiter kompletter Durchlauf der Warteschlange pro Zyklus.
         try:
             pygame.event.clear()
-        except pygame.error:
-            pass
+        except pygame.error as exc:
+            log.warning("pygame-Event-Verarbeitung fehlgeschlagen: %s", exc)
+            return
+
+        # Hot-Plug nur alle 500 ms prüfen (siehe __init__). Solange ein
+        # Controller verbunden ist, meldet ein Lesefehler das Abziehen
+        # ohnehin sofort.
+        now = time.monotonic()
+        if self._joystick is None or (now - self._last_count_check) >= 0.5:
+            self._last_count_check = now
+            try:
+                self._count_cache = pygame.joystick.get_count()
+            except pygame.error as exc:
+                log.warning("Controller-Abfrage fehlgeschlagen: %s", exc)
+                return
+        count = self._count_cache
 
         if count == 0:
             if self._connected:
@@ -259,6 +334,8 @@ class ControllerBridge(QObject):
     def _set_disconnected(self) -> None:
         self._connected = False
         self._joystick = None
+        self._count_cache = 0
+        self._last_count_check = 0.0   # beim naechsten poll() sofort neu pruefen
         self._name = ""
         self._warmup = 0
         # Beim Trennen bewusst auf 0 zurückfallen statt den letzten Stand

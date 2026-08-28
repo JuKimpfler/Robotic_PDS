@@ -20,7 +20,6 @@ from PyQt6.QtCore import (
     Qt, QAbstractTableModel, QModelIndex, QObject,
     pyqtSignal, pyqtProperty, pyqtSlot,
 )
-from PyQt6.QtGui import QColor
 
 from config import MAX_FLOATS, VARIABLE_NAMES
 
@@ -39,6 +38,8 @@ class TelemetryTableModel(QAbstractTableModel):
     MaxRole     = Qt.ItemDataRole.UserRole + 4
     DeltaRole   = Qt.ItemDataRole.UserRole + 5
     ColorRole   = Qt.ItemDataRole.UserRole + 6
+    UnitRole    = Qt.ItemDataRole.UserRole + 7
+    ChannelRole = Qt.ItemDataRole.UserRole + 8
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -48,10 +49,47 @@ class TelemetryTableModel(QAbstractTableModel):
         self._min      = np.full(n,  np.inf, dtype=np.float32)
         self._max      = np.full(n, -np.inf, dtype=np.float32)
         self._n_active = 0
+        # Zeile -> Kanalindex. Der Filter wird BEWUSST hier im Modell
+        # ausgewertet und nicht per `visible: false` im QML-Delegate: eine
+        # TableView reserviert die Höhe unsichtbarer Zeilen weiterhin, die
+        # gefilterte Liste war deshalb voller Lücken.
+        self._visible: list[int] = []
+        self._filter = ""
+        # Einheit je Kanal ("V", "cm", ...), vom Teensy gemeldet.
+        # Nur ein Anzeige-Zusatz, aendert nie einen Wert.
+        self._units: dict[int, str] = {}
+
+    # ── Filter ───────────────────────────────────────────────────────────
+    def _matches(self, ch: int) -> bool:
+        # Auch die Kanalnummer durchsuchbar: "42" findet Kanal 42, auch
+        # wenn er noch "Var_042" heisst.
+        return self._filter in self._names[ch].lower() or self._filter == str(ch)
+
+    def _rebuild_visible(self) -> list[int]:
+        if not self._filter:
+            return list(range(self._n_active))
+        return [i for i in range(self._n_active) if self._matches(i)]
+
+    def set_filter(self, text: str) -> None:
+        text = (text or "").strip().lower()
+        if text == self._filter:
+            return
+        self._filter = text
+        self.beginResetModel()
+        self._visible = self._rebuild_visible()
+        self.endResetModel()
+
+    @property
+    def visible_count(self) -> int:
+        return len(self._visible)
+
+    @property
+    def active_count(self) -> int:
+        return self._n_active
 
     # ── QAbstractTableModel-Interface ────────────────────────────────────
     def rowCount(self, parent=QModelIndex()) -> int:
-        return self._n_active
+        return len(self._visible)
 
     def columnCount(self, parent=QModelIndex()) -> int:
         # QML TableView erzeugt EIN Delegate pro (row, col) — da wir die
@@ -68,32 +106,39 @@ class TelemetryTableModel(QAbstractTableModel):
             self.MaxRole:     b"maxVal",
             self.DeltaRole:   b"delta",
             self.ColorRole:   b"valueColor",
+            self.UnitRole:    b"unit",
+            self.ChannelRole: b"channel",
         }
 
     def data(self, index: QModelIndex, role: int = Qt.ItemDataRole.DisplayRole):
         if not index.isValid():
             return None
         row = index.row()
-        if row < 0 or row >= self._n_active:
+        if row < 0 or row >= len(self._visible):
             return None
+        ch = self._visible[row]
 
         if role == self.NameRole:
-            return self._names[row]
+            return self._names[ch]
+        if role == self.ChannelRole:
+            return ch
+        if role == self.UnitRole:
+            return self._units.get(ch, "")
         if role == self.CurrentRole:
-            return float(self._current[row])
+            return float(self._current[ch])
         if role == self.MinRole:
-            v = self._min[row]
+            v = self._min[ch]
             return None if np.isinf(v) else float(v)
         if role == self.MaxRole:
-            v = self._max[row]
+            v = self._max[ch]
             return None if np.isinf(v) else float(v)
         if role == self.DeltaRole:
-            mn, mx = self._min[row], self._max[row]
+            mn, mx = self._min[ch], self._max[ch]
             if np.isinf(mn) or np.isinf(mx):
                 return None
             return float(mx - mn)
         if role == self.ColorRole:
-            v = float(self._current[row])
+            v = float(self._current[ch])
             if v > 0:
                 return "#4ec9b0"
             if v < 0:
@@ -108,33 +153,46 @@ class TelemetryTableModel(QAbstractTableModel):
 
         if row_count_changed:
             self.beginResetModel()
+            self._n_active = n
+            self._visible = self._rebuild_visible()
 
         self._current[:n] = values[:n]
         np.minimum(self._min[:n], values[:n], out=self._min[:n])
         np.maximum(self._max[:n], values[:n], out=self._max[:n])
-        self._n_active = n
 
         if row_count_changed:
             self.endResetModel()
         else:
-            self.dataChanged.emit(
-                self.index(0, 0),
-                self.index(n - 1, 0),
-                [self.CurrentRole, self.MinRole, self.MaxRole,
-                 self.DeltaRole, self.ColorRole],
-            )
+            self._emit_value_change()
+
+    def _emit_value_change(self) -> None:
+        rows = len(self._visible)
+        if rows <= 0:
+            return
+        self.dataChanged.emit(
+            self.index(0, 0),
+            self.index(rows - 1, 0),
+            [self.CurrentRole, self.MinRole, self.MaxRole,
+             self.DeltaRole, self.ColorRole],
+        )
 
     @pyqtSlot()
     def clear_stats(self) -> None:
         self._current[:] = 0.0
         self._min[:] = np.inf
         self._max[:] = -np.inf
-        if self._n_active > 0:
+        self._emit_value_change()
+
+    def set_units(self, units: dict[int, str]) -> None:
+        """Einheiten aus dem Teensy-Deskriptor uebernehmen."""
+        if units == self._units:
+            return
+        self._units = dict(units)
+        if self._visible:
             self.dataChanged.emit(
                 self.index(0, 0),
-                self.index(self._n_active - 1, 0),
-                [self.CurrentRole, self.MinRole, self.MaxRole,
-                 self.DeltaRole, self.ColorRole],
+                self.index(len(self._visible) - 1, 0),
+                [self.UnitRole],
             )
 
     def set_names(self, names: dict[int, str]) -> None:
@@ -143,13 +201,22 @@ class TelemetryTableModel(QAbstractTableModel):
         (Fallback-)Namen."""
         if not names:
             return
+        changed = False
         for i, name in names.items():
-            if 0 <= i < len(self._names):
+            if 0 <= i < len(self._names) and self._names[i] != name:
                 self._names[i] = name
-        if self._n_active > 0:
+                changed = True
+        if not changed:
+            return
+        if self._filter:
+            # Die Namen bestimmen, welche Zeilen sichtbar sind -> neu aufbauen.
+            self.beginResetModel()
+            self._visible = self._rebuild_visible()
+            self.endResetModel()
+        elif self._visible:
             self.dataChanged.emit(
                 self.index(0, 0),
-                self.index(self._n_active - 1, 0),
+                self.index(len(self._visible) - 1, 0),
                 [self.NameRole],
             )
 
@@ -160,17 +227,38 @@ class TelemetryTableModel(QAbstractTableModel):
 
 class TelemetryBridge(QObject):
     valuesChanged      = pyqtSignal()
-    activeChannelCount  = pyqtSignal(int)
+    countsChanged      = pyqtSignal()
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.table_model = TelemetryTableModel(self)
         self._latest: list[float] = []
+        self._active_channels = 0
+        self._visible_channels = 0
 
     # ── Property: kompletter letzter Werte-Vektor, für Overlays/Gauges ───
     @pyqtProperty("QVariantList", notify=valuesChanged)
     def latestValues(self):
         return self._latest
+
+    @pyqtProperty(int, notify=countsChanged)
+    def activeChannels(self):
+        """Anzahl vom Teensy gelieferter Kanäle. Als Property (statt eines
+        `telemetryModel.rowCount()`-Aufrufs im QML-Text) — ein Methodenaufruf
+        in einem Binding wird nie neu ausgewertet, die Anzeige stand deshalb
+        dauerhaft auf 0."""
+        return self._active_channels
+
+    @pyqtProperty(int, notify=countsChanged)
+    def visibleChannels(self):
+        """Anzahl der nach Filterung sichtbaren Kanäle."""
+        return self._visible_channels
+
+    @pyqtSlot(str)
+    def setFilter(self, text: str) -> None:
+        """Filtert die Kanaltabelle nach Namensbestandteil (aus QML)."""
+        self.table_model.set_filter(text)
+        self._sync_counts()
 
     @pyqtSlot(int, result=float)
     def valueFor(self, channel: int) -> float:
@@ -188,6 +276,16 @@ class TelemetryBridge(QObject):
         # alle im GUI-Thread, der parallel den 100-Hz-Sendetimer bedienen muss).
         self._latest = values.tolist()
         self.valuesChanged.emit()
+        self._sync_counts()
+
+    def _sync_counts(self) -> None:
+        active = self.table_model.active_count
+        visible = self.table_model.visible_count
+        if active == self._active_channels and visible == self._visible_channels:
+            return
+        self._active_channels = active
+        self._visible_channels = visible
+        self.countsChanged.emit()
 
     @pyqtSlot()
     def clear_stats(self) -> None:
@@ -195,3 +293,7 @@ class TelemetryBridge(QObject):
 
     def set_names(self, names: dict[int, str]) -> None:
         self.table_model.set_names(names)
+        self._sync_counts()
+
+    def set_units(self, units: dict[int, str]) -> None:
+        self.table_model.set_units(units)

@@ -1,7 +1,7 @@
 # Implementierung: Kanal-/Param-Namen + Overlay-Mapping (Teensy → GUI)
 
 **Projekt:** Robotic_PDS (RoboCup Junior Soccer 2vs2)
-**Betrifft:** `teensy_firmware/` (Firmware), `rpi_zero_node/spi_receiver.py` (Relay),
+**Betrifft:** `teensy_firmware/` (Firmware), `rpi_zero_node/uart_receiver.py` (Relay),
 `rpi5_monitor/64Bit_Version` (PyQt6: QML-GUI `main_qml.py` sowie die ältere Widgets-GUI `main.py`/`gui/`)
 **Nicht betroffen:** `rpi5_monitor/Old_PySide` (nicht mehr aktiv gepflegt)
 
@@ -38,7 +38,7 @@ Sampling jeden Zyklus) oder weiterhin dynamisch/namenlos wie bisher per
 ### 2.1 Neue Magics/Konstanten
 
 Definiert in `teensy_firmware/src/params.h`, gespiegelt in
-`rpi5_monitor/*/config.py` und `rpi_zero_node/spi_receiver.py`:
+`rpi5_monitor/*/config.py` und `rpi_zero_node/uart_receiver.py`:
 
 ```
 CHANNEL_DESC_MAGIC          = 0xDE5C0001   // Teensy -> GUI, gechunktes JSON
@@ -140,20 +140,23 @@ Beide Listen sind **sparse** — nicht belegte Indizes/Kanäle bekommen GUI-seit
 weiterhin den generischen Fallback (`Var_NNN`) bzw. bleiben in
 `visuals_overlays.json` unangetastet.
 
-### 3.2 `PDS.h` / `PDS.cpp` — neue Bibliotheks-API
+### 3.2 `PDS.h` / `PDS.cpp` — Bibliotheks-API
+
+> **Stand PDS 2.0.** Die hier beschriebene erste Fassung verlangte noch für
+> jeden Kanal eine feste Nummer. Inzwischen vergibt die Bibliothek sie selbst;
+> die vollständige, aktuelle API steht in
+> [`teensy_firmware/README.md`](../teensy_firmware/README.md).
 
 ```cpp
-// Pointer-Bindung, Auto-Sampling: liest *ptr bei jedem update()-Zyklus
-// automatisch aus, kein weiterer Channel()-Aufruf im Sketch nötig.
-void bind(uint8_t chn, float* ptr, const char* name = nullptr);
-void bind(uint8_t chn, bool*  ptr, const char* name = nullptr);
-void bind(uint8_t chn, int*   ptr, const char* name = nullptr);
+// Empfohlen: Name statt Nummer — der Kanal wird beim ersten Aufruf
+// automatisch vergeben und mit dem Namen an die GUI gemeldet.
+uint8_t plot(const char* name, float value);       // pro Schreibvorgang
+template<class T> uint8_t track(const char* name, T* ptr);   // einmal in setup()
 
-// Bestehend, unverändert: dynamischer, namenloser Wert-Write pro Zyklus.
+// Weiterhin verfügbar: feste Kanalnummern.
 void Channel(uint8_t chn, float val);
-
-// Neu: dynamischer Write + einmalige Namensregistrierung.
 void Channel(uint8_t chn, float val, const char* name);
+void bind(uint8_t chn, float*/double*/bool*/int8..uint32*, const char* name = nullptr);
 ```
 
 Beispiel im Sketch:
@@ -163,28 +166,43 @@ float akkuSpannung;
 bool  motorEnable;
 
 void setup() {
-    debugger.init();
-    debugger.bind(10, &akkuSpannung, "Akku_Spannung");   // ab jetzt automatisch gesampelt
-    debugger.bind(20, &motorEnable);                      // Name kommt aus CHANNEL_NAMES[]
+    PDS.begin();                             // `PDS` ist eine fertige globale Instanz
+    PDS.track("Akku_Spannung", &akkuSpannung);   // ab jetzt automatisch gesampelt
+    PDS.track("Motor_frei",    &motorEnable);
 }
 
 void loop() {
-    debugger.update();                     // sampelt gebundene Kanäle automatisch
-    debugger.Channel(5, sin(millis()));     // weiterhin: dynamisch, namenlos wie bisher
+    PDS.plot("Testsinus", sinf(millis() / 1000.0f));   // Kanal wird selbst vergeben
+    PDS.update();                                       // sampelt gebundene Kanäle
 }
 ```
 
 Intern: eine Namens-Registry (`_names[ACTIVE_CHANNELS][CHANNEL_NAME_MAXLEN]`,
-befüllt aus `CHANNEL_NAMES[]` in `init()`, danach von `bind()`/`Channel(...,name)`
-überschreibbar) und eine Bindungs-Tabelle (`_bound[ACTIVE_CHANNELS]`), die vor
-`buildPacket()` in `update()` abgetastet wird. Das JSON wird einmalig in einen
-~12-KB-Puffer gebaut (`buildDescriptorJson()`) und über eine kleine
+vorbelegt aus `CHANNEL_NAMES[]` in `begin()`, danach von
+`plot()`/`track()`/`bind()`/`Channel(...,name)` erweiterbar), ein direkt
+abbildender Cache Name-Pointer → Kanal (macht `plot()` auch in einer heissen
+Schleife O(1)) und eine kompakte Bindungsliste, die vor jedem Sendevorgang
+abgetastet wird. Das JSON wird in einen ~12-KB-Puffer gebaut
+(`buildDescriptorJson()`, auf Teensy 4.x im OCRAM) und über eine kleine
 Zustandsmaschine (`startDescriptorSend()` / `sendNextDescChunk()`) chunkweise
 versendet.
 
+**Wiederholung (neu in 2.0).** Der Deskriptor geht nicht mehr nur einmal beim
+Boot raus:
+
+| Auslöser | Wirkung |
+|---|---|
+| ~250 ms nach `begin()` | erste Meldung (so spät, damit alle `plot()`/`track()`-Namen registriert sind) |
+| Verbindung zur GUI kommt (wieder) zustande | sofortige Wiederholung |
+| keine GUI erreichbar | Wiederholung alle 5 s, Abstand verdoppelt sich bis 60 s |
+| `CHANNEL_DESC_REQUEST_MAGIC` von der GUI | sofortige Wiederholung |
+
+Damit übersteht das Namensverzeichnis einen Neustart des Teensy, des Nodes
+**und** der GUI, ohne dass jemand „Kanalnamen anfordern" drücken muss.
+
 ---
 
-## 4. Pi-Zero-Relay (`rpi_zero_node/spi_receiver.py`)
+## 4. Pi-Zero-Relay (`rpi_zero_node/uart_receiver.py`)
 
 `ChunkFrameAssembler` (analog zu `TelemetryFrameAssembler`, aber variable
 Länge über das `payload_len`-Byte statt fester Paketgröße) läuft unabhängig
@@ -220,23 +238,24 @@ Neues Modul (gleiche Duplikations-Konvention wie `param_io.py`/`config.py`):
 
 | GUI-Bereich | Datei | Mechanismus |
 |---|---|---|
-| Live-Tabelle (Kanalnamen) | `gui/tab_table.py`, `bridge/telemetry_bridge.py` | `TelemetryTableModel.set_names()` — granulares `dataChanged`, kein Neuaufbau |
-| Param-Tab (Namen der Slow-/Fast-Einträge) | `gui/tab_params.py` | Jede Widget-Factory hängt einen `_name_setter`-Callback an ihr Wurzel-Widget; `ParamEditorWidget.apply_names()` ruft ihn gezielt pro Index auf — **Werte/Zustand bleiben unangetastet** |
+| Live-Tabelle (Kanalnamen) | `bridge/telemetry_bridge.py` | `TelemetryTableModel.set_names()` — granulares `dataChanged`, kein Neuaufbau |
+| Param-Tab (Namen der Slow-/Fast-Einträge) | `bridge/param_bridge.py` | Namens-Refresh baut `params.groups` neu auf und gibt die aktuellen Live-Werte mit, damit kein Regler zurückspringt |
 | Param-Tab (QML) | `bridge/param_bridge.py` | Baut `groups` neu auf (QML kennt keine granulare Property-Aktualisierung), gibt dabei aber die **aktuellen Live-Werte** aus `ParamStore` statt der JSON-Defaults mit — sonst würde der Repeater-Neuaufbau jeden verstellten Regler zurücksetzen |
-| Systemansicht (Overlay-Defaults) | `gui/tab_visuals.py`, `bridge/visuals_bridge.py` | `apply_overlay_defaults_from_registry()` — nur leere Gruppen werden befüllt; Widgets-GUI hat zusätzlich einen "⟲ Auf Teensy-Standard zurücksetzen"-Button für die aktuell sichtbare Gruppe |
+| Systemansicht (Overlay-Defaults) | `bridge/visuals_bridge.py` | `apply_overlay_defaults_from_registry()` — wurde die Anordnung im Editor von Hand bearbeitet, fragt die GUI nach, statt zu überschreiben |
 | Systemansicht (Tabellen-Kanalnamen) | `qml/components/MiniTable.qml` | Bekommt `channelNames` (aufgelöst in `visuals_bridge.py` via `VARIABLE_NAMES`) statt clientseitig `"Var_" + index` zu bilden |
 
 `VARIABLE_NAMES` (in `config.py`) wird beim Empfang **in-place mutiert**
 (`.update(...)`, nicht neu zugewiesen), damit bereits importierte Referenzen
 überall im Code automatisch die neuen Namen sehen.
 
-### 5.2 Bewusste Einschränkung: kein Overlay-Editor in QML
+### 5.2 Overlay-Editor
 
-Nur die PyQt6-Widgets-GUI (`gui/tab_visuals.py::OverlayConfigTable`) kann
-Overlays interaktiv bearbeiten und speichern — das war schon vor dieser
-Änderung so (QML zeigt Overlays nur an, siehe `README_QML.md`). Die neue
-Teensy-Namensfunktion ändert daran nichts: QML zeigt die vom Teensy gelieferten
-bzw. lokal editierten Overlays an, die Bearbeitung bleibt Widgets-exklusiv.
+Zum Zeitpunkt dieses Dokuments konnte nur die inzwischen entfernte
+PyQt6-Widgets-GUI Overlays bearbeiten; QML zeigte sie nur an. Das gilt nicht
+mehr: die QML-Oberfläche hat seit Version 2.2 einen eigenen Editor
+(„✎ Bearbeiten" in der Systemansicht, siehe `README_QML.md`). Meldet der
+Teensy eine neue Anordnung, obwohl hier von Hand bearbeitet wurde, fragt die
+GUI nach, statt zu überschreiben.
 
 ---
 
@@ -260,3 +279,104 @@ bzw. lokal editierten Overlays an, die Bearbeitung bleibt Widgets-exklusiv.
   → Vor dem ersten echten Flash: `PDS.cpp`/`channel_config.h` mit dem
   vollständigen Projekt (inkl. `main.cpp`/`enum.h`) auf einem Rechner ohne
   diese Einschränkungen kompilieren.
+
+
+---
+
+# Nachtrag (Wire-Format 2): Der Deskriptor traegt jetzt die ganze Konfiguration
+
+Der Deskriptor war urspruenglich eine reine **Namensliste**. Inzwischen ist er
+die vollstaendige Beschreibung der Oberflaeche — der Teensy ist damit die
+einzige Quelle der Wahrheit, und die GUI braucht keine von Hand gepflegte
+Parallelkonfiguration mehr.
+
+## Was jetzt drinsteht
+
+```jsonc
+{
+  "meta": { "pds": "2.1", "wire": 2, "channels": 200, "used": 37,
+            "build": "Aug 22 2026 10:14:03", "fw": "1.4.2" },
+  "channels":          { "10": "Akku_Spannung", ... },
+  "units":             { "10": "V", "30": "cm", ... },   // NEU
+  "param_slow_floats": { "0": "Kp_Heading", ... },
+  "param_slow_bools":  { ... },
+  "param_fast_floats": { ... },
+  "param_cfg": {                                         // NEU
+    "slow_floats": [ { "i": 0, "n": "Kp_Heading", "w": "slider",
+                       "min": 0, "max": 10, "step": 0.05, "def": 2.5,
+                       "g": "Regler" }, ... ],
+    "slow_bools":  [ { "i": 1, "n": "Not_Aus", "w": "button", "m": true }, ... ],
+    "fast_floats": [ ... ],
+    "joysticks":   [ { "n": "Fahrt", "s": "fast", "x": 0, "y": 1,
+                       "xr": [-100, 100], "yr": [-100, 100], "c": true } ]
+  },
+  "overlays": [ ... ]
+}
+```
+
+Die Kurzschluessel in `param_cfg` sind kein Selbstzweck: der Deskriptor geht
+ueber dieselbe UART wie die Telemetrie, und jedes gesparte Byte ist
+Uebertragungszeit. Die Uebersetzung in das ausgeschriebene
+`param_config.json`-Format macht
+`rpi5_monitor/64Bit_Version/runtime_config.py`.
+
+## Dauerhaft gespeichert, je Node
+
+| Datei | Inhalt |
+|---|---|
+| `runtime_config/nodeN/descriptor.json` | der Roh-Deskriptor, wie er ankam |
+| `runtime_config/nodeN/param_config.json` | daraus gebauter Parameter-Tab |
+| `runtime_config/nodeN/visuals_overlays.json` | Overlays der Systemansicht |
+| `runtime_config/ui_settings.json` | Farbschema, Schriftgroesse, Akku-Warnung (nicht node-spezifisch) |
+
+Nach einem Neustart der GUI steht damit sofort wieder alles da, auch ohne
+eingeschalteten Roboter. Der Ordner ist in `.gitignore` — er ist
+geraetespezifischer Laufzeitzustand, kein Quellcode.
+
+## Wer gewinnt bei einem Konflikt?
+
+Overlays und Parameter lassen sich auch in der GUI bearbeiten. Wuerde jeder
+eintreffende Deskriptor blind ueberschreiben, waere jede Anpassung nach dem
+naechsten Einschalten des Roboters weg. Wuerde er nie ueberschreiben, kaeme
+eine neue Firmware nie in der GUI an.
+
+Deshalb wird zu jeder gespeicherten Datei der **Fingerabdruck** des
+Teensy-Inhalts mitgeschrieben (`_teensy_hash`, SHA-256 ueber das
+schluesselsortierte JSON):
+
+| Fingerabdruck | Verhalten |
+|---|---|
+| unveraendert | lokale Bearbeitung bleibt stehen |
+| geaendert | der Teensy hat eine neue Konfiguration — sie wird uebernommen |
+
+Kurz: **etwas in `channel_config.h` aendern und neu flashen setzt sich durch,
+alles andere nicht.**
+
+## Groesse und Uebertragungsdauer
+
+Der Puffer ist von 12 auf 24 kB gewachsen (auf Teensy 4.x im OCRAM, nicht im
+knappen DTCM). Ein Chunk geht jetzt alle 20 ms statt alle 10 ms raus — bei
+257 B je Chunk sind das 12,9 kB/s, die neben den 80,8 kB/s Telemetrie noch
+auf die 100 kB/s der Leitung passen. Ein voller 24-kB-Deskriptor braucht
+damit knapp 2 s; da er nur beim Boot und auf Anfrage laeuft, ist das der
+richtige Kompromiss.
+
+Zusaetzlich schreibt der Deskriptor (wie Ereignisse und Param-Ack) nur dann,
+wenn im TX-Puffer **zusaetzlich ein komplettes Telemetriepaket** Platz hat.
+Er kann den 100-Hz-Takt also nicht verdraengen, sondern hoechstens selbst
+laenger brauchen.
+
+## Geprueft wird das jetzt automatisch
+
+`python tools/desc_json_check.py` uebersetzt `PDS.cpp` mit einer
+Arduino-Attrappe fuer den PC, **fuehrt sie aus** und prueft den erzeugten
+Deskriptor mit einem echten JSON-Parser — inklusive Anfuehrungszeichen,
+Backslash, Umlauten und Steuerzeichen in Namen, Ueberlaufverhalten und der
+automatischen Wiederholung. Ein Uebersetzungslauf allein findet diese
+Fehlerklasse nicht; genau daran ist der Deskriptor hier schon einmal
+gescheitert.
+
+> Der Hinweis oben, die Firmware lasse sich auf dieser Maschine nicht bauen,
+> ist ueberholt: `teensy_firmware/src/main.cpp` existiert, `enum.h` ist
+> optional, und `tools/build_teensy_check.sh` uebersetzt die Bibliothek in
+> vier Konfigurationen.

@@ -6,14 +6,30 @@ import App
 // Schalter aus und war visuell kaum von einem Button zu unterscheiden.
 // Design 1:1 nach dem alten _SWITCH_STYLE aus Old_PySide/gui/tab_params.py:
 // graue Pille im Ruhezustand, grün gefüllt + dunkelgrüner Text wenn an.
+// ── WARUM DER SCHALTER SICH NICHT SELBST UMLEGT ────────────────────────────
+// Fruehere Fassung: `onTapped: { root.checked = !root.checked; root.toggled() }`.
+// Diese Zuweisung ZERSTOERT in QML die Bindung an `checked` — ab dem ersten
+// Antippen folgt der Schalter seiner Quelle nicht mehr. Solange es nur einen
+// Weg zu einem Wert gab, fiel das nicht auf. Sobald derselbe Wert auch
+// anderswo geaendert werden kann (Strg+D fuer das Farbschema, ein Reset der
+// Parameter, eine Rueckmeldung des Teensy), bleibt der Schalter stehen und
+// zeigt etwas anderes an als der Zustand tatsaechlich ist.
+//
+// Jetzt meldet der Schalter nur den GEWUENSCHTEN Wert und zeigt weiterhin
+// stur seine Bindung an. Wer eine Python-Property bindet, bekommt die
+// Aktualisierung ueber deren Signal zurueck; wer den Zustand in QML haelt,
+// weist `checked` im Handler selbst zu (siehe Bool-Parameter in ParamsView).
 Item {
     id: root
     property string text: ""
     property bool checked: false
-    signal toggled()
+
+    /// value = der gewuenschte neue Zustand (also !checked).
+    signal toggled(bool value)
 
     implicitWidth: Math.max(140, nameLbl.implicitWidth + 32)
-    implicitHeight: 56
+    implicitHeight: Math.round(56 * Theme.fontScale)
+    opacity: enabled ? 1.0 : 0.45
 
     readonly property color _onBg:   "#2ecc71"
     readonly property color _onTxt:  "#10331d"
@@ -52,6 +68,6 @@ Item {
 
     TapHandler {
         id: tap
-        onTapped: { root.checked = !root.checked; root.toggled() }
+        onTapped: root.toggled(!root.checked)
     }
 }

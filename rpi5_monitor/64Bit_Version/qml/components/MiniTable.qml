@@ -54,7 +54,12 @@ Item {
                 model: root.channels
                 delegate: Rectangle {
                     id: cell
+                    // `index` MUSS mit deklariert werden: sobald ein Delegate
+                    // eine required property (modelData) benutzt, injiziert
+                    // Qt 6 die Kontext-Properties nicht mehr zuverlaessig —
+                    // `index` war hier je nach Qt-Version undefined.
                     required property int modelData
+                    required property int index
                     width: root._cellW
                     height: root._cellH
                     radius: Theme.radiusS
@@ -62,11 +67,10 @@ Item {
                     border.color: Theme.border
                     border.width: 1
 
-                    readonly property bool _has: modelData < root.values.length
+                    readonly property bool _has: modelData >= 0 && modelData < root.values.length
                     readonly property real _val: _has ? root.values[modelData] : 0
-                    readonly property int _nameIdx: index
-                    readonly property string _name: (_nameIdx < root.channelNames.length)
-                                                     ? root.channelNames[_nameIdx]
+                    readonly property string _name: (cell.index < root.channelNames.length)
+                                                     ? root.channelNames[cell.index]
                                                      : ("Var_" + String(cell.modelData).padStart(3, "0"))
 
                     Column {

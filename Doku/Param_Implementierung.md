@@ -25,7 +25,7 @@
 ┌───────────────────────────┐  UDP unicast, 2 Hz (Slow)   ┌──────────────────────┐  UART_DBG RX  ┌─────────────────────┐
 │  RPi 5 — GUI (PyQt6)       │ ───────────────────────────▶│  RPi Zero 2 W (Node)  │──────────────▶│  Teensy 4.0          │
 │  tab_params.py             │  Port 7001 / 7002            │  uart_receiver.py     │  1 MBaud       │  PowerDebugger        │
-│  ParamStore (slow + fast)  │                              │  (aus spi_receiver.py)│               │  (PDS.h / PDS.cpp)    │
+│  ParamStore (slow + fast)  │                              │  (aus uart_receiver.py)│               │  (PDS.h / PDS.cpp)    │
 │                             │  UDP unicast, 100 Hz (Fast) │                       │               │                       │
 │                             │ ───────────────────────────▶│  + 2 UDP-Listener-    │──────────────▶│  g_paramFloats[50]    │
 │                             │  Port 7011 / 7012            │    Threads → UART_DBG │               │  g_paramBools[50]     │
@@ -258,9 +258,9 @@ bool PowerDebugger::fastParamsAreFresh() const {
 
 ---
 
-## 5. Phase 2 — RPi Zero 2 W: `spi_receiver.py` (installiert als `uart_receiver.py`)
+## 5. Phase 2 — RPi Zero 2 W: `uart_receiver.py`
 
-Das Umbenennungs-Problem aus Plan v1 ist bei euch bereits gelöst — `setup_node.sh` kopiert `spi_receiver.py` beim Setup automatisch nach `uart_receiver.py`. Die neuen Threads werden direkt in `spi_receiver.py` ergänzt.
+Die Datei hiess frueher `spi_receiver.py` (Altlast aus der SPI-Zeit) und wurde von `setup_node.sh` beim Setup nach `uart_receiver.py` umbenannt. Seit dem Aufraeumen heisst sie im Repository genauso wie auf dem Node.
 
 ### 5.1 Konstanten
 
@@ -1214,7 +1214,7 @@ Erweitert gegenüber Plan v1 um den Fast-Kanal:
 ## 12. Reihenfolge der Umsetzung (aktualisiert, Phase 0 aus v1 entfällt)
 
 1. **Phase 1** — `params.h`: neue Konstanten. `PDS.h`/`PDS.cpp`: `pollParamUart()`, Getter, Watchdogs
-2. **Phase 2** — `spi_receiver.py`: zwei Downlink-Threads + Schreib-Lock, `args=(stop_event,)`-Fix
+2. **Phase 2** — `uart_receiver.py`: zwei Downlink-Threads + Schreib-Lock, `args=(stop_event,)`-Fix
 3. **Phase 3** — `config.py`: neue Konstanten (Ports, Paketgrößen, Dateipfade)
 4. **Phase 4** — `param_config.json` anlegen, `param_io.py`: `load_param_config()` + Dataclasses
 5. **Phase 5** — `param_io.py`: `write_param_defaults_h()` / `read_param_defaults_h()`
@@ -1230,3 +1230,64 @@ Erweitert gegenüber Plan v1 um den Fast-Kanal:
 2. **Momentary-Button-Semantik:** Ich gehe davon aus, dass "Button" in der GUI bedeutet: Bool ist `true`, solange die Maustaste gedrückt gehalten wird, und `false` sobald losgelassen (klassisches "Kick-Trigger"-Verhalten). Falls stattdessen ein einmaliger Klick reichen soll, der bis zum nächsten Klick "hält", wäre das eher `"widget": "toggle"` — beide Varianten sind im Schema bereits vorgesehen.
 3. **Ort von `param_defaults.h`:** Ich platziere sie GUI-seitig unter `rpi5_monitor/param_defaults.h`, nicht im Firmware-Ordner — Begründung in Abschnitt 8.1. Sag Bescheid, falls ihr sie stattdessen (auch) direkt im PlatformIO-`include/`-Pfad haben wollt, damit sie ohne manuelles Kopieren von der Firmware inkludierbar ist.
 4. **`enum.h`:** laut dir aktuell ohne relevanten Inhalt — falls sich das ändert (z. B. benannte Kanal-Indizes für die Telemetrie), lohnt es sich, `param_config.json`-Namen später an dasselbe Schema anzulehnen, damit ihr nicht zwei Namenskonventionen parallel pflegt.
+
+
+---
+
+# Nachtrag (Wire-Format 2): Rueckkanal, Tastatur, Abweichungen, Rueckgaengig
+
+## 1. Der Downlink ist nicht mehr blind
+
+Der Param-Downlink war fire-and-forget: die GUI hat gesendet und **nie
+erfahren, ob es angekommen ist**. Auf einer schlechten Funkstrecke oder nach
+einem Teensy-Neustart hat man an einem Regler gedreht, und nichts ist
+passiert — ohne jeden Hinweis.
+
+Der Teensy schickt jetzt 2x/s zurueck, was er tatsaechlich haelt:
+
+```
+0xACC0FEED  290 B
+  [0..3]   magic
+  [4..7]   letzte Slow-Sequenznummer
+  [8..11]  letzte Fast-Sequenznummer
+  [12..15] Alter des letzten Slow-Pakets in ms (0xFFFFFFFF = nie)
+  [16..19] Alter des letzten Fast-Pakets in ms
+  [20..]   50 Floats + 50 Bools + 5 Fast-Floats
+```
+
+Die GUI vergleicht das mit ihrem Soll-Stand und zeigt im Parameter-Tab
+"Teensy bestaetigt alle Parameter" bzw. "N Parameter weichen ab" mit einer
+Gegenueberstellung. Abschaltbar mit `PDS.enableParamAck(false)`, wenn jedes
+Byte Uplink zaehlt.
+
+## 2. Die Konfiguration kommt vom Teensy
+
+`param_config.json` musste bisher parallel zu `channel_config.h` von Hand
+gepflegt werden — zwei Dateien, zwei Rechner, dieselbe Information. Jetzt
+beschreibt `channel_config.h` die Parameter vollstaendig (`ParamDef`: Name,
+Bedienelement, Bereich, Schrittweite, Gruppe, Joystick-Zuordnung), der
+Deskriptor traegt das mit, und die GUI baut `param_config.json` daraus und
+speichert es dauerhaft. Details in
+[`Kanalnamen_Implementierung.md`](Kanalnamen_Implementierung.md).
+
+Die Datei im Repository bleibt die Vorlage fuer ein frisches Projekt.
+
+## 3. Bedienung
+
+| Neu | Wo |
+|---|---|
+| **Suchfeld** ueber alle Gruppen hinweg | Kopfzeile des Parameter-Tabs. Jeder Eintrag traegt sein `kind` ("fast"/"slow"/"bool") mit sich, damit die gruppenuebergreifende Trefferliste weiss, in welchen Kanal ein Wert gehoert. |
+| **Abweichungen (N)** | zeigt, was vom gespeicherten Default abweicht, mit "alle zuruecksetzen" |
+| **Rueckgaengig** (auch Strg+Z) | Aenderungen am selben Regler innerhalb von 1,5 s werden zu EINEM Schritt zusammengefasst — ein einziges Ziehen an einem Schieberegler erzeugt sonst dutzende Undo-Schritte. Joystick-/Fast-Werte werden bewusst nicht aufgezeichnet (bis zu 100 Aenderungen/s waeren nur Rauschen). |
+| **Tastatursteuerung** | WASD fahren, Q/E drehen, Shift schneller, R/F Dribbler, Leertaste Not-Aus. Ein angeschlossener Controller hat weiterhin Vorrang. |
+| **Not-Aus-Knopf** | Kopfzeile, setzt alle Fast-Werte sofort auf 0 |
+
+Die Tastenzustaende werden in QML als **Bitfeld** gehalten, nicht als
+einzelne Booleans: Qt liefert bei gehaltener Taste automatische
+Wiederholungen, und beim Loslassen zweier Tasten kaeme sonst die falsche
+Reihenfolge heraus.
+
+## 4. Wo der Takt jetzt laeuft
+
+Das Packen und Senden beider Kanaele passiert nicht mehr im GUI-Thread —
+siehe [`Latenz_Fernsteuerung.md`](Latenz_Fernsteuerung.md), Nachtrag 2.

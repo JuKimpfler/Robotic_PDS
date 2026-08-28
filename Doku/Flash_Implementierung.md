@@ -2,7 +2,7 @@
 
 **Projekt:** Robotic PDS (Power Debug System)
 **Feature:** Windows-PC → Bluetooth → RPi Zero 2 W → USB → Teensy 4.0 (`teensy_loader_cli`)
-**Stand der Analyse:** basierend auf `Robotic_PDS-julius` (README.md, `setup_node.sh`, `spi_receiver.py`, `status_leds.py`, `teensy_firmware/platformio.ini`)
+**Stand der Analyse:** basierend auf `Robotic_PDS-julius` (README.md, `setup_node.sh`, `uart_receiver.py`, `status_leds.py`, `teensy_firmware/platformio.ini`)
 
 ---
 
@@ -28,8 +28,8 @@ Kernentscheidungen vorab:
 - `setup_node.sh` installiert bereits `teensy-loader-cli` per `apt` (Zeile ~129) — das Tool ist also auf dem Node schon vorhanden, wird aber aktuell nirgends aufgerufen.
 - Das UART-Overlay (`dtoverlay=disable-bt`, `enable_uart=1`, `dtoverlay=uart0`) reserviert die PL011-UART für die Teensy-Telemetrie und **deaktiviert dabei den onboard Bluetooth-Chip vollständig** (`systemctl disable hciuart.service bluetooth.service`). Das muss für dieses Feature rückgängig gemacht bzw. umgebaut werden.
 - Die Firmware (`platformio.ini`) wird mit `-DUSB_SERIAL` gebaut → der Teensy hängt am USB als CDC-Serial-Gerät. Das ist Voraussetzung dafür, dass `teensy_loader_cli` das Board **automatisch** (ohne Tastendruck) in den HalfKay-Bootloader zwingen kann.
-- `spi_receiver.py` läuft als systemd-Dienst `uart-receiver` und liest die UART-Telemetrie in einer Single-Thread-Event-Loop. Ein Flash-Vorgang unterbricht diesen Datenstrom kurz (Teensy-Reset) — das ist unkritisch, sofern der Empfänger Verbindungsabbrüche toleriert (in Phase 1 zu verifizieren, siehe Abschnitt 9).
-- `status_leds.py` hat aktuell die GPIO-Ansteuerung auskommentiert (kein Hardware-Zugriff aktiv) — LED-Feedback für den Flash-Vorgang ist optional und ohne Risiko nachrüstbar.
+- `uart_receiver.py` läuft als systemd-Dienst `uart-receiver` und liest die UART-Telemetrie in einer Single-Thread-Event-Loop. Ein Flash-Vorgang unterbricht diesen Datenstrom kurz (Teensy-Reset) — das ist unkritisch, sofern der Empfänger Verbindungsabbrüche toleriert (in Phase 1 zu verifizieren, siehe Abschnitt 9).
+- `status_leds.py` steuert die LEDs inzwischen wieder aktiv an (gpiozero, optional) und wird von `uart_receiver.py` mitbedient — LED-Feedback für den Flash-Vorgang ist damit ohne Risiko nachrüstbar.
 ---
 
 ## 2. Architekturübersicht
@@ -70,7 +70,7 @@ Die bestehende UDP-Telemetrie/Parameter-Architektur (siehe README) bleibt komple
 Der Pi Zero 2 W hat **eine** vollwertige PL011-UART und eine schwächere Mini-UART. Standardmäßig hängt der onboard-BT-Chip an der PL011, GPIO14/15 an der Mini-UART. `setup_node.sh` dreht das aktuell um (`dtoverlay=disable-bt`) und schaltet BT dabei komplett ab, damit der Teensy die schnelle PL011 (bis 4 Mbps) über GPIO14/15 bekommt.
 
 **Lösung:** Overlay auf `dtoverlay=miniuart-bt` ändern. Damit:
-- bleibt GPIO14/15 weiterhin an der PL011 (volle Baudrate für den Teensy, keine Änderung an `spi_receiver.py` nötig),
+- bleibt GPIO14/15 weiterhin an der PL011 (volle Baudrate für den Teensy, keine Änderung an `uart_receiver.py` nötig),
 - bekommt der Bluetooth-Chip die Mini-UART zugewiesen (getaktet über `core_freq`, ausreichend für HCI/RFCOMM-Kommunikation — Datei-Uploads sind kein Echtzeit-Feature, ein paar zehn KB/s reichen locker),
 - `hciuart.service`/`bluetooth.service` bleiben **aktiviert** statt deaktiviert.
 
@@ -185,7 +185,7 @@ Aufgaben:
 ### 5.3 Koexistenz mit `uart-receiver.service`
 
 - Kein direkter Ressourcenkonflikt: `uart-receiver` nutzt `/dev/ttyAMA0` (PL011/UART), `bt-flash-receiver` nutzt Bluetooth + USB — komplett getrennte Schnittstellen.
-- Während des Flashens resettet sich der Teensy kurz; `uart-receiver` verliert kurzzeitig das Telemetrie-Signal. Zu prüfen (Phase 1 Test): verhält sich `spi_receiver.py`s Event-Loop dabei robust (kein Crash, automatische Resynchronisation sobald der Teensy nach dem Flash wieder sendet)? Nach aktueller Kenntnis der Datei ist das wahrscheinlich unkritisch (reine Leseseite, kein Zustand, der durch eine Pause zerstört wird), sollte aber im Test verifiziert werden.
+- Während des Flashens resettet sich der Teensy kurz; `uart-receiver` verliert kurzzeitig das Telemetrie-Signal. Zu prüfen (Phase 1 Test): verhält sich `uart_receiver.py`s Event-Loop dabei robust (kein Crash, automatische Resynchronisation sobald der Teensy nach dem Flash wieder sendet)? Nach aktueller Kenntnis der Datei ist das wahrscheinlich unkritisch (reine Leseseite, kein Zustand, der durch eine Pause zerstört wird), sollte aber im Test verifiziert werden.
 - Optional (spätere Ausbaustufe): `bt_flash_receiver.py` sendet ein Event an `status_leds.py` (z. B. über eine kleine Unix-Domain-Socket-IPC oder eine gemeinsame Datei/State), um während des Flash-Vorgangs ein eigenes LED-Muster zu zeigen (z. B. Blau+Gelb abwechselnd). Da die GPIO-Ansteuerung aktuell auskommentiert ist, hat das keine Priorität für die erste Version.
 
 ### 5.4 SDP-Registrierung des SPP-Dienstes (Pi)
@@ -214,7 +214,7 @@ Konkrete Anpassungen (in der bestehenden Struktur des Skripts):
    - `bluetoothctl power on`, `pairable on`, `discoverable on`.
    - Agenten-Konfiguration für festen PIN (Doku: PIN im Setup-Output ausgeben, damit Anwender ihn beim Pairing eingeben kann).
    - Auth-Token generieren/ablegen unter `/opt/power_debug_node/bt_flash_secret` (falls nicht vorhanden, zufällig erzeugen und am Ende des Setups anzeigen, damit der Anwender ihn in `bt_targets.json` auf dem PC einträgt).
-4. **Schritt 4 (Projektdateien installieren):** `bt_flash_receiver.py` zusätzlich nach `$INSTALL_DIR/rpi_zero_node/` kopieren (analog zu `spi_receiver.py`/`status_leds.py`).
+4. **Schritt 4 (Projektdateien installieren):** `bt_flash_receiver.py` zusätzlich nach `$INSTALL_DIR/rpi_zero_node/` kopieren (analog zu `uart_receiver.py`/`status_leds.py`).
 5. **Neuer Schritt „Systemdienst: bt-flash-receiver":** analog zum bestehenden `uart-receiver.service`-Block ein zweites Unit-File erzeugen, inkl. `ExecStartPre` für die SDP-Registrierung (siehe 5.4) und `Environment="NODE_ID=..."`.
 6. **Schritt „Dienst aktivieren":** `systemctl enable bt-flash-receiver.service` ergänzen.
 7. **Verifizierungs-/Abschluss-Ausgabe:** Bluetooth-Status (`bluetoothctl show`), MAC-Adresse des Node (`hciconfig hci0` bzw. `bluetoothctl show | grep Controller`) und den generierten Auth-Token/PIN am Ende ausgeben, damit der Anwender diese Werte direkt für die PC-Konfiguration übernehmen kann.
@@ -275,6 +275,11 @@ Konkrete Anpassungen (in der bestehenden Struktur des Skripts):
 
 ## 11. Offene Punkte, die vor der Umsetzung zu klären sind
 
+> Stand nach der Umsetzung: Punkt 2 wurde mit Tkinter entschieden
+> (`pc_flash_tool/bt_flash_sender_gui.py`, siehe `pc_flash_tool/README.md`),
+> Punkt 4 mit „eigenständiges Tool" (kein Tab im `rpi5_monitor`). Die übrigen
+> Punkte sind unten weiterhin als ursprüngliche Planungsfragen dokumentiert.
+
 1. Soll die Bluetooth-Verbindung dauerhaft aktiv/discoverable bleiben oder nur bei Bedarf (z. B. per Taster/Skript) aktiviert werden? (Wirkt sich auf Stromverbrauch und Sicherheitsprofil aus.)
 2. Reicht ein CLI-Tool auf dem PC, oder wird von Anfang an eine grafische Oberfläche gewünscht (Tkinter reicht aus, PyQt6 wäre Konsistenz zu `rpi5_monitor`, aber mehr Aufwand)?
 3. Sollen beide Nodes wirklich **sequenziell** geflasht werden, oder ist paralleles Flashen (zwei gleichzeitige RFCOMM-Verbindungen, zwei Threads im PC-Tool) gewünscht, trotz höherer Komplexität?
@@ -283,4 +288,27 @@ Konkrete Anpassungen (in der bestehenden Struktur des Skripts):
 
 ---
 
-*Dieser Plan wurde auf Basis der hochgeladenen Projektdateien (`Robotic_PDS-julius`) erstellt und verweist auf konkrete, bestehende Skripte (`setup_node.sh`, `spi_receiver.py`, `status_leds.py`, `platformio.ini`). Er beschreibt die Architektur, Protokolle und Umsetzungsschritte; die eigentliche Implementierung (Code) ist der nächste Schritt und kann auf Wunsch direkt begonnen werden.*
+*Dieser Plan wurde auf Basis der hochgeladenen Projektdateien (`Robotic_PDS-julius`) erstellt und verweist auf konkrete, bestehende Skripte (`setup_node.sh`, `uart_receiver.py`, `status_leds.py`, `platformio.ini`). Er beschreibt die Architektur, Protokolle und Umsetzungsschritte; die eigentliche Implementierung (Code) ist der nächste Schritt und kann auf Wunsch direkt begonnen werden.*
+
+---
+
+## Nachtrag: Reihenfolge beim Flashen (Stand nach dem Robustheits-Durchgang)
+
+Der Node versetzt den Teensy **erst dann** in den HalfKay-Bootloader, wenn die
+`.hex`-Datei vollständig übertragen und ihr SHA-256 verifiziert ist. Bei
+`FLASH_START` wird nur noch geprüft, ob überhaupt ein Teensy am USB hängt
+(`check_teensy_connected()`).
+
+Vorher passierte der Sprung in den Bootloader schon bei `FLASH_START`, also
+*vor* der Übertragung. Brach diese danach ab — Funkloch, falscher Hash, das
+Fenster auf dem PC geschlossen — blieb der Roboter ohne laufende Firmware
+stehen und musste von Hand wieder in Gang gebracht werden. Das Zeitfenster
+ohne Firmware ist jetzt nur noch so lang wie der eigentliche Flash-Vorgang.
+
+Zusätzlich abgesichert:
+
+| Prüfung | Wirkung |
+|---|---|
+| `MAX_HEX_BYTES` (16 MB) | ein fehlerhafter Sender kann den Speicher des Nodes nicht vollschreiben |
+| Metadaten von `FLASH_START` | fehlende/unbrauchbare Felder werden mit einer klaren Meldung abgelehnt statt in einem `KeyError` zu enden |
+| mehr Daten als angekündigt | Übertragung wird abgebrochen |

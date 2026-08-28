@@ -3,23 +3,46 @@ config.py — Zentrale Konfiguration des Power Debug Monitors
 =============================================================
 Alle IPs, Ports, Paket-Parameter und GUI-Konstanten
 an einem einzigen Ort.
+
+────────────────────────────────────────────────────────────────────────────
+WAS STEHT HIER — UND WAS IN settings.json?
+────────────────────────────────────────────────────────────────────────────
+Hier steht, was zur FIRMWARE passen muss: Ports, Magic-Zahlen, Paketgroessen,
+Anzahl der Parameter. Das ist kein Geschmack — eine abweichende Zahl macht
+die GUI wortlos taub, deshalb hat sie in einer von Hand editierbaren Datei
+nichts verloren (tools/check_wire_format.py prueft sie gegen die Firmware).
+
+Alles, was man einstellen KANN, steht in settings.json neben main_qml.py
+(siehe app_settings.py): Farben, Schriftgroessen, die Grenzen aller
+Schieberegler, Akku-Warnung, Controller-Belegung, Node-Adressen.
+Die Konstanten weiter unten, die von dort kommen, sind entsprechend
+markiert — sie werden beim START gelesen, eine Aenderung wirkt also erst
+beim naechsten Start.
 """
 
 import platform
 
+import app_settings
+
+# Muss mit teensy_firmware/src/params.h (PDS_WIRE_VERSION) uebereinstimmen.
+# tools/check_wire_format.py prueft das.
+PDS_WIRE_VERSION = 2
+
 # ── Automatische OS-Erkennung für Testbetrieb ──────────────────────────────────
 IS_WINDOWS = platform.system() == "Windows"
 
-if IS_WINDOWS:
-    # Lokaler Testmodus auf dem PC
+# Adressen: settings.json -> "network" (siehe app_settings.DEFAULTS).
+if IS_WINDOWS and app_settings.get("network.loopbackOnWindows", True):
+    # Lokaler Testmodus auf dem PC — alles auf die Loopback-Adresse, damit
+    # `--simulate` ohne Umkonfigurieren laeuft.
     RPI5_IP  = "127.0.0.1"
     NODE1_IP = "127.0.0.1"
     NODE2_IP = "127.0.0.1"
 else:
     # Realer Betrieb auf dem Raspberry Pi 5
-    RPI5_IP  = "127.0.0.1" # oder "192.168.42.1"
-    NODE1_IP = "192.168.42.11"
-    NODE2_IP = "192.168.42.12"
+    RPI5_IP  = app_settings.get("network.rpi5Ip",  "127.0.0.1")
+    NODE1_IP = app_settings.get("network.node1Ip", "192.168.42.11")
+    NODE2_IP = app_settings.get("network.node2Ip", "192.168.42.12")
 
 # Die Ports können gleich bleiben
 UDP_PORT_NODE1      = 5001
@@ -62,10 +85,42 @@ PARAM_FAST_SEND_INTERVAL_MS = int(1000 / PARAM_FAST_SEND_HZ)   # 10
 # unabhängig davon mit PARAM_FAST_SEND_HZ gesendet — die Anzeige muss dem
 # aber nicht mit 100 Hz folgen (das Display schafft max. 60 fps und jedes
 # Signal kostet GUI-Thread-Zeit, die dem Sendetimer fehlt).
-CONTROLLER_UI_NOTIFY_MS = 40    # 25 Hz
+# settings.json -> "controller.uiNotifyMs".
+CONTROLLER_UI_NOTIFY_MS = int(app_settings.get("controller.uiNotifyMs", 40))    # 25 Hz
+
+# ── Discovery/Keepalive (GUI -> Node, 1 Hz an BEIDE Nodes) ────────────────────
+#  Der Node schickt seine Telemetrie per Unicast an die Adresse, von der er
+#  zuletzt ein Paket der GUI bekommen hat — sonst per Broadcast. Broadcast
+#  kostet im WLAN ein Vielfaches an Funkzeit (niedrigste Basisrate, keine
+#  Aggregation, keine ACKs) und war die Hauptursache der trägen Fernsteuerung
+#  (siehe Doku/Latenz_Fernsteuerung.md).
+#
+#  Param-Pakete gehen aber immer nur an den AKTIVEN Node — der inaktive hat
+#  deshalb nie eine Adresse gelernt und dauerhaft mit 80 kB/s gebroadcastet,
+#  was den Funkkanal auch für den aktiven Node belastet hat.
+#
+#  Dieses 4-Byte-Paket schließt die Lücke: es geht an BEIDE Nodes, der Node
+#  wertet ausschließlich die Absenderadresse aus und leitet es NICHT an den
+#  Teensy weiter. Damit kann es auch nie versehentlich Parameter in den
+#  falschen Roboter schreiben.
+#  Muss mit rpi_zero_node/uart_receiver.py übereinstimmen.
+#  Seit Wire-Format 2 traegt das Paket zusaetzlich eine laufende Nummer und
+#  den Sendezeitpunkt. Der Node schickt beides unveraendert zurueck
+#  (DISCOVERY_ECHO_MAGIC) — daraus misst die GUI die echte Round-Trip-Zeit
+#  zum Node, ohne dafuer ein eigenes Ping-Protokoll zu brauchen.
+DISCOVERY_MAGIC             = 0xD15C_0BE5
+DISCOVERY_PACKET_BYTES      = 12    # magic(4) + seq(4) + t_send_ms(4)
+DISCOVERY_STRUCT            = "<III"
+UDP_DISCOVERY_PORT_NODE1    = 7031
+UDP_DISCOVERY_PORT_NODE2    = 7032
+DISCOVERY_SEND_INTERVAL_MS  = 1000
+
+DISCOVERY_ECHO_MAGIC        = 0xD15C_EC40
+DISCOVERY_ECHO_PACKET_BYTES = 16    # magic(4) + node_id(4) + seq(4) + t_send_ms(4)
+DISCOVERY_ECHO_STRUCT       = "<IIII"
 
 # ── Namens-/Overlay-Deskriptor (Teensy -> GUI, einmalig beim Boot + auf Anfrage) ─
-# Muss exakt mit params.h (Teensy) und rpi_zero_node/spi_receiver.py übereinstimmen!
+# Muss exakt mit params.h (Teensy) und rpi_zero_node/uart_receiver.py übereinstimmen!
 CHANNEL_DESC_MAGIC          = 0xDE5C0001
 CHANNEL_DESC_HEADER_BYTES   = 7    # magic(4) + chunk_idx(1) + chunk_count(1) + payload_len(1)
 
@@ -77,37 +132,111 @@ UDP_CHANNEL_DESC_PORT_NODE2         = 5012
 UDP_CHANNEL_DESC_REQUEST_PORT_NODE1 = 7021
 UDP_CHANNEL_DESC_REQUEST_PORT_NODE2 = 7022
 
+# ── Aux-Uplink (Node -> GUI): Ereignisse, Param-Ack, Node-Status ──────────────
+#  EIN Port fuer alle kleinen Uplink-Pakete; die GUI trennt sie am Magic
+#  (siehe network_worker.py::aux_receiver_process). Ein eigener Port je Typ
+#  waere ein weiterer Empfaengerprozess ohne jeden Gegenwert.
+#  Muss mit rpi_zero_node/uart_receiver.py und teensy_firmware/src/params.h
+#  uebereinstimmen.
+UDP_AUX_PORT_NODE1 = 5021
+UDP_AUX_PORT_NODE2 = 5022
+
+# Ereignisse und Logzeilen vom Teensy (PDS.event / PDS.log)
+PDS_EVENT_MAGIC        = 0xE7E5_C0DE
+PDS_EVENT_HEADER_BYTES = 16    # magic(4) micros(4) value(4) kind level len rsv
+PDS_EVENT_TEXT_MAX     = 48
+PDS_EVENT_KIND_EVENT   = 0
+PDS_EVENT_KIND_LOG     = 1
+PDS_EVENT_LEVEL_NAMES  = {0: "Info", 1: "Warnung", 2: "Fehler"}
+
+# Parameter-Rueckmeldung vom Teensy (2 Hz): was haelt er tatsaechlich?
+PARAM_ACK_MAGIC        = 0xACC0_FEED
+PARAM_ACK_HEADER_BYTES = 20
+PARAM_ACK_PACKET_BYTES = (PARAM_ACK_HEADER_BYTES + PARAM_SLOW_FLOAT_COUNT * 4
+                          + PARAM_SLOW_BOOL_COUNT + PARAM_FAST_FLOAT_COUNT * 4)   # 290
+
+# Systemzustand des Pi-Zero-Nodes selbst (1 Hz)
+NODE_STATUS_MAGIC        = 0x0DE5_7A75
+NODE_STATUS_STRUCT       = "<IBBHffffIIII"
+NODE_STATUS_PACKET_BYTES = 40
+NODE_STATUS_FLAG_TEENSY  = 0x01
+NODE_STATUS_FLAG_WIFI    = 0x02
+NODE_STATUS_FLAG_UNICAST = 0x04
+
+# Wie viele Ereignisse/Logzeilen das Logbuch der GUI vorhaelt.
+# settings.json -> "diagnostics.eventLogMax".
+EVENT_LOG_MAXLEN = int(app_settings.get("diagnostics.eventLogMax", 500))
+
 # ── Param-Downlink: Konfigurations- & Persistenzdateien ────────────────────────
 from pathlib import Path as _Path
 PARAM_CONFIG_PATH      = _Path(__file__).parent / "param_config.json"
 PARAM_DEFAULTS_H_PATH  = _Path(__file__).parent / "param_defaults.h"
 CONTROLLER_CONFIG_PATH = _Path(__file__).parent / "controller_config.json"
 
+# ── Vom Teensy uebernommene Konfiguration (reboot-fest) ───────────────────────
+#  Der Teensy ist die Quelle der Wahrheit fuer Kanalnamen, Parameter-Widgets
+#  und Overlays. Was im Deskriptor ankommt, wird HIER dauerhaft abgelegt —
+#  je Node getrennt, weil die beiden Roboter unterschiedliche Firmware haben
+#  koennen. Nach einem Neustart des Pi steht damit sofort wieder alles da,
+#  auch ohne eingeschalteten Roboter.
+#
+#  Die Dateien im Repository (param_config.json, visuals_overlays.json)
+#  bleiben die Vorlage/der Rueckfall und werden NIE ueberschrieben — so
+#  nimmt ein `git pull` einem nichts weg, und ein Zuruecksetzen ist ein
+#  simples Loeschen des runtime_config-Ordners.
+RUNTIME_CONFIG_DIR = _Path(__file__).parent / "runtime_config"
+
+
+def runtime_config_path(node_id: int, name: str) -> "_Path":
+    """Pfad einer node-spezifischen, dauerhaft gespeicherten Konfigurationsdatei."""
+    return RUNTIME_CONFIG_DIR / f"node{int(node_id)}" / name
+
+
+# Oberflaechen-Einstellungen (Theme, Schriftgroesse, Akku-Warnung, ...).
+# Nicht node-spezifisch — das ist die Einstellung des Bedieners, nicht des
+# Roboters. Seit der Umstellung auf settings.json steht das alles in
+# app_settings.SETTINGS_PATH; dieser Pfad ist nur noch die alte Fassung, aus
+# der beim ersten Start einmalig uebernommen wird (app_settings._take_over_legacy).
+UI_SETTINGS_PATH = RUNTIME_CONFIG_DIR / "ui_settings.json"
+
+# Startwerte der Akku-Warnung (C3). Kanal -1 = aus; ueber den Tab
+# "Diagnose" zur Laufzeit einstellbar.
+#
+# Bewusst die STANDARDWERTE und nicht der gespeicherte Stand aus
+# settings.json: die gespeicherten Werte kommen ueber
+# SettingsBridge.battery() -> DiagBridge.load_battery_config() herein. Stuende
+# hier schon der gespeicherte Stand, gaebe es zwei Wege fuer dieselbe
+# Information — und der Name waere gelogen.
+BATTERY_ALARM_DEFAULTS = dict(app_settings.DEFAULTS["battery"])
+
 # ── Paket-Format ──────────────────────────────────────────────────────────────
 # MAX_FLOATS ist Wire-Format und muss mit teensy_firmware/src/PDS.cpp
-# (MAX_FLOATS) und rpi_zero_node/spi_receiver.py (MAX_FLOATS) übereinstimmen.
+# (MAX_FLOATS) und rpi_zero_node/uart_receiver.py (MAX_FLOATS) übereinstimmen.
 PACKET_HEADER_MAGIC = 0xDEADBEEF    # Muss mit Teensy übereinstimmen
 HEADER_SIZE         = 8              # uint32 magic + uint32 timestamp
 MAX_FLOATS          = 200           # Maximale Anzahl float32 pro Paket
 PACKET_SIZE_BYTES   = HEADER_SIZE + MAX_FLOATS * 4   # 808 Bytes
 DUMMY_VALUE         = 9898.0         # Füllwert für inaktive Kanäle
 
-# ── Netzwerk-Worker Performance ───────────────────────────────────────────────
-UDP_RECV_BUFFER     = 1024 * 1024    # 1 MB Kernel-Empfangspuffer
-DATA_QUEUE_MAXSIZE  = 300            # Maximale Queue-Tiefe (dann: Drop älteste)
+# ── Netzwerk-Worker Performance (settings.json -> "network") ──────────────────
+UDP_RECV_BUFFER     = int(app_settings.get("network.recvBufferBytes", 1024 * 1024))
+DATA_QUEUE_MAXSIZE  = int(app_settings.get("network.queueMaxSize", 300))
 
-# ── GUI Timing ────────────────────────────────────────────────────────────────
-GUI_FPS             = 20
+# ── GUI Timing (settings.json -> "network.guiFps") ────────────────────────────
+# max(1, ...) statt roher Uebernahme: guiFps = 0 waere eine Division durch
+# Null beim IMPORT — die GUI startete dann gar nicht mehr, nur weil jemand
+# in der Datei eine 0 stehen liess.
+GUI_FPS             = max(1, int(app_settings.get("network.guiFps", 20)))
 GUI_TIMER_MS        = 1000 // GUI_FPS        # 50 ms
 
 # Nach dieser Zeit ohne empfangenes Telemetriepaket gilt ein Node als
 # getrennt (Verbindungs-LED in der StatusBar, siehe app_bridge.py).
-NODE_TIMEOUT_SEC    = 1.5
+NODE_TIMEOUT_SEC    = float(app_settings.get("network.nodeTimeoutSeconds", 1.5))
 
-# ── Plotter ───────────────────────────────────────────────────────────────────
-PLOT_HISTORY_SEC    = 10              # Sekunden sichtbarer Verlauf
-PLOT_SAMPLE_RATE    = 100            # Erwartete Pakete/s vom Teensy
-PLOT_BUFFER_SIZE    = PLOT_HISTORY_SEC * PLOT_SAMPLE_RATE   # 500 Samples
+# ── Plotter (settings.json -> "plotter") ──────────────────────────────────────
+PLOT_HISTORY_SEC    = max(1, int(app_settings.get("plotter.historySeconds", 10)))
+PLOT_SAMPLE_RATE    = max(1, int(app_settings.get("plotter.sampleRate", 100)))
+PLOT_BUFFER_SIZE    = PLOT_HISTORY_SEC * PLOT_SAMPLE_RATE   # 1000 Spalten je Kurve
 
 # ── Variablen-Mapping ─────────────────────────────────────────────────────────
 # Index → lesbarer Name. Standardmäßig generisch.

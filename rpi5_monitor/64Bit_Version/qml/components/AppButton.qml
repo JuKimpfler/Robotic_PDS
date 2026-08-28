@@ -23,8 +23,22 @@ Item {
     readonly property bool pressed: tap.pressed
     signal clicked()
 
+    /// Nur bei checkable:true — value ist der GEWUENSCHTE neue Zustand.
+    ///
+    /// Wie bei AppSwitch legt der Knopf `checked` nicht mehr selbst um: eine
+    /// Zuweisung wuerde die Bindung zerstoeren, und ab da folgt der Knopf
+    /// seiner Quelle nicht mehr. Beim Plotter faellt das sofort auf — der
+    /// Trigger friert den Verlauf auch OHNE Knopfdruck ein, und die
+    /// Beschriftung muss trotzdem stimmen.
+    signal toggled(bool value)
+
     implicitWidth: Math.max(140, lbl.implicitWidth + 32)
-    implicitHeight: 56
+    implicitHeight: Math.round(56 * Theme.fontScale)
+
+    // `enabled` kommt von Item und schaltet den TapHandler ab. Ohne diese
+    // Zeile saehe ein abgeschalteter Knopf aber genauso aus wie ein aktiver —
+    // man wuerde nur immer wieder vergeblich darauf tippen.
+    opacity: enabled ? 1.0 : 0.45
 
     Rectangle {
         anchors.fill: parent
@@ -68,7 +82,7 @@ Item {
     TapHandler {
         id: tap
         onTapped: {
-            if (root.checkable) root.checked = !root.checked
+            if (root.checkable) root.toggled(!root.checked)
             root.clicked()
         }
     }
