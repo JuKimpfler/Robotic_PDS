@@ -5,8 +5,9 @@ import App
 import "components"
 
 // Live-Plotter mit bis zu acht Kurven, Oszilloskop-Trigger und
-// Ereignismarken. Gezeichnet wird von PlotCanvas (QQuickPaintedItem,
-// siehe bridge/plot_bridge.py) — hier steht nur die Bedienung.
+// Ereignismarken. Gezeichnet wird von PyQtGraphHost (pyqtgraph, siehe
+// bridge/plot_host.py) — hier steht nur die Bedienung. Bei Überlastung
+// schaltet der Plotter selbst ab und zeigt einen Hinweis (siehe unten).
 Item {
     id: root
     property var plotter: appBridge.plotter
@@ -314,10 +315,10 @@ Item {
             Layout.fillWidth: true
             Layout.fillHeight: true
 
-            PlotCanvas {
-                id: canvas
+            PyQtGraphHost {
+                id: plotHost
                 anchors.fill: parent
-                plotBridge: root.plotter
+                plotter: root.plotter
             }
 
             // Touch: Pinch verändert die sichtbare Punktezahl (= Zoom)
@@ -348,6 +349,50 @@ Item {
                     font.bold: true
                     font.pixelSize: Theme.fontSizeSmall
                 }
+            }
+
+            // Überlastungs-Hinweis: der Plotter hat sich wegen zu wenig
+            // Rechenleistung abgeschaltet (siehe PerfWatchdog / PlotBridge).
+            Rectangle {
+                visible: root.plotter.overloaded
+                          || root.plotter.perfMessage !== ""
+                anchors.fill: parent
+                color: "#000000"
+                opacity: root.plotter.overloaded ? 0.82 : 0.0
+                // Bei nur-Warnung (noch nicht abgeschaltet) bleibt der Plot
+                // sichtbar; der Text wird unten eingeblendet.
+                Behavior on opacity { NumberAnimation { duration: 150 } }
+                enabled: false
+            }
+            Rectangle {
+                visible: root.plotter.overloaded
+                          || root.plotter.perfMessage !== ""
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.bottom: parent.bottom
+                height: warnLbl.height + Theme.spacingM * 2
+                color: root.plotter.overloaded ? Theme.errorBg : Theme.warnBg
+                Text {
+                    id: warnLbl
+                    anchors.fill: parent
+                    anchors.margins: Theme.spacingS
+                    verticalAlignment: Text.AlignVCenter
+                    wrapMode: Text.Wrap
+                    color: root.plotter.overloaded ? Theme.accentRed : Theme.accentAmber
+                    font.bold: true
+                    font.pixelSize: Theme.fontSizeBase
+                    text: root.plotter.perfMessage !== ""
+                          ? root.plotter.perfMessage
+                          : "⚠ Plotter wegen zu hoher Rechenlast angehalten."
+                }
+            }
+            AppButton {
+                visible: root.plotter.overloaded
+                anchors.horizontalCenter: parent.horizontalCenter
+                anchors.verticalCenter: parent.verticalCenter
+                anchors.verticalCenterOffset: -warnLbl.height
+                text: "Plotter erneut versuchen"
+                onClicked: root.plotter.retryPlotter()
             }
         }
 

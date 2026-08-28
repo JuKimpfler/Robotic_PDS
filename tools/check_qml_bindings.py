@@ -41,7 +41,7 @@ BRIDGE_CLASSES = {
     "TelemetryBridge":      (GUI_DIR / "bridge" / "telemetry_bridge.py", "TelemetryBridge"),
     "TelemetryTableModel":  (GUI_DIR / "bridge" / "telemetry_bridge.py", "TelemetryTableModel"),
     "PlotBridge":           (GUI_DIR / "bridge" / "plot_bridge.py", "PlotBridge"),
-    "PlotCanvas":           (GUI_DIR / "bridge" / "plot_bridge.py", "PlotCanvas"),
+    "PyQtGraphHost":        (GUI_DIR / "bridge" / "plot_host.py", "PyQtGraphHost"),
     "VisualsBridge":        (GUI_DIR / "bridge" / "visuals_bridge.py", "VisualsBridge"),
     "ParamBridge":          (GUI_DIR / "bridge" / "param_bridge.py", "ParamBridge"),
     "ControllerBridge":     (GUI_DIR / "bridge" / "controller_bridge.py", "ControllerBridge"),

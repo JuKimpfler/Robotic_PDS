@@ -61,13 +61,15 @@ app_settings.SETTINGS_PATH = app_settings.BASE_DIR / "settings.json"
 
 import numpy as np                                          # noqa: E402
 from PyQt6.QtCore import QTimer, QUrl                       # noqa: E402
-from PyQt6.QtGui import QGuiApplication                     # noqa: E402
+# QApplication (nicht QGuiApplication): der Plotter nutzt pyqtgraph, eine
+# QWidget-Bibliothek, die zwingend eine QApplication braucht.
+from PyQt6.QtWidgets import QApplication                    # noqa: E402
 from PyQt6.QtQml import (QQmlApplicationEngine,             # noqa: E402
                           qmlRegisterType, qmlRegisterSingletonType)
 
 from network_worker import NetworkManager                   # noqa: E402
 from bridge.app_bridge import AppBridge                     # noqa: E402
-from bridge.plot_bridge import PlotCanvas                   # noqa: E402
+from bridge.plot_host import PyQtGraphHost                  # noqa: E402
 
 QML_DIR = GUI / "qml"
 
@@ -466,9 +468,9 @@ def _verify_profile_roundtrip(bridge) -> list[str]:
 
 
 def main() -> int:
-    app = QGuiApplication(sys.argv[:1])
+    app = QApplication(sys.argv[:1])
 
-    qmlRegisterType(PlotCanvas, "App", 1, 0, "PlotCanvas")
+    qmlRegisterType(PyQtGraphHost, "App", 1, 0, "PyQtGraphHost")
     qmlRegisterSingletonType(QUrl.fromLocalFile(str(QML_DIR / "Theme.qml")),
                               "App", 1, 0, "Theme")
     qmlRegisterSingletonType(QUrl.fromLocalFile(str(QML_DIR / "UiState.qml")),
