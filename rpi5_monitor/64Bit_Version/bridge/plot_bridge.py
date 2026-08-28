@@ -1,47 +1,58 @@
 """
-bridge/plot_bridge.py — Tab 2 (Live-Plotter)
-================================================
-Zwei Klassen:
-  PlotBridge  — Datenhaltung + Trigger + Marken, keine Zeichenlogik
-  PlotCanvas  — QQuickPaintedItem, zeichnet den Inhalt von PlotBridge
-                (per qmlRegisterType als <PlotCanvas> in QML nutzbar,
-                 siehe main_qml.py)
+bridge/plot_bridge.py — Tab 2 (Live-Plotter), Daten- und Logik-Schicht
+======================================================================
+
+Zwei Verantwortlichkeiten, sauber getrennt:
+
+  PlotBridge  — Datenhaltung + Trigger + Marken + Performance-Wächter.
+                KEINE Zeichenlogik mehr. Die Darstellung übernimmt
+                bridge/plot_host.py (PyQtGraphHost), das diese Brücke
+                über die Methode get_plot_arrays() mit NumPy-Arrays
+                füttert.
 
 ────────────────────────────────────────────────────────────────────────────
 WARUM AUSSCHLIESSLICH NUMPY
 ────────────────────────────────────────────────────────────────────────────
-Bei 100 Hz, zwei Nodes und bis zu acht gleichzeitig dargestellten Kanaelen
+Bei 100 Hz, zwei Nodes und bis zu acht gleichzeitig dargestellten Kanälen
 gehen pro Sekunde einige tausend Werte durch diesen Code — und zwar im
-GUI-Thread, der gleichzeitig die Oberflaeche zeichnet und den 100-Hz-Takt der
-Fernsteuerung haelt. Jede Python-Schleife ueber Einzelwerte kostet hier
+GUI-Thread, der gleichzeitig die Oberfläche zeichnet und den 100-Hz-Takt der
+Fernsteuerung hält. Jede Python-Schleife über Einzelwerte kostet hier
 unmittelbar Reaktionszeit der Fernsteuerung.
 
 Deshalb: EIN vorab angelegter 2D-Ringpuffer (Kurven x Samples, float32), in
 den blockweise geschrieben wird. Kein deque, keine Listen, kein Umkopieren
-pro Wert. Auch Trigger-Auswertung, Statistik und die Umrechnung in
-Bildschirmkoordinaten laufen vektorisiert ueber ganze Bloecke.
+pro Wert. Auch Trigger-Auswertung und Statistik laufen vektorisiert über
+ganze Blöcke.
+
+────────────────────────────────────────────────────────────────────────────
+PYQTGRAPH STATT QPAINTER
+────────────────────────────────────────────────────────────────────────────
+Die ursprüngliche Zeichenroutine (PlotCanvas) baute pro Frame und Kurve eine
+QPainterPath PUNKTWEISE in einer Python-Schleife auf — bis ~8000
+Pfad-Operationen pro Frame bei 20 fps. Genau das hat den Raspberry Pi 4
+(2 GB) überlastet. Stattdessen liefert diese Brücke fertige NumPy-Arrays;
+pyqtgraph zeichnet die Polylinien in C++ und kann bei Bedarf downsampeln.
+Den Rest (Überlastung erkennen und den Plotter abschalten) macht der
+PerfWatchdog.
 
 ────────────────────────────────────────────────────────────────────────────
 TRIGGER (Oszilloskop-Prinzip)
 ────────────────────────────────────────────────────────────────────────────
 Ein Trigger friert den Verlauf im Moment eines Ereignisses ein, statt dass man
-danebensitzen und im richtigen Augenblick "Einfrieren" druecken muss. Die
-Aufzeichnung laeuft im Ring immer mit; loest der Trigger aus, wird noch
+danebensitzen und im richtigen Augenblick „Einfrieren“ drücken muss. Die
+Aufzeichnung läuft im Ring immer mit; löst der Trigger aus, wird noch
 `postFraction` der Fensterbreite weiter aufgezeichnet und dann eingefroren.
-Im Bild steht die Ausloesestelle damit an der gewuenschten Position und man
-sieht, was DAVOR passiert ist — der eigentliche Zweck der Sache.
 """
 from __future__ import annotations
 
 import logging
 
 import numpy as np
-from PyQt6.QtCore import Qt, QObject, QRectF, QPointF, pyqtSignal, pyqtProperty, pyqtSlot
-from PyQt6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
-from PyQt6.QtQuick import QQuickPaintedItem
+from PyQt6.QtCore import Qt, QObject, pyqtSignal, pyqtSlot, pyqtProperty
 
 import app_settings
 from config import MAX_FLOATS, PLOT_BUFFER_SIZE, VARIABLE_NAMES
+from bridge.perf_watchdog import PerfWatchdog
 
 log = logging.getLogger("bridge.plot")
 
@@ -68,6 +79,16 @@ TRIGGER_LABELS = {
     "outside": "verlässt Band ±",
 }
 
+# Performance-Schwellen (settings.json -> "plotter"). Eine falsche Zahl hier
+# fängt app_settings ab und behält den Standardwert.
+_PERF = {
+    "measureMs":       float(app_settings.get("plotter.perfMeasureMs", 250)),
+    "warnStallMs":     float(app_settings.get("plotter.perfWarnStallMs", 35.0)),
+    "disableStallMs":  float(app_settings.get("plotter.perfDisableStallMs", 80.0)),
+    "streak":          int(app_settings.get("plotter.perfStreak", 5)),
+    "renderDisableMs": float(app_settings.get("plotter.renderDisableMs", 80.0)),
+}
+
 
 class PlotBridge(QObject):
     bufferChanged        = pyqtSignal()
@@ -79,6 +100,10 @@ class PlotBridge(QObject):
     channelsChanged      = pyqtSignal()
     triggerChanged       = pyqtSignal()
     markersChanged       = pyqtSignal()
+    # Neu: Plotter ein/aus, Überlastung, Warntext
+    enabledChanged       = pyqtSignal()
+    overloadedChanged    = pyqtSignal()
+    perfMessageChanged   = pyqtSignal()
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -118,13 +143,126 @@ class PlotBridge(QObject):
         self._last_trig_value = np.nan
 
         # ── Marken (PDS.event auf dem Teensy) ─────────────────────────────
-        #  Gespeichert wird der absolute Sample-Index bei EINTREFFEN des
-        #  Ereignisses. Der Teensy schickt zwar einen micros()-Zeitstempel
-        #  mit, aber die Zuordnung ueber ihn waere wegen des 71-Minuten-
-        #  Ueberlaufs und der Funklaufzeit aufwendig, ohne sichtbar genauer
-        #  zu sein: zwischen Ereignis und Eintreffen liegen typisch 10-30 ms,
-        #  also ein bis drei Samples.
         self._markers: list[tuple[int, str, int]] = []   # (abs_index, text, level)
+
+        # ── Ein/Aus & Überlastung ──────────────────────────────────────────
+        self._enabled = True
+        self._overloaded = False
+        self._perf_message = ""
+        self._plot_active = False      # liefert der Host (sichtbar + ein)
+        self._render_ms = 0.0         # gleitender Max. eines Plot-Durchlaufs
+        self._render_calls = 0        # Warmup-Zähler für note_render
+
+        # ── Performance-Wächter ────────────────────────────────────────────
+        self._watchdog = PerfWatchdog(
+            self,
+            measure_ms=_PERF["measureMs"],
+            warn_stall_ms=_PERF["warnStallMs"],
+            disable_stall_ms=_PERF["disableStallMs"],
+            streak=_PERF["streak"],
+        )
+        self._watchdog.overload.connect(self._on_overload)
+        self._watchdog.warning.connect(self._on_warning)
+        self._watchdog.start()
+
+    # ══════════════════════════════════════════════════════════════════════
+    #  Ein / Aus / Überlastung
+    # ══════════════════════════════════════════════════════════════════════
+
+    @pyqtProperty(bool, notify=enabledChanged)
+    def enabled(self) -> bool:
+        return self._enabled
+
+    @pyqtSlot(bool)
+    def setEnabled(self, value: bool) -> None:
+        value = bool(value)
+        if value == self._enabled and (value or not self._overloaded):
+            return
+        self._enabled = value
+        if value:
+            # Wieder einschalten: Überlastung zurücksetzen und Wächter neu
+            # starten. Ist die Ursache nicht behoben (zu viele Kurven),
+            # schaltet der Wächter von selbst wieder ab.
+            self._overloaded = False
+            self._perf_message = ""
+            self._watchdog.reset()
+            self._watchdog.set_active(self._plot_active)
+        else:
+            self._watchdog.set_active(False)
+        self.enabledChanged.emit()
+        self.overloadedChanged.emit()
+        self.perfMessageChanged.emit()
+
+    @pyqtSlot()
+    def retryPlotter(self) -> None:
+        """Vom Warnbanner aufgerufen: Plotter erneut versuchen."""
+        self.setEnabled(True)
+
+    @pyqtProperty(bool, notify=overloadedChanged)
+    def overloaded(self) -> bool:
+        return self._overloaded
+
+    @pyqtProperty(str, notify=perfMessageChanged)
+    def perfMessage(self) -> str:
+        return self._perf_message
+
+    def _on_overload(self, reason: str) -> None:
+        """Vom Wächter: nicht genug Rechenleistung -> Plotter aus."""
+        if self._overloaded:
+            return
+        self._overloaded = True
+        self._enabled = False
+        self._plot_active = False
+        self._watchdog.set_active(False)
+        self._perf_message = (
+            "⚠ Zu wenig Rechenleistung — Plotter ausgeschaltet. "
+            "Kurven reduzieren oder „Erneut versuchen“. "
+            + (f"({reason})" if reason else "")
+        )
+        log.warning("Plotter wegen Überlastung deaktiviert: %s", reason)
+        self.overloadedChanged.emit()
+        self.enabledChanged.emit()
+        self.perfMessageChanged.emit()
+
+    def _on_warning(self, msg: str) -> None:
+        if self._overloaded:
+            return
+        self._perf_message = msg
+        self.perfMessageChanged.emit()
+
+    def setPlotActive(self, active: bool) -> None:
+        """Host meldet, ob der Plotter gerade sichtbar und eingeschaltet ist.
+
+        Nur dann darf der Plotter Last erzeugen — und nur dann wertet der
+        Wächter die Event-Loop-Last aus (sonst würde fremde Last dem Plotter
+        angelastet).
+        """
+        active = bool(active) and self._enabled and not self._overloaded
+        if active == self._plot_active:
+            return
+        self._plot_active = active
+        self._watchdog.set_active(active)
+
+    def note_render(self, dt_ms: float) -> None:
+        """Host meldet die Dauer eines Plot-Durchlaufs (setData + evtl. Grab).
+
+        Ein einzelner Durchlauf, der das Zeitbudget sprengt, ist ein
+        sicheres Zeichen für Überlastung — unabhängig vom groben
+        Event-Loop-Stall misst der Wächter ohnehin mit.
+        """
+        # Gleitender Max: nur sehr langsame Einzelbilder zählen.
+        self._render_ms = max(self._render_ms * 0.8, dt_ms)
+        # Warmup: die ersten Durchläufe nach dem Start/Tab-Wechsel dürfen
+        # einmalig teurer sein (Widget wird erstmals layoutet/gezeichnet) —
+        # sonst würde ein einziger unkritischer Ruckler sofort abschalten.
+        self._render_calls += 1
+        if self._render_calls <= 20:
+            return
+        if (not self._overloaded and self._enabled
+                and dt_ms >= _PERF["renderDisableMs"]):
+            self._on_overload(
+                f"Ein Plot-Durchlauf dauerte {dt_ms:.0f} ms "
+                f"(Budget {_PERF['renderDisableMs']:.0f} ms).")
 
     # ══════════════════════════════════════════════════════════════════════
     #  Kanalauswahl
@@ -317,7 +455,8 @@ class PlotBridge(QObject):
         value = bool(value)
         if value != self._shared_scale:
             self._shared_scale = value
-            self.frozenChanged.emit()   # loest ein Neuzeichnen aus
+            # Loest ein Neuzeichnen aus (PyQtGraphHost liest sharedScale neu).
+            self.frozenChanged.emit()
             self.bufferChanged.emit()
 
     @pyqtProperty(str, notify=statsChanged)
@@ -413,7 +552,8 @@ class PlotBridge(QObject):
         Damit laesst sich zaehlen und im Verlauf wiederfinden, wie oft eine
         Bedingung eingetreten ist, ohne dass die Anzeige jedes Mal stehen
         bleibt — bei einem seltenen Aussetzer will man einfrieren, bei einem
-        regelmaessigen Ereignis nur die Marken."""
+        regelmaessigen Ereignis nur die Marken.
+        """
         return self._trig_auto_rearm
 
     @pyqtSlot(bool)
@@ -473,9 +613,7 @@ class PlotBridge(QObject):
         if count <= 1:
             return []
         # Sichtbar sind die Samples first .. self._total - 1; der letzte davon
-        # liegt am rechten Rand. Ohne das -1 kam eine gerade erst gesetzte
-        # Marke auf Position count/(count-1) > 1 heraus und wurde damit
-        # ausserhalb der Zeichenflaeche gezeichnet, also gar nicht.
+        # liegt am rechten Rand.
         last = self._total - 1
         first = last - (count - 1)
         out = []
@@ -567,8 +705,7 @@ class PlotBridge(QObject):
 
         Komplett vektorisiert: die Bedingung wird als Boolean-Array ueber
         alle neuen Samples ausgewertet, die Ausloesestelle ist dann der erste
-        True-Eintrag. Eine Python-Schleife ueber die Samples waere bei
-        100 Hz zwar auch machbar, aber unnoetig.
+        True-Eintrag.
         """
         # Steht die Aufzeichnung nach einer Ausloesung noch offen?
         if self._trig_capture_at is not None:
@@ -649,7 +786,8 @@ class PlotBridge(QObject):
 
     def live_snapshot(self) -> np.ndarray:
         """Immer der LAUFENDE Verlauf, auch wenn eingefroren ist — so bleibt
-        im eingefrorenen Bild sichtbar, was inzwischen weiterlaeuft."""
+        im eingefrorenen Bild sichtbar, was inzwischen weiterlaeuft.
+        """
         n_curves = len(self._channels)
         count = min(self._points, self._filled)
         if count <= 0:
@@ -664,6 +802,47 @@ class PlotBridge(QObject):
 
     def frozen_snapshot(self) -> np.ndarray | None:
         return self._frozen_snapshot
+
+    # ══════════════════════════════════════════════════════════════════════
+    #  Ausgabe für die Darstellung (pyqtgraph)
+    # ══════════════════════════════════════════════════════════════════════
+
+    def get_plot_arrays(self, shared_scale: bool | None = None
+                        ) -> list[tuple[np.ndarray, np.ndarray]]:
+        """Bereitet die sichtbaren Kurven als (x, y)-NumPy-Paare auf.
+
+        x ist der Sample-Index (0..n-1); y sind die Werte als float64.
+
+        Bei EINZELSKALA (shared_scale=False) wird jede Kurve auf den eigenen
+        Wertebereich normiert (0..1), damit Kanaele völlig verschiedener
+        Groessenordnung (12 V Akku neben 0.3 Ballwinkel) gleichzeitig
+        sichtbar sind. Bei GEMEINSAMER SKALA werden die Rohwerte geliefert
+        und pyqtgraph auto-skaliert die Y-Achse.
+        """
+        if shared_scale is None:
+            shared_scale = self._shared_scale
+        data = self.snapshot()
+        n = data.shape[1]
+        if n == 0:
+            return []
+        xs = np.arange(n, dtype=np.float64)
+        out: list[tuple[np.ndarray, np.ndarray]] = []
+        if shared_scale:
+            for row in range(data.shape[0]):
+                out.append((xs, data[row].astype(np.float64)))
+        else:
+            for row in range(data.shape[0]):
+                series = data[row].astype(np.float64)
+                finite = np.isfinite(series)
+                if finite.any():
+                    mn = float(series[finite].min())
+                    mx = float(series[finite].max())
+                    span = (mx - mn) or 1.0
+                    ys = (series - mn) / span
+                else:
+                    ys = np.zeros(n, dtype=np.float64)
+                out.append((xs, ys))
+        return out
 
     def _update_stats(self) -> None:
         data = self.snapshot()
@@ -685,164 +864,3 @@ class PlotBridge(QObject):
         if len(self._channels) > 1:
             self._stats += f"   (+{len(self._channels) - 1} weitere Kurven)"
         self.statsChanged.emit()
-
-
-# ══════════════════════════════════════════════════════════════════════════
-#  PlotCanvas — QQuickPaintedItem
-# ══════════════════════════════════════════════════════════════════════════
-
-class PlotCanvas(QQuickPaintedItem):
-    plotBridgeChanged = pyqtSignal()
-
-    _GRID_COLOR   = QColor(255, 255, 255, 25)
-    _BG_COLOR     = QColor("#1a1a1a")
-    # settings.json -> "plotter.markerColors" (Stufe 0/1/2, #aarrggbb).
-    _MARKER_COLOR = tuple(
-        QColor(c) for c in (app_settings.get("plotter.markerColors")
-                            or app_settings.DEFAULTS["plotter"]["markerColors"]))
-
-    def __init__(self, parent=None) -> None:
-        super().__init__(parent)
-        self._bridge: PlotBridge | None = None
-        self.setAntialiasing(True)
-
-    def getPlotBridge(self):
-        return self._bridge
-
-    def setPlotBridge(self, bridge: PlotBridge) -> None:
-        if self._bridge is bridge:
-            return
-        if self._bridge is not None:
-            # Beim Abbau der Anwendung kann die Bruecke auf der C++-Seite
-            # bereits weg sein, waehrend QML die Property noch einmal
-            # zuruecksetzt. Der Zugriff auf ihre Signale wirft dann
-            #     RuntimeError: wrapped C/C++ object ... has been deleted
-            # und PyQt macht daraus in einem Slot ein abort(). Abmelden ist zu
-            # diesem Zeitpunkt ohnehin gegenstandslos — das Objekt ist fort.
-            try:
-                for sig in (self._bridge.bufferChanged, self._bridge.frozenChanged,
-                            self._bridge.channelsChanged, self._bridge.markersChanged,
-                            self._bridge.triggerChanged):
-                    sig.disconnect(self.update)
-            except (RuntimeError, TypeError):
-                pass
-        self._bridge = bridge
-        if bridge is not None:
-            for sig in (bridge.bufferChanged, bridge.frozenChanged,
-                        bridge.channelsChanged, bridge.markersChanged,
-                        bridge.triggerChanged):
-                sig.connect(self.update)
-        self.plotBridgeChanged.emit()
-        self.update()
-
-    plotBridge = pyqtProperty(QObject, fget=getPlotBridge, fset=setPlotBridge,
-                               notify=plotBridgeChanged)
-
-    # ── Zeichnen ──────────────────────────────────────────────────────────
-    def paint(self, painter: QPainter) -> None:
-        w, h = self.width(), self.height()
-        if w <= 0 or h <= 0:
-            return
-
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        painter.fillRect(QRectF(0, 0, w, h), self._BG_COLOR)
-
-        painter.setPen(QPen(self._GRID_COLOR, 1))
-        for i in range(1, 5):
-            y = h * i / 5
-            painter.drawLine(0, int(y), int(w), int(y))
-        for i in range(1, 8):
-            x = w * i / 8
-            painter.drawLine(int(x), 0, int(x), int(h))
-
-        b = self._bridge
-        if b is None:
-            return
-
-        data = b.snapshot()
-        margin = h * 0.08
-
-        if b.sharedScale and data.size and np.any(np.isfinite(data)):
-            lo = float(np.nanmin(data))
-            hi = float(np.nanmax(data))
-            common = (lo, hi)
-        else:
-            common = None
-
-        for row in range(data.shape[0]):
-            color = QColor(CURVE_COLORS[row % len(CURVE_COLORS)])
-            self._draw_curve(painter, data[row], color, w, h, margin, common,
-                              dashed=False)
-
-        # Im eingefrorenen Bild zusaetzlich der weiterlaufende Verlauf der
-        # ersten Kurve, damit man sieht, dass die Anlage noch lebt.
-        if b.frozen:
-            live = b.live_snapshot()
-            if live.shape[0] > 0:
-                pen_color = QColor(CURVE_COLORS[0])
-                pen_color.setAlpha(90)
-                self._draw_curve(painter, live[0], pen_color, w, h, margin, common,
-                                  dashed=True)
-
-        self._draw_markers(painter, b, w, h)
-
-    def _draw_markers(self, painter: QPainter, b: PlotBridge, w: float, h: float) -> None:
-        markers = b.visible_markers(b.pointsCount)
-        if not markers:
-            return
-        font = QFont()
-        font.setPixelSize(11)
-        painter.setFont(font)
-        for pos, text, level in markers:
-            x = w * pos
-            color = self._MARKER_COLOR[min(level, len(self._MARKER_COLOR) - 1)]
-            pen = QPen(color, 1.2)
-            pen.setStyle(Qt.PenStyle.DashLine)
-            painter.setPen(pen)
-            painter.drawLine(QPointF(x, 0), QPointF(x, h))
-            painter.setPen(QPen(color, 1))
-            # Beschriftung nach links kippen, wenn sie sonst rechts hinausragt
-            tw = painter.fontMetrics().horizontalAdvance(text) + 6
-            tx = x + 4 if x + tw < w else x - tw
-            painter.drawText(QPointF(tx, 14), text)
-
-    @staticmethod
-    def _draw_curve(painter: QPainter, series: np.ndarray, color: QColor,
-                     w: float, h: float, margin: float,
-                     common: tuple[float, float] | None, dashed: bool) -> None:
-        n = series.shape[0]
-        if n < 2:
-            return
-        finite = np.isfinite(series)
-        if not np.any(finite):
-            return
-
-        if common is not None:
-            mn, mx = common
-        else:
-            mn = float(np.nanmin(series))
-            mx = float(np.nanmax(series))
-        span = (mx - mn) or 1.0
-
-        # Komplette Koordinatenumrechnung in zwei Array-Operationen statt in
-        # einer Python-Schleife ueber bis zu 600 Punkte je Kurve und Frame.
-        xs = np.linspace(0.0, w, n, dtype=np.float64)
-        ys = (h - 2 * margin) * (1.0 - (series.astype(np.float64) - mn) / span) + margin
-
-        pen = QPen(color, 1.8)
-        if dashed:
-            pen.setStyle(Qt.PenStyle.DashLine)
-        painter.setPen(pen)
-
-        path = QPainterPath()
-        pen_down = False
-        for i in range(n):
-            if not finite[i]:
-                pen_down = False          # Luecke: Linie unterbrechen
-                continue
-            if pen_down:
-                path.lineTo(xs[i], ys[i])
-            else:
-                path.moveTo(xs[i], ys[i])
-                pen_down = True
-        painter.drawPath(path)

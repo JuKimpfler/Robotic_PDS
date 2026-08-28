@@ -5,8 +5,7 @@
 #      pip install -r requirements.txt
 #
 #  setup_rpi5.sh benutzt diese Datei automatisch, wenn sie neben dem
-#  Skript liegt. pyqtgraph wird nirgends mehr gebraucht — es hing nur
-#  an der inzwischen entfernten Widgets-GUI.
+#  Skript liegt.
 #
 #  Der Pi-Zero-Node braucht NICHTS davon — dort reicht pyserial
 #  (siehe rpi_zero_node/setup_node.sh).
@@ -15,6 +14,11 @@
 # ── Pflicht ─────────────────────────────────────────────────
 PyQt6>=6.4.0            # Qt Quick/QML-Oberfläche (objectCreationFailed ab 6.4)
 numpy>=1.24.0           # Telemetrie-Verarbeitung, Plotter-Statistik
+pyqtgraph>=0.13.0       # Live-Plotter (pyqtgraph zeichnet die Kurven als
+                        # C++-Polylinien aus NumPy-Arrays — weit günstiger als
+                        # das alte QPainter-Verfahren, das den RPi 4 überlastet
+                        # hat). Braucht zwingend QApplication (nicht
+                        # QGuiApplication), siehe main_qml.py.
 
 # ── Optional ────────────────────────────────────────────────
 #  pygame liefert ausschliesslich die PS4-Controller-Unterstuetzung.

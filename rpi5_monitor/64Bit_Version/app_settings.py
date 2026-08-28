@@ -200,6 +200,27 @@ DEFAULTS: dict[str, Any] = {
         # Senkrechte Marken (Ereignisse/Trigger) nach Stufe 0/1/2.
         # Schreibweise #aarrggbb — die Marken sind bewusst halbdurchsichtig.
         "markerColors": ["#a078c8ff", "#c8ffbe3c", "#dcff5a46"],
+
+        # ── Performance / Überlastung ──────────────────────────────────────
+        # Redraw ist auf maxFps gedeckelt (unabhängig von Daten-Bursts).
+        # Bei anhaltender Überlastung (Event-Loop-Staulast) schaltet der
+        # Plotter ab und zeigt einen Hinweis, statt die GUI einzufrieren.
+        "maxFps": 20,
+        # pyqtgraph: Downsampling (auto) und Antialiasing — beide primär
+        # für die Zeichen-Performance auf dem RPi 4 (2 GB).
+        "downsample": True,
+        "antialias": False,
+        # Wächter-Schwellen (siehe bridge/perf_watchdog.py):
+        #   measureMs       Takt des Wächter-Timers
+        #   warnStallMs    Staulast ab der gewarnt wird (Plotter läuft noch)
+        #   disableStallMs Staulast ab der die Abschaltung gezählt wird
+        #   perfStreak      wie oft disableStallMs hintereinander nötig ist
+        #   renderDisableMs einzelner Plot-Durchlauf, der das Budget sprengt
+        "perfMeasureMs": 250,
+        "perfWarnStallMs": 35.0,
+        "perfDisableStallMs": 80.0,
+        "perfStreak": 5,
+        "renderDisableMs": 80.0,
     },
 
     # ── Parameter-Tab ─────────────────────────────────────────────────────

@@ -3,9 +3,16 @@
 Diese Umsetzung folgt `QML_Migrationsplan_RPi5_Monitor.md` und ist
 abgeschlossen: die Oberfläche besteht nur noch aus QML. Die frühere
 PyQt6-**Widgets**-GUI (`main.py` + `gui/`, rund 3700 Zeilen) ist entfernt —
-sie wurde von keinem Setup-Skript mehr installiert, brauchte mit `pyqtgraph`
-eine zusätzliche Abhängigkeit und kannte weder PS4-Controller noch
-automatische Kanalnamen noch die Überwachung der Empfängerprozesse.
+sie kannte weder PS4-Controller noch automatische Kanalnamen noch die
+Überwachung der Empfängerprozesse.
+
+**Der Live-Plotter (Tab 2) nutzt seit dem Umbau wieder `pyqtgraph`**, diesmal
+allerdings eingebettet in die QML-Szene (siehe `bridge/plot_host.py`):
+pyqtgraph zeichnet die Kurven als C++-Polylinien direkt aus NumPy-Arrays —
+deutlich günstiger als das alte `QPainter`-Verfahren, das den Raspberry Pi 4
+(2 GB) bei mehreren Kurven überlastet hat. Bei anhaltender Überlastung
+schaltet ein Performance-Watchdog den Plotter ab und zeigt einen Hinweis,
+statt die GUI einzufrieren (siehe unten, „Performance-Watchdog").
 
 **Getestet:** headless (`QT_QPA_PLATFORM=offscreen`) mit `--simulate`,
 mehrere Minuten Dauerlauf ohne QML-/Python-Fehler, 30 Hz Poll-Takt,
@@ -16,7 +23,7 @@ laufen sauber durch.
 
 ```bash
 cd rpi5_monitor/64Bit_Version
-pip install PyQt6 numpy --break-system-packages   # falls noch nicht vorhanden
+pip install PyQt6 numpy pyqtgraph --break-system-packages   # falls noch nicht vorhanden
 
 # Mit synthetischen Testdaten (kein Teensy nötig):
 python3 main_qml.py --simulate
@@ -33,7 +40,7 @@ python3 main_qml.py
 | Theme/Design-Tokens | `qml/Theme.qml` | ✅ vollständig |
 | Hauptshell (SwipeView+TabBar+NodeSelector+StatusBar) | `qml/Main.qml`, `qml/components/{NodeSelector,StatusBar}.qml` | ✅ vollständig |
 | Tab 1 — Live-Tabelle | `qml/TelemetryView.qml`, `bridge/telemetry_bridge.py` | ✅ vollständig, inkl. Filterfeld (neu ggü. Original) |
-| Tab 2 — Live-Plotter | `qml/PlotterView.qml`, `bridge/plot_bridge.py` (PlotCanvas, Option C aus dem Plan) | ✅ funktional; Pinch-to-Zoom für Punktezahl |
+| Tab 2 — Live-Plotter | `qml/PlotterView.qml`, `bridge/plot_bridge.py` (Daten/Trigger/Marken), `bridge/plot_host.py` (PyQtGraphHost, pyqtgraph) | ✅ funktional; Pinch-to-Zoom für Punktezahl; pyqtgraph statt QPainter; **Performance-Watchdog** schaltet bei Überlastung ab |
 | Tab 3 — Systemansicht | `qml/SystemView.qml`, `bridge/visuals_bridge.py`, `overlay_schema.py`, `qml/components/{Gauge,RotationIndicator,VectorIndicator,MiniTable,OverlayEditor,FieldEditor,ChannelPicker}.qml` | ✅ vollständig, inkl. **Editor** (Ziehen im Bild, Formular je Element, Gruppen, Rückgängig, dauerhaft je Node gespeichert) — siehe unten |
 | Tab 4 — Parameter | `qml/ParamsView.qml`, `bridge/param_bridge.py`, `qml/components/{Joystick,TouchSlider}.qml` | ✅ vollständig (Slider/Zahl/Text/Toggle/Button/Joystick, Fast+Slow-Downlink, Save-Default) |
 | Tab 5 — Diagnose | `qml/DiagnosticsView.qml`, `bridge/diag_bridge.py` | ✅ vollständig — Verbindungsqualität, Round-Trip-Zeit, Node-Systemstatus, Akku-Warnung, Logbuch, Einstellungen (siehe Architektur-Übersicht in der Haupt-`README.md`, Abschnitt 3b) |
@@ -162,9 +169,13 @@ umbenannt.
 
 1. **Test auf echter RPi5-Hardware**: `QT_QPA_PLATFORM=eglfs` prüfen,
    `QSG_RENDER_LOOP=basic` bei Flackern testen (Migrationsplan Abschnitt 7).
-2. **PlotCanvas-Performance** bei sehr hoher Punktzahl (>500) auf
-   schwacher RPi5-GPU messen; ggf. Umstieg auf Option D (QSGGeometryNode)
-   falls Option C (aktuell umgesetzt) nicht ausreicht.
+2. **Plotter-Performance auf schwacher Hardware** (RPi 4, 2 GB): der
+   pyqtgraph-basierte Plotter ist deutlich günstiger als das alte
+   `QPainter`-Verfahren, wird aber bei anhaltender Überlastung durch den
+   **Performance-Watchdog** automatisch abgeschaltet (Hinweis + „Erneut
+   versuchen"). Empfehlung: bei Ausfall die Kurvenzahl reduzieren
+   (`settings.json` → `plotter.maxCurves`) oder `plotter.maxFps` /
+   `plotter.renderDisableMs` anpassen.
 3. Tooling: Qt Design Studio zum visuellen Feintuning der Touch-Layouts
    nutzen (Migrationsplan Abschnitt 10).
 
@@ -186,7 +197,9 @@ rpi5_monitor/64Bit_Version/
 ├── bridge/                    # Python↔QML-Brücke (kein QtWidgets-Import)
 │   ├── app_bridge.py          # Fassade, Poll-Loop, Node-Umschaltung
 │   ├── telemetry_bridge.py    # Tab 1
-│   ├── plot_bridge.py         # Tab 2 (inkl. PlotCanvas QQuickPaintedItem)
+│   ├── plot_bridge.py         # Tab 2: Daten/Trigger/Marken + Watchdog-Logik
+│   ├── plot_host.py           # Tab 2: PyQtGraphHost (pyqtgraph in QML einbetten)
+│   ├── perf_watchdog.py       # Tab 2: Überlast-Erkennung (Event-Loop-Stall)
 │   ├── visuals_bridge.py      # Tab 3 samt Editor
 │   ├── param_bridge.py        # Tab 4 (ParamStore, Fast-Channel-Thread)
 │   ├── diag_bridge.py         # Tab 5: Link-Qualität, Node-Status, Akku-Alarm, Logbuch

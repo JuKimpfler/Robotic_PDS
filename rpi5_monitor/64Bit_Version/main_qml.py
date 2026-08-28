@@ -35,14 +35,18 @@ from pathlib import Path
 # Plattformen (Windows/Linux/RPi5) identisch.
 os.environ.setdefault("QT_QUICK_CONTROLS_STYLE", "Material")
 
-from PyQt6.QtGui import QGuiApplication
+# pyqtgraph ist eine QWidget-Bibliothek: die GUI braucht deshalb zwingend
+# QApplication (nicht QGuiApplication), sonst kann kein PlotWidget erzeugt
+# werden. QApplication ist ein Superset von QGuiApplication und verträgt sich
+# mit Qt Quick / QML.
+from PyQt6.QtWidgets import QApplication
 from PyQt6.QtQml import QQmlApplicationEngine, qmlRegisterType, qmlRegisterSingletonType
 from PyQt6.QtCore import QUrl, QCoreApplication
 
 import app_settings
 from network_worker import NetworkManager
 from bridge.app_bridge import AppBridge
-from bridge.plot_bridge import PlotCanvas
+from bridge.plot_host import PyQtGraphHost
 
 # PDS_LOGLEVEL=DEBUG schaltet u. a. die 1x/s-Ausgabe aller rohen Controller-
 # Achsen/Buttons frei (siehe bridge/controller_bridge.py) — der schnellste Weg,
@@ -207,10 +211,12 @@ def main() -> None:
 
     QCoreApplication.setApplicationName("Power Debug Monitor")
     QCoreApplication.setOrganizationName("RoboCup Debug System")
-    app = QGuiApplication(sys.argv)
+    app = QApplication(sys.argv)
 
-    # ── Custom QML-Typ registrieren (Migrationsplan Abschnitt 4.4, Option C)
-    qmlRegisterType(PlotCanvas, "App", 1, 0, "PlotCanvas")
+    # ── Custom QML-Typ registrieren: der pyqtgraph-basierte Live-Plotter
+    #  (siehe bridge/plot_host.py). Bettet das PlotWidget je nach Plattform
+    #  nativ ein oder fällt auf Image-Darstellung zurück.
+    qmlRegisterType(PyQtGraphHost, "App", 1, 0, "PyQtGraphHost")
 
     # Theme.qml direkt als "App"-Modul-Singleton registrieren statt über
     # Verzeichnis-basierte qmldir-Auflösung — dadurch funktioniert

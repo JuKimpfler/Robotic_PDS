@@ -13,8 +13,10 @@
 #    8. Zusammenfassung
 #
 #  Installiert/startet die neue PyQt6 + Qt Quick/QML-Oberfläche
-#  (rpi5_monitor/64Bit_Version/main_qml.py) statt der alten
-#  Widgets-GUI wurde entfernt; es gibt nur noch main_qml.py.
+#  (rpi5_monitor/64Bit_Version/main_qml.py). Der Live-Plotter nutzt
+#  pyqtgraph (siehe bridge/plot_host.py) — das ist seit dem Umbau wieder
+#  eine PFLICHT-Abhängigkeit (requirements.txt) und braucht zwingend
+#  QApplication (nicht QGuiApplication).
 #
 #  Aufruf:  sudo bash setup_rpi5.sh [INSTALL_DIR]
 #           Standard-Installationsverzeichnis: /opt/power_debug_monitor
