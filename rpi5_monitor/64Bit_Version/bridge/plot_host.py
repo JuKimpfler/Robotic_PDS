@@ -45,7 +45,7 @@ from typing import Optional
 import numpy as np
 
 from PyQt6.QtCore import (
-    Qt, QObject, QTimer, QRectF, QSize, QPoint, QRegion,
+    Qt, QObject, QTimer, QRectF, QRect, QSize, QPoint,
     pyqtProperty, pyqtSignal,
 )
 from PyQt6.QtGui import QColor, QPainter, QPixmap, QWindow
@@ -209,7 +209,7 @@ class PyQtGraphHost(QQuickPaintedItem):
         else:
             self._mode = "image"
             try:
-                self._plot.setAttribute(Qt.WA_DontShowOnScreen)
+                self._plot.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
             except Exception:
                 pass
         self.modeChanged.emit()
@@ -221,7 +221,7 @@ class PyQtGraphHost(QQuickPaintedItem):
         der Image-Modus.
         """
         try:
-            self._plot.setAttribute(Qt.WA_DontCreateNativeAncestors)
+            self._plot.setAttribute(Qt.WidgetAttribute.WA_DontCreateNativeAncestors)
             self._plot.show()
             native = self._plot.windowHandle()
             if native is None:
@@ -233,9 +233,21 @@ class PyQtGraphHost(QQuickPaintedItem):
             if qw is None:
                 return False
             native.setParent(qw)
+            # Manche QPA-Plugins (offscreen, teils Wayland/eglfs — siehe
+            # Docstring oben) lehnen setParent() nur mit einer Qt-internen
+            # qWarning ("... does not support setParent!") ab, OHNE eine
+            # Python-Exception zu werfen. Ohne diese Prüfung hier würde
+            # _try_native() das als Erfolg werten: self._plot bliebe ein
+            # eigenständiges, sichtbares Top-Level-Fenster, das nie zur
+            # QML-Szene gehört — mit spürbaren Folgen bis hin zu einem
+            # sauberen Beenden der Anwendung. Deshalb wird das Ergebnis
+            # verifiziert statt nur angenommen.
+            if native.parent() is not qw:
+                self._plot.hide()
+                return False
             # Touch/Events sollen an die QML-Ebene durchgereicht werden
             # (Pinch-to-Zoom, Buttons), nicht vom Widget geschluckt.
-            self._plot.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+            self._plot.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
             self._native_win = native
             self._sync_geometry()
             if self._native_win is not None:
@@ -434,7 +446,10 @@ class PyQtGraphHost(QQuickPaintedItem):
                 self._pixmap = QPixmap(w, h)
             self._pixmap.fill(QColor("#1a1a1a"))
             p = QPainter(self._pixmap)
-            self._plot.render(p, QPoint(0, 0), QRegion(0, 0, w, h))
+            # self._plot ist ein pyqtgraph.PlotWidget (QGraphicsView-Subklasse).
+            # QGraphicsView.render() hat eine andere Signatur als QWidget.render():
+            # render(painter, target: QRectF, source: QRect, aspectRatioMode).
+            self._plot.render(p, QRectF(0, 0, w, h), QRect(0, 0, w, h))
             p.end()
         except Exception as exc:  # noqa: BLE001
             log.warning("Pixmap-Render fehlgeschlagen: %s", exc)

@@ -374,9 +374,16 @@ Item {
                 color: root.plotter.overloaded ? Theme.errorBg : Theme.warnBg
                 Text {
                     id: warnLbl
-                    anchors.fill: parent
+                    // Nur horizontal verankern: die Höhe muss sich aus dem
+                    // (umgebrochenen) Textinhalt ergeben, damit das
+                    // umgebende Rectangle seine Höhe daraus ableiten kann.
+                    // Ein anchors.fill: parent hier würde eine zirkuläre
+                    // Bindung erzeugen (Rectangle.height <- warnLbl.height
+                    // <- parent.height <- Rectangle.height).
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.top: parent.top
                     anchors.margins: Theme.spacingS
-                    verticalAlignment: Text.AlignVCenter
                     wrapMode: Text.Wrap
                     color: root.plotter.overloaded ? Theme.accentRed : Theme.accentAmber
                     font.bold: true
