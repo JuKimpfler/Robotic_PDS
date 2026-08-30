@@ -48,7 +48,7 @@ from PyQt6.QtCore import (
     Qt, QObject, QTimer, QRectF, QRect, QSize, QPoint,
     pyqtProperty, pyqtSignal,
 )
-from PyQt6.QtGui import QColor, QPainter, QPixmap, QWindow
+from PyQt6.QtGui import QColor, QGuiApplication, QPainter, QPixmap, QWindow
 from PyQt6.QtQuick import QQuickPaintedItem
 
 import app_settings
@@ -214,12 +214,33 @@ class PyQtGraphHost(QQuickPaintedItem):
                 pass
         self.modeChanged.emit()
 
+    # QPA-Plattformen, auf denen natives Reparenting nachweislich zuverlässig
+    # funktioniert (siehe Modul-Docstring oben). Alles andere — insbesondere
+    # Wayland-Compositor wie das auf aktuellem Raspberry Pi OS (Bookworm+)
+    # standardmäßige "wayland" (wayfire/labwc), sowie eglfs, offscreen usw. —
+    # geht direkt in den Image-Modus. Grund: auf Wayland NIMMT setParent()
+    # den Aufruf entgegen (self._plot.windowHandle().parent() zeigt danach
+    # scheinbar korrekt auf das QML-Fenster), der Compositor stellt das
+    # Widget aber trotzdem als eigenständiges Top-Level-Fenster dar — meist
+    # mit fester Startposition oben links und fester Startgröße, die nie der
+    # QML-Geometrie folgt. Anders als bei den QPA-Plugins, die setParent()
+    # klar mit einer qWarning ablehnen, lässt sich dieser Fall über den
+    # Objektstatus danach NICHT zuverlässig erkennen — daher die Prüfung
+    # hier vorab über den Plattformnamen statt hinterher über das Ergebnis.
+    _NATIVE_OK_PLATFORMS = {"xcb"}
+
     def _try_native(self) -> bool:
         """Versucht, das Widget als natives Kindfenster einzubetten.
 
         Gibt False zurück, sobald irgendetwas nicht klappt — dann übernimmt
         der Image-Modus.
         """
+        platform = QGuiApplication.platformName()
+        if platform not in self._NATIVE_OK_PLATFORMS:
+            log.info(
+                "QPA-Plattform %r unterstützt kein natives Reparenting "
+                "zuverlässig — Image-Modus.", platform)
+            return False
         try:
             self._plot.setAttribute(Qt.WidgetAttribute.WA_DontCreateNativeAncestors)
             self._plot.show()
