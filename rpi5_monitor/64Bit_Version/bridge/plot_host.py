@@ -51,6 +51,7 @@ LEISTUNG
 from __future__ import annotations
 
 import logging
+import math
 import time
 from typing import Optional
 
@@ -116,6 +117,57 @@ _MARKER_COLORS = [
 ]
 
 
+def _nice_step(raw: float) -> float:
+    """Naechstgroesserer „glatter“ Schritt aus der Reihe 1-2-5 x 10^k."""
+    if not math.isfinite(raw) or raw <= 0.0:
+        return 1.0
+    exp = math.floor(math.log10(raw))
+    base = 10.0 ** exp
+    for m in (1.0, 2.0, 5.0):
+        if raw <= m * base * (1.0 + 1e-9):
+            return m * base
+    return 10.0 * base
+
+
+def nice_y_range(mn: float, mx: float) -> tuple[float, float] | None:
+    """Glatter Y-Bereich, der [mn, mx] mit etwas Luft sicher enthaelt.
+
+    Warum ueberhaupt: `enableAutoRange(Y)` laeuft nach JEDEM setData und
+    liefert fast immer eine minimal andere Zahl. pyqtgraph rechnet daraufhin
+    Ticks und Beschriftung neu (QFontMetrics ueber jeden Achsentext) und
+    rastert die Achse neu — in jedem Bild. Auf glatte 1-2-5-Schritte
+    gerundet aendert sich der Bereich dagegen nur in Spruengen, und
+    dazwischen faellt gar keine Achsenarbeit an.
+
+    Nebenbei ist eine Achse mit 0 / 0,5 / 1 auch schlicht besser abzulesen
+    als eine mit 0,0317 / 0,4913 / 0,9509.
+
+    None heisst: aus diesen Zahlen laesst sich kein Bereich bilden.
+    """
+    if not (math.isfinite(mn) and math.isfinite(mx)):
+        return None
+    if mx < mn:
+        mn, mx = mx, mn
+    span = mx - mn
+    if span <= 0.0:
+        # Waagerechte Linie: um den Wert herum etwas Platz lassen, damit sie
+        # nicht auf einer Bereichsgrenze klebt.
+        half = (abs(mx) * 0.1) or 0.5
+        mn, mx = mn - half, mx + half
+        span = mx - mn
+    pad = span * 0.05
+    lo, hi = mn - pad, mx + pad
+    # Zielgroesse: rund acht Schritte. Grob gerundet (vier Schritte) verschenkt
+    # der Sprung von 0,2 auf 0,5 in der 1-2-5-Reihe sonst bis zur Haelfte der
+    # Bildhoehe — die Kurve waere unnoetig flach.
+    step = _nice_step((hi - lo) / 8.0)
+    lo = math.floor(lo / step) * step
+    hi = math.ceil(hi / step) * step
+    if hi <= lo:
+        hi = lo + step
+    return lo, hi
+
+
 class PyQtGraphHost(QQuickPaintedItem):
     plotterChanged = pyqtSignal()
     modeChanged = pyqtSignal()
@@ -149,6 +201,7 @@ class PyQtGraphHost(QQuickPaintedItem):
         #  _live_ys     Puffer fuer die gestrichelte Live-Kurve
         self._dirty = True
         self._last_x_max = -1.0
+        self._last_y_range: Optional[tuple[float, float]] = None
         self._pen_cache: list = []
         self._mark_state: list[tuple] = []
         self._plot_size = QSize(0, 0)
@@ -165,6 +218,9 @@ class PyQtGraphHost(QQuickPaintedItem):
         # pyqtgraph-Performance-Schalter aus settings.json ("plotter").
         self._downsample = bool(app_settings.get("plotter.downsample", True))
         self._antialias = bool(app_settings.get("plotter.antialias", False))
+        # Gemeinsame Skala: glatter, quantisierter Y-Bereich statt
+        # enableAutoRange(Y) nach jedem setData (siehe nice_y_range).
+        self._quantize_y = bool(app_settings.get("plotter.quantizeYRange", True))
 
         self._timer = QTimer(self)
         self._timer.setInterval(self._render_interval)
@@ -471,17 +527,48 @@ class PyQtGraphHost(QQuickPaintedItem):
         if shared != self._last_shared:
             self._last_shared = shared
             self._last_x_max = -1.0     # Achsen werden ohnehin neu aufgebaut
-            if shared:
+            self._last_y_range = None
+            if shared and not self._quantize_y:
                 self._plot.enableAutoRange(axis=_Y_AXIS, enable=True)
             else:
                 self._plot.enableAutoRange(axis=_Y_AXIS, enable=False)
-                self._plot.setYRange(-0.1, 1.1, padding=0.0)
+                if not shared:
+                    # Normiert wird auf 0..1 — der Bereich steht damit fest
+                    # und muss nie wieder angefasst werden.
+                    self._plot.setYRange(-0.1, 1.1, padding=0.0)
+        if shared and self._quantize_y:
+            self._apply_shared_y_range()
         # setXRange stoesst ein vollstaendiges Neu-Layout der Achsen an. Die
         # Fensterbreite aendert sich aber nur beim Zoomen oder waehrend sich
         # der Ring fuellt — nicht in jedem Frame.
         if last > 0 and last != self._last_x_max:
             self._last_x_max = last
             self._plot.setXRange(0, last, padding=0.0)
+
+    def _apply_shared_y_range(self) -> None:
+        """Y-Bereich bei gemeinsamer Skala setzen — aber nur, wenn noetig.
+
+        Wachsen sofort (sonst liefe die Kurve aus dem Bild), schrumpfen erst,
+        wenn der aktuelle Bereich mehr als doppelt so gross ist wie noetig.
+        Zusammen mit der 1-2-5-Rundung ergibt das eine Achse, die im
+        Normalbetrieb minutenlang unveraendert stehen bleibt — und ein
+        unveraenderter Bereich kostet gar nichts.
+        """
+        values = self._plotter.value_range()
+        if values is None:
+            return
+        nice = nice_y_range(*values)
+        if nice is None:
+            return
+        lo, hi = nice
+        cur = self._last_y_range
+        if cur is not None:
+            clo, chi = cur
+            passt = clo <= values[0] and values[1] <= chi
+            if passt and (hi - lo) > 0.5 * (chi - clo):
+                return
+        self._last_y_range = (lo, hi)
+        self._plot.setYRange(lo, hi, padding=0.0)
 
     def _ensure_curves(self, n: int) -> None:
         while len(self._curves) < n:
@@ -650,6 +737,7 @@ class PyQtGraphHost(QQuickPaintedItem):
                 pass
         self._last_shared = None
         self._last_x_max = -1.0
+        self._last_y_range = None
         # Beim nächsten Redraw werden die Kurven neu erzeugt.
         self._dirty = True
         if self._mode == "image":

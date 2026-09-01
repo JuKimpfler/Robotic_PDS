@@ -227,6 +227,12 @@ DEFAULTS: dict[str, Any] = {
         # ein Ausreißer kann bis zu statsIntervalMs leicht über den Bildrand
         # ragen. false = wie früher, jedes Bild neu.
         "cacheNormBounds": True,
+        # Gemeinsame Skala: Y-Bereich auf glatte 1-2-5-Schritte runden und
+        # nur bei echtem Bedarf ändern, statt pyqtgraph nach jedem setData
+        # neu auto-skalieren zu lassen. Auto-Skalierung rechnet Ticks und
+        # Beschriftung in JEDEM Bild neu. false = wie früher (autoRange).
+        # Im Normierungs-Modus ohne Wirkung — dort steht der Bereich fest.
+        "quantizeYRange": True,
         # pyqtgraph: Downsampling (auto) und Antialiasing — beide primär
         # für die Zeichen-Performance auf dem RPi 4 (2 GB).
         "downsample": True,

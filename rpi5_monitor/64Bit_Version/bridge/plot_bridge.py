@@ -952,7 +952,7 @@ class PlotBridge(QObject):
         if n == 0:
             return []
         rows = data.shape[0]
-        if not shared_scale and _CACHE_NORM_BOUNDS and self._norm_rows != rows:
+        if _CACHE_NORM_BOUNDS and self._norm_rows != rows:
             # Auswahl oder Fenster haben sich geaendert -> der
             # Zwischenspeicher gilt nicht mehr. Einmal nachziehen, statt bis
             # zum naechsten Statistik-Takt falsch zu skalieren.
@@ -988,6 +988,28 @@ class PlotBridge(QObject):
                     ys.fill(0.0)
             out.append((xs, ys))
         return out
+
+    def value_range(self) -> tuple[float, float] | None:
+        """Kleinster und groesster Wert ueber ALLE sichtbaren Kurven.
+
+        Fuer die gemeinsame Y-Skala: der Host quantisiert daraus einen
+        glatten Achsenbereich, statt pyqtgraph nach jedem setData neu
+        auto-skalieren zu lassen (das rechnet Ticks und Beschriftung in
+        JEDEM Bild neu). Kommt aus demselben Zwischenspeicher wie die
+        Normierungsgrenzen — es ist dieselbe Zahl.
+
+        None heisst: noch keine gueltigen Werte, Bereich unveraendert lassen.
+        """
+        rows = self._norm_rows
+        if rows <= 0:
+            return None
+        rows = min(rows, MAX_CURVES)
+        ok = self._norm_ok[:rows]
+        if not ok.any():
+            return None
+        mn = float(np.min(self._norm_min[:rows], where=ok, initial=np.inf))
+        mx = float(np.max(self._norm_max[:rows], where=ok, initial=-np.inf))
+        return mn, mx
 
     def _extend_norm_bounds(self, block: np.ndarray, width: int, n_new: int) -> None:
         """Die gepufferten Normierungsgrenzen um den neuen Block ERWEITERN.
