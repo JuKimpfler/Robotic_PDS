@@ -426,22 +426,35 @@ class PyQtGraphHost(QQuickPaintedItem):
             return                 # nichts Neues -> kein Bild, keine Last
         self._dirty = False
 
+        # Das Messfenster muss den GANZEN Durchlauf umfassen — im Image-Modus
+        # gehoert _render_to_pixmap() ausdruecklich dazu. Genau dort rastert
+        # Qt das komplette Widget (Gitter, Achsen, alle Polylinien), und das
+        # ist der teuerste Schritt ueberhaupt. Frueher endete die Messung
+        # davor: der Waechter hat ein Budget von 80 ms ueberwacht, von dem er
+        # den groessten Posten gar nicht gesehen hat, und der adaptive Takt
+        # unten haette sich an einer Zahl orientiert, die nicht die Wahrheit
+        # sagt.
         t0 = time.perf_counter()
         try:
             arrays = self._plotter.get_plot_arrays()
             self._update_curves(arrays)
             self._update_markers(arrays)
             self._update_frozen_overlay(arrays)
+            if self._mode == "image":
+                self._render_to_pixmap()
         except Exception as exc:  # noqa: BLE001
             log.warning("Plot-Redraw fehlgeschlagen: %s", exc)
             self._fail_to_error(f"Plot-Redraw fehlgeschlagen: {exc}")
             return
         dt = (time.perf_counter() - t0) * 1000.0
-        self._plotter.note_render(dt)
 
         if self._mode == "image":
-            self._render_to_pixmap()
             self.update()          # QQuickPaintedItem neu zeichnen lassen
+
+        # Erst ganz zum Schluss melden: note_render() kann den Plotter
+        # abschalten (Ueberlastung), und dann sollen die Kurven wenigstens
+        # in dem Zustand stehenbleiben, den dieser Durchlauf erzeugt hat.
+        self._plotter.note_render(dt)
 
     def _update_curves(self, arrays) -> None:
         n = len(arrays)
