@@ -106,9 +106,14 @@ jobs:
           # Qt-Warnung als Fehler.
 
       - name: Abhaengigkeiten installieren
+        # pyqtgraph gehoert dazu: ohne das Paket faellt der Plotter-Host in
+        # den Fehler-Modus, Main.qml laedt trotzdem warnungsfrei und der
+        # Smoketest wird gruen, ohne dass der Plotter je ein Bild gezeichnet
+        # hat. Gemessen: 0 Zeichendurchlaeufe ohne, 59 mit pyqtgraph.
+        # qml_smoketest.py besteht seitdem auf 'native'/'image'.
         run: |
           python -m pip install --upgrade pip
-          python -m pip install numpy PyQt6
+          python -m pip install numpy PyQt6 pyqtgraph
 
       - name: Main.qml offscreen starten
         run: python tools/qml_smoketest.py

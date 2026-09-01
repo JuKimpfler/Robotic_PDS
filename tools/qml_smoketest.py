@@ -557,6 +557,21 @@ def main() -> int:
     QTimer.singleShot(1200, step_timer.start)
     app.exec()
 
+    # ── Der Plotter muss wirklich gezeichnet haben ────────────────────────
+    #  Fehlt pyqtgraph, faellt PyQtGraphHost still in den Fehler-Modus: die
+    #  Oberflaeche laedt dann warnungsfrei, der Test wird gruen — und der
+    #  komplette Plotter-Pfad (Aufbau, Zeichentakt, Marken, Bildausgabe)
+    #  bleibt ungeprueft. Genau so ist der Umbau auf pyqtgraph durch die CI
+    #  gelaufen, ohne dass ein einziges Bild entstanden ist. Der Fehler-Modus
+    #  ist deshalb hier ein Testfehler und keine Randnotiz.
+    #  Vor dem Herunterfahren abfragen, danach ist die Szene halb abgeraeumt.
+    for host in engine.rootObjects()[0].findChildren(PyQtGraphHost):
+        if host.mode not in ("native", "image"):
+            _warnings.append(
+                f"Plotter-Host steht im Modus {host.mode!r} statt "
+                f"'native' oder 'image' — der Plotter hat nichts gezeichnet. "
+                f"Fehlt pyqtgraph? (pip install pyqtgraph)")
+
     # Das Herunterfahren ist selbst Pruefgegenstand: genau hier ist die
     # Anwendung schon einmal abgestuerzt (ein Attribut, das eine interne
     # Methode von threading.Thread ueberdeckte). Ohne diesen Rahmen reisst so
