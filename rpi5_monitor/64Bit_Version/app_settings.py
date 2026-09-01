@@ -221,6 +221,12 @@ DEFAULTS: dict[str, Any] = {
         # vollen Datentakt (20 Hz) der teuerste Posten des Plotters, und
         # lesbar ist das ohnehin nicht. 0 = bei jedem Paket (wie früher).
         "statsIntervalMs": 200,
+        # Die Normierungsgrenzen (min/max je Kurve) fallen im Statistik-Takt
+        # ohnehin an. Sie dort mitzunehmen, statt sie je Kurve und Bild neu
+        # zu rechnen, spart rund ein Drittel der Datenaufbereitung. Preis:
+        # ein Ausreißer kann bis zu statsIntervalMs leicht über den Bildrand
+        # ragen. false = wie früher, jedes Bild neu.
+        "cacheNormBounds": True,
         # pyqtgraph: Downsampling (auto) und Antialiasing — beide primär
         # für die Zeichen-Performance auf dem RPi 4 (2 GB).
         "downsample": True,

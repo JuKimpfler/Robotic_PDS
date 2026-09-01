@@ -122,6 +122,11 @@ _PERF = {
 _STATS_INTERVAL_S = max(0.0, float(
     app_settings.get("plotter.statsIntervalMs", 200)) / 1000.0)
 
+# Normierungsgrenzen (min/max je Kurve im sichtbaren Fenster) aus dem
+# Statistik-Takt uebernehmen, statt sie in JEDEM Bild neu zu rechnen. Siehe
+# get_plot_arrays(). Auf false gestellt rechnet der Plotter wie vorher.
+_CACHE_NORM_BOUNDS = bool(app_settings.get("plotter.cacheNormBounds", True))
+
 
 class PlotBridge(QObject):
     bufferChanged        = pyqtSignal()
@@ -178,6 +183,20 @@ class PlotBridge(QObject):
         # damit eine Flanke genau an der Blockgrenze nicht verloren geht.
         # Frueher ein np.concatenate je Block (20-mal pro Sekunde).
         self._trig_buf = np.empty(self._cap + 1, dtype=np.float32)
+
+        # ── Zwischengespeicherte Normierungsgrenzen ───────────────────────
+        #  min/max je Kurve im sichtbaren Fenster. Gerechnet wird das im
+        #  Statistik-Takt (_refresh_stats), verbraucht wird es je Bild in
+        #  get_plot_arrays(). _norm_rows = fuer wie viele Kurven der
+        #  Zwischenspeicher gilt, -1 = ungueltig (Fenster/Auswahl geaendert).
+        self._norm_min  = np.zeros(MAX_CURVES, dtype=np.float64)
+        self._norm_max  = np.zeros(MAX_CURVES, dtype=np.float64)
+        self._norm_ok   = np.zeros(MAX_CURVES, dtype=bool)
+        self._norm_rows = -1
+        # Gueltigkeitsmaske fuer den gerade eingetroffenen Block (siehe
+        # _extend_norm_bounds) — eigener Puffer, weil _mask_buf an der
+        # Fensterbreite haengt und ein Block auch laenger sein kann.
+        self._blk_mask  = np.empty(self._cap, dtype=bool)
 
         self._channels: list[int] = [0]
         self._names = [VARIABLE_NAMES.get(i, f"Var_{i:03d}") for i in range(MAX_FLOATS)]
@@ -372,6 +391,7 @@ class PlotBridge(QObject):
         self._ring = moved
         self._channels = clean
         self._frozen_snapshot = None      # Zeilenzahl kann sich geaendert haben
+        self._norm_rows = -1
         self.channelsChanged.emit()
         # Namen/Farben der Legende haengen an der Auswahl -> sofort neu
         # rechnen, nicht erst wenn die Drossel wieder faellig ist.
@@ -470,6 +490,7 @@ class PlotBridge(QObject):
         if n == self._points:
             return
         self._points = n
+        self._norm_rows = -1        # anderes Fenster -> andere Grenzen
         self.pointsChanged.emit()
         self.bufferChanged.emit()
 
@@ -487,6 +508,7 @@ class PlotBridge(QObject):
         snap = self.snapshot().copy() if value else None
         self._frozen = value
         self._frozen_snapshot = snap
+        self._norm_rows = -1        # anderes Fenster -> andere Grenzen
         if not value:
             self._trig_fired_at = None
             self._trig_capture_at = None
@@ -703,6 +725,7 @@ class PlotBridge(QObject):
         self._stats = "—"
         self._curve_info = []
         self._stats_due = 0.0
+        self._norm_rows = -1
         self.statsChanged.emit()
         self.markersChanged.emit()
         self.bufferChanged.emit()
@@ -755,6 +778,9 @@ class PlotBridge(QObject):
 
         if self._trig_enabled:
             self._evaluate_trigger(block, width, n_new)
+
+        if _CACHE_NORM_BOUNDS and self._norm_rows >= 0:
+            self._extend_norm_bounds(block, width, n_new)
 
         self._update_stats()
         self.bufferChanged.emit()
@@ -911,6 +937,13 @@ class PlotBridge(QObject):
         Die y-Arrays sind Views in _y_buf und werden im naechsten Frame
         ueberschrieben. Genau das ist gewollt: pyqtgraph baut daraus beim
         Zeichnen ohnehin seine eigene Darstellung.
+
+        Die Normierungsgrenzen (min/max je Kurve) kommen aus dem
+        Statistik-Takt statt aus zwei vollen Array-Durchlaeufen JE KURVE UND
+        BILD. Sie aendern sich ueber 200 ms hinweg kaum, und wenn doch, ragt
+        ein Ausreisser hoechstens fuer diese Zeitspanne leicht ueber den
+        Bildrand — dieselbe Abwaegung wie bei der Legenden-Drossel. Wer das
+        nicht will, setzt "plotter.cacheNormBounds" auf false.
         """
         if shared_scale is None:
             shared_scale = self._shared_scale
@@ -918,15 +951,29 @@ class PlotBridge(QObject):
         n = data.shape[1]
         if n == 0:
             return []
+        rows = data.shape[0]
+        if not shared_scale and _CACHE_NORM_BOUNDS and self._norm_rows != rows:
+            # Auswahl oder Fenster haben sich geaendert -> der
+            # Zwischenspeicher gilt nicht mehr. Einmal nachziehen, statt bis
+            # zum naechsten Statistik-Takt falsch zu skalieren.
+            self._refresh_norm_bounds(data)
         xs = self.x_axis(n)
         out: list[tuple[np.ndarray, np.ndarray]] = []
-        for row in range(data.shape[0]):
+        for row in range(rows):
             series = data[row]
             ys = self._y_buf[row, :n]
             if shared_scale:
                 # Kopie statt View: der Ringpuffer laeuft weiter, waehrend
                 # pyqtgraph das Array noch zum Zeichnen haelt.
                 np.copyto(ys, series)
+            elif _CACHE_NORM_BOUNDS:
+                if self._norm_ok[row]:
+                    mn = self._norm_min[row]
+                    span = (self._norm_max[row] - mn) or 1.0
+                    np.subtract(series, mn, out=ys)
+                    np.multiply(ys, np.float32(1.0 / span), out=ys)
+                else:
+                    ys.fill(0.0)
             else:
                 finite = np.isfinite(series, out=self._mask_buf[:n])
                 if finite.any():
@@ -941,6 +988,62 @@ class PlotBridge(QObject):
                     ys.fill(0.0)
             out.append((xs, ys))
         return out
+
+    def _extend_norm_bounds(self, block: np.ndarray, width: int, n_new: int) -> None:
+        """Die gepufferten Normierungsgrenzen um den neuen Block ERWEITERN.
+
+        Zwischen zwei Statistik-Takten (200 ms) koennen bis zu 20 neue
+        Samples eintreffen. Springt das Signal in dieser Zeit auf ein
+        Vielfaches seiner bisherigen Spanne, wuerde eine rein
+        zwischengespeicherte Grenze die Kurve weit ueber den Bildrand
+        schieben — abgeschnitten und damit unlesbar. Deshalb wachsen die
+        Grenzen mit JEDEM Block mit; das kostet ein min/max ueber die ~5
+        neuen Werte je Kurve, also nichts.
+
+        Nur wachsen, nie schrumpfen: laeuft der Ausreisser links aus dem
+        Fenster, bleibt die Grenze bis zum naechsten Statistik-Takt zu weit.
+        Die Kurve ist dann fuer hoechstens 200 ms etwas gestaucht — das
+        sieht man kaum, waehrend eine zu enge Grenze sofort auffaellt.
+        """
+        mask = self._blk_mask[:n_new]
+        for row in range(min(self._norm_rows, len(self._channels), MAX_CURVES)):
+            chn = self._channels[row]
+            if chn >= width:
+                continue
+            col = block[:, chn]
+            finite = np.isfinite(col, out=mask)
+            if not finite.any():
+                continue
+            mn = float(col.min(where=finite, initial=np.inf))
+            mx = float(col.max(where=finite, initial=-np.inf))
+            if self._norm_ok[row]:
+                if mn < self._norm_min[row]:
+                    self._norm_min[row] = mn
+                if mx > self._norm_max[row]:
+                    self._norm_max[row] = mx
+            else:
+                self._norm_min[row] = mn
+                self._norm_max[row] = mx
+                self._norm_ok[row] = True
+
+    def _refresh_norm_bounds(self, data: np.ndarray) -> None:
+        """min/max je Kurve im sichtbaren Fenster in den Zwischenspeicher.
+
+        Laeuft aus _refresh_stats() (also im Statistik-Takt) und einmal
+        sofort, wenn sich die Kurvenzahl geaendert hat.
+        """
+        n = data.shape[1]
+        rows = data.shape[0]
+        for row in range(rows):
+            series = data[row]
+            finite = np.isfinite(series, out=self._mask_buf[:n]) if n else None
+            if n and finite.any():
+                self._norm_min[row] = float(series.min(where=finite, initial=np.inf))
+                self._norm_max[row] = float(series.max(where=finite, initial=-np.inf))
+                self._norm_ok[row] = True
+            else:
+                self._norm_ok[row] = False
+        self._norm_rows = rows
 
     def _update_stats(self, force: bool = False) -> None:
         """Statistikzeile und Legende neu rechnen — aber hoechstens alle
@@ -994,8 +1097,15 @@ class PlotBridge(QObject):
                     if row == 0:
                         first = (entry["min"], entry["max"], entry["last"],
                                  float(np.std(series, where=finite)))
+            # Dieselben Zahlen normiert get_plot_arrays() je Bild — dort
+            # werden sie ab hier nur noch abgelesen (siehe dort).
+            if row < MAX_CURVES:
+                self._norm_min[row] = entry["min"]
+                self._norm_max[row] = entry["max"]
+                self._norm_ok[row] = entry["valid"]
             info.append(entry)
 
+        self._norm_rows = rows if n else -1
         self._curve_info = info
         if first is None:
             return
