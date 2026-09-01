@@ -205,7 +205,22 @@ DEFAULTS: dict[str, Any] = {
         # Redraw ist auf maxFps gedeckelt (unabhängig von Daten-Bursts).
         # Bei anhaltender Überlastung (Event-Loop-Staulast) schaltet der
         # Plotter ab und zeigt einen Hinweis, statt die GUI einzufrieren.
-        "maxFps": 20,
+        #
+        # Das Rastern der Kurven (pyqtgraph zeichnet Gitter, Achsen und alle
+        # Polylinien neu) macht rund 95 % der Plotter-Last aus — nicht die
+        # Datenaufbereitung. Der Bildtakt ist damit der wirksamste Hebel
+        # ueberhaupt: 12 statt 20 fps sind gut 40 % weniger Rechenlast, und
+        # ein Trendverlauf laeuft damit immer noch fluessig. Wer die
+        # Leistung hat, stellt hier wieder 20 (oder mehr) ein.
+        "maxFps": 12,
+        # Takt, wenn der Plotter nichts zu tun hat (anderer Tab, abgeschaltet).
+        # Er sieht dann nur nach, ob er wieder zeichnen darf.
+        "idleFps": 4,
+        # Wie oft Statistikzeile und Legende neu gerechnet werden. Das
+        # Signal baut den Legenden-Repeater in QML komplett neu auf — im
+        # vollen Datentakt (20 Hz) der teuerste Posten des Plotters, und
+        # lesbar ist das ohnehin nicht. 0 = bei jedem Paket (wie früher).
+        "statsIntervalMs": 200,
         # pyqtgraph: Downsampling (auto) und Antialiasing — beide primär
         # für die Zeichen-Performance auf dem RPi 4 (2 GB).
         "downsample": True,

@@ -36,6 +36,31 @@ Den Rest (Überlastung erkennen und den Plotter abschalten) macht der
 PerfWatchdog.
 
 ────────────────────────────────────────────────────────────────────────────
+KEINE NEUEN ARRAYS IM DATENTAKT
+────────────────────────────────────────────────────────────────────────────
+Alles, was 20-mal pro Sekunde laeuft (Ringpuffer schreiben, Fenster
+ausschneiden, Kurven fuer die Anzeige aufbereiten), benutzt VORAB ANGELEGTE
+Puffer. Sonst entsteht pro Sekunde ein knappes Megabyte an kurzlebigen
+NumPy-Arrays, das der Garbage Collector wieder einsammeln muss — auf einem
+Raspberry Pi ist genau das als Ruckeln spuerbar. Die Puffer kosten zusammen
+rund 100 kB und werden nie neu angelegt.
+
+Aus demselben Grund liefert get_plot_arrays() float32 statt float64: das
+halbiert die kopierte Datenmenge, und pyqtgraph rechnet ohnehin intern in
+seine eigene Darstellung um.
+
+────────────────────────────────────────────────────────────────────────────
+LEGENDE UND STATISTIK LAUFEN LANGSAMER ALS DIE DATEN
+────────────────────────────────────────────────────────────────────────────
+`statsChanged` laesst QML die Legende (Repeater ueber curveInfo) komplett neu
+aufbauen — Delegates zerstoeren und neu erzeugen. Im Datentakt (20 Hz) ist das
+der mit Abstand teuerste Teil des Plotters, obwohl niemand fuenfstellige
+Zahlen 20-mal pro Sekunde lesen kann. Deshalb wird die Statistik gedrosselt
+(settings.json -> "plotter.statsIntervalMs", Vorgabe 200 ms) und in EINEM
+Durchlauf fuer alle Kurven berechnet; curveInfo gibt danach nur noch das
+zwischengespeicherte Ergebnis zurueck.
+
+────────────────────────────────────────────────────────────────────────────
 TRIGGER (Oszilloskop-Prinzip)
 ────────────────────────────────────────────────────────────────────────────
 Ein Trigger friert den Verlauf im Moment eines Ereignisses ein, statt dass man
@@ -46,9 +71,10 @@ Aufzeichnung läuft im Ring immer mit; löst der Trigger aus, wird noch
 from __future__ import annotations
 
 import logging
+from time import monotonic
 
 import numpy as np
-from PyQt6.QtCore import Qt, QObject, pyqtSignal, pyqtSlot, pyqtProperty
+from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot, pyqtProperty
 
 import app_settings
 from config import MAX_FLOATS, PLOT_BUFFER_SIZE, VARIABLE_NAMES
@@ -89,6 +115,12 @@ _PERF = {
     "renderDisableMs": float(app_settings.get("plotter.renderDisableMs", 80.0)),
 }
 
+# Mindestabstand zwischen zwei Statistik-/Legenden-Aktualisierungen. Siehe
+# Modul-Docstring: das ist der teuerste Teil des Plotters, und schneller als
+# ein paar Mal pro Sekunde kann man Zahlen ohnehin nicht lesen.
+_STATS_INTERVAL_S = max(0.0, float(
+    app_settings.get("plotter.statsIntervalMs", 200)) / 1000.0)
+
 
 class PlotBridge(QObject):
     bufferChanged        = pyqtSignal()
@@ -120,6 +152,22 @@ class PlotBridge(QObject):
         self._filled = 0       # wie viele Spalten gueltig sind
         self._total = 0        # absolut gezaehlte Samples seit clear()
 
+        # ── Vorab angelegte Arbeitspuffer ─────────────────────────────────
+        #  Siehe Modul-Docstring: im Datentakt wird NICHTS mehr neu
+        #  angelegt. Zusammen rund 100 kB, ein für alle Mal.
+        #    _snap_buf  Fenster aus snapshot()      (nur bei Ring-Umbruch)
+        #    _live_buf  dito fuer live_snapshot()   (eigener Puffer, damit
+        #               ein Aufruf den anderen nicht ueberschreibt)
+        #    _y_buf     fertige Kurven fuer die Anzeige (get_plot_arrays)
+        #    _mask_buf  Gueltigkeitsmaske (isfinite) fuer Statistik/Normierung
+        #    _xs        x-Achse 0..n-1; haengt nur an n und bleibt deshalb
+        #               ueber Frames hinweg dieselbe (auch fuer pyqtgraph)
+        self._snap_buf = np.empty((MAX_CURVES, self._cap), dtype=np.float32)
+        self._live_buf = np.empty((MAX_CURVES, self._cap), dtype=np.float32)
+        self._y_buf    = np.empty((MAX_CURVES, self._cap), dtype=np.float32)
+        self._mask_buf = np.empty(self._cap, dtype=bool)
+        self._xs       = np.empty(0, dtype=np.float32)
+
         self._channels: list[int] = [0]
         self._names = [VARIABLE_NAMES.get(i, f"Var_{i:03d}") for i in range(MAX_FLOATS)]
         self._units: dict[int, str] = {}
@@ -128,6 +176,10 @@ class PlotBridge(QObject):
         self._frozen_snapshot: np.ndarray | None = None
         self._shared_scale = False
         self._stats = "—"
+        # Zwischengespeicherte Legende + naechster faelliger Rechenzeitpunkt
+        # (gedrosselt, siehe Modul-Docstring).
+        self._curve_info: list[dict] = []
+        self._stats_due = 0.0
 
         # ── Trigger ───────────────────────────────────────────────────────
         self._trig_enabled = False
@@ -310,7 +362,9 @@ class PlotBridge(QObject):
         self._channels = clean
         self._frozen_snapshot = None      # Zeilenzahl kann sich geaendert haben
         self.channelsChanged.emit()
-        self._update_stats()
+        # Namen/Farben der Legende haengen an der Auswahl -> sofort neu
+        # rechnen, nicht erst wenn die Drossel wieder faellig ist.
+        self._update_stats(force=True)
         self.bufferChanged.emit()
 
     @pyqtSlot(int)
@@ -343,28 +397,17 @@ class PlotBridge(QObject):
     @pyqtProperty("QVariantList", notify=statsChanged)
     def curveInfo(self):
         """Legende: je Kurve Name, Einheit, Farbe und Min/Max/Aktuell im
-        sichtbaren Fenster. Wird nur beim Statistik-Update neu gebaut, nicht
-        bei jedem Paket."""
-        data = self.snapshot()
-        out = []
-        for row, chn in enumerate(self._channels):
-            info = {
-                "channel": chn,
-                "name": self._names[chn] if chn < len(self._names) else f"Var_{chn:03d}",
-                "unit": self._units.get(chn, ""),
-                "color": CURVE_COLORS[row % len(CURVE_COLORS)],
-                "min": 0.0, "max": 0.0, "last": 0.0, "valid": False,
-            }
-            if data is not None and data.shape[1] > 0:
-                series = data[row]
-                if np.any(np.isfinite(series)):
-                    info["min"] = float(np.nanmin(series))
-                    info["max"] = float(np.nanmax(series))
-                    finite = series[np.isfinite(series)]
-                    info["last"] = float(finite[-1])
-                    info["valid"] = True
-            out.append(info)
-        return out
+        sichtbaren Fenster.
+
+        Gibt nur den Zwischenspeicher zurueck — gerechnet wird in
+        _refresh_stats(), und zwar gedrosselt und fuer alle Kurven in einem
+        Durchlauf. Frueher lief hier bei JEDER Auswertung der Bindung ein
+        eigener Satz voller Array-Durchlaeufe je Kurve; QML wertet die
+        Bindung aber bei jedem statsChanged neu aus, also 20-mal pro Sekunde.
+        """
+        if len(self._curve_info) != len(self._channels):
+            self._refresh_stats()      # z. B. erster Zugriff vor dem 1. Paket
+        return self._curve_info
 
     # ══════════════════════════════════════════════════════════════════════
     #  Namen / Einheiten
@@ -609,6 +652,8 @@ class PlotBridge(QObject):
 
     def visible_markers(self, points: int) -> list[tuple[float, str, int]]:
         """Marken im sichtbaren Fenster als (0..1-Position, Text, Level)."""
+        if not self._markers:
+            return []            # Normalfall — gar nicht erst weiterrechnen
         count = min(points, self._filled)
         if count <= 1:
             return []
@@ -645,6 +690,8 @@ class PlotBridge(QObject):
         self._trig_fired_at = None
         self._last_trig_value = np.nan
         self._stats = "—"
+        self._curve_info = []
+        self._stats_due = 0.0
         self.statsChanged.emit()
         self.markersChanged.emit()
         self.bufferChanged.emit()
@@ -667,28 +714,29 @@ class PlotBridge(QObject):
             block = block[-self._cap:]
             n_new = self._cap
 
-        # ── Auswahl der dargestellten Kanaele, vektorisiert ───────────────
-        n_curves = len(self._channels)
-        cols = np.full((n_curves, n_new), np.nan, dtype=np.float32)
-        idx = np.fromiter(self._channels, dtype=np.intp, count=n_curves)
-        in_range = idx < width
-        if np.any(in_range):
-            cols[in_range] = block[:, idx[in_range]].T
-
-        # ── In den Ring schreiben (mit Umbruch) ───────────────────────────
+        # ── Die gewaehlten Spalten direkt in den Ring schreiben ───────────
+        #  Frueher lief das ueber ein Zwischenarray plus zwei Fancy-Index-
+        #  Kopien (block[:, idx].T, dann boolesche Zeilenauswahl). Bei
+        #  hoechstens acht Kurven ist die Schleife hier billiger — vor allem
+        #  legt sie ueberhaupt kein Array mehr an.
+        #  Zeilen jenseits der Auswahl bleiben unberuehrt: gelesen wird immer
+        #  nur [:n_curves], und setChannels() legt neue Zeilen als NaN an.
         start = self._write
         end = start + n_new
-        if end <= self._cap:
-            self._ring[:n_curves, start:end] = cols
-            if n_curves < MAX_CURVES:
-                self._ring[n_curves:, start:end] = np.nan
-        else:
-            head = self._cap - start
-            self._ring[:n_curves, start:] = cols[:, :head]
-            self._ring[:n_curves, :end - self._cap] = cols[:, head:]
-            if n_curves < MAX_CURVES:
-                self._ring[n_curves:, start:] = np.nan
-                self._ring[n_curves:, :end - self._cap] = np.nan
+        head = min(n_new, self._cap - start)     # bis zum Ringende
+        tail = n_new - head                      # Rest am Ringanfang
+        ring = self._ring
+        for row, chn in enumerate(self._channels):
+            if chn < width:
+                src = block[:, chn]
+                ring[row, start:start + head] = src[:head]
+                if tail:
+                    ring[row, :tail] = src[head:]
+            else:
+                # Kanal in diesem Paket nicht belegt -> Linie unterbrechen.
+                ring[row, start:start + head] = np.nan
+                if tail:
+                    ring[row, :tail] = np.nan
 
         self._write = end % self._cap
         self._filled = min(self._filled + n_new, self._cap)
@@ -764,41 +812,47 @@ class PlotBridge(QObject):
             self._trig_capture_at = self._trig_fired_at + max(1, post)
         self.triggerChanged.emit()
 
-    def snapshot(self, points: int | None = None) -> np.ndarray:
+    def _window(self, scratch: np.ndarray, points: int) -> np.ndarray:
         """Die letzten `points` Samples aller aktiven Kurven, in Zeitreihenfolge.
 
-        Rueckgabe: 2D-Array (Kurven x Samples). Bei Umbruch im Ring wird
-        genau einmal kopiert (np.concatenate); sonst ist es ein View.
+        Liegt das Fenster am Stueck im Ring, ist die Rueckgabe ein View —
+        ohne jede Kopie. Nur beim Umbruch werden die beiden Haelften
+        zusammengesetzt, und zwar in den mitgegebenen VORAB ANGELEGTEN Puffer
+        statt in ein frisches np.concatenate-Array (das waere bei acht Kurven
+        und 20 Hz rund 1 MB kurzlebiger Speicher pro Sekunde).
+
+        Achtung: die Rueckgabe kann damit auf `scratch` zeigen und wird beim
+        naechsten Aufruf mit demselben Puffer ueberschrieben. Wer sie
+        aufheben will (siehe _frozen_snapshot), muss .copy() aufrufen.
         """
-        if self._frozen and self._frozen_snapshot is not None:
-            return self._frozen_snapshot
         n_curves = len(self._channels)
-        count = min(points if points is not None else self._points, self._filled)
+        count = min(points, self._filled)
         if count <= 0:
             return np.empty((n_curves, 0), dtype=np.float32)
         start = (self._write - count) % self._cap
         if start + count <= self._cap:
             return self._ring[:n_curves, start:start + count]
-        return np.concatenate(
-            (self._ring[:n_curves, start:], self._ring[:n_curves, :start + count - self._cap]),
-            axis=1,
-        )
+        head = self._cap - start
+        out = scratch[:n_curves, :count]
+        out[:, :head] = self._ring[:n_curves, start:]
+        out[:, head:] = self._ring[:n_curves, :count - head]
+        return out
+
+    def snapshot(self, points: int | None = None) -> np.ndarray:
+        """Das sichtbare Fenster — eingefroren der festgehaltene Stand."""
+        if self._frozen and self._frozen_snapshot is not None:
+            return self._frozen_snapshot
+        return self._window(self._snap_buf,
+                            self._points if points is None else points)
 
     def live_snapshot(self) -> np.ndarray:
         """Immer der LAUFENDE Verlauf, auch wenn eingefroren ist — so bleibt
         im eingefrorenen Bild sichtbar, was inzwischen weiterlaeuft.
+
+        Eigener Puffer, damit ein snapshot() daneben nicht ueberschrieben
+        wird: der Host holt beides im selben Zeichendurchlauf.
         """
-        n_curves = len(self._channels)
-        count = min(self._points, self._filled)
-        if count <= 0:
-            return np.empty((n_curves, 0), dtype=np.float32)
-        start = (self._write - count) % self._cap
-        if start + count <= self._cap:
-            return self._ring[:n_curves, start:start + count]
-        return np.concatenate(
-            (self._ring[:n_curves, start:], self._ring[:n_curves, :start + count - self._cap]),
-            axis=1,
-        )
+        return self._window(self._live_buf, self._points)
 
     def frozen_snapshot(self) -> np.ndarray | None:
         return self._frozen_snapshot
@@ -807,17 +861,39 @@ class PlotBridge(QObject):
     #  Ausgabe für die Darstellung (pyqtgraph)
     # ══════════════════════════════════════════════════════════════════════
 
+    def x_axis(self, n: int) -> np.ndarray:
+        """Die x-Achse 0..n-1 — einmal angelegt und wiederverwendet.
+
+        Der Inhalt haengt nur an n und aendert sich zwischen den Frames
+        nicht. Deshalb darf dasselbe Array auch bei pyqtgraph liegen
+        bleiben; neu angelegt wird es nur, wenn sich die Fensterbreite
+        aendert (Zoom, Punktezahl).
+        """
+        if self._xs.shape[0] != n:
+            self._xs = np.arange(n, dtype=np.float32)
+        return self._xs
+
     def get_plot_arrays(self, shared_scale: bool | None = None
                         ) -> list[tuple[np.ndarray, np.ndarray]]:
         """Bereitet die sichtbaren Kurven als (x, y)-NumPy-Paare auf.
 
-        x ist der Sample-Index (0..n-1); y sind die Werte als float64.
+        x ist der Sample-Index (0..n-1); y sind die Werte als float32.
 
         Bei EINZELSKALA (shared_scale=False) wird jede Kurve auf den eigenen
         Wertebereich normiert (0..1), damit Kanaele völlig verschiedener
         Groessenordnung (12 V Akku neben 0.3 Ballwinkel) gleichzeitig
         sichtbar sind. Bei GEMEINSAMER SKALA werden die Rohwerte geliefert
         und pyqtgraph auto-skaliert die Y-Achse.
+
+        Alles laeuft in die vorab angelegten Puffer (_y_buf, _mask_buf,
+        _xs): pro Frame entsteht kein einziges neues Array mehr. Vorher
+        waren es je Kurve bis zu vier — bei acht Kurven, 500 Punkten und
+        20 fps rund 2,5 MB pro Sekunde, die der Garbage Collector im
+        GUI-Thread wieder einsammeln musste.
+
+        Die y-Arrays sind Views in _y_buf und werden im naechsten Frame
+        ueberschrieben. Genau das ist gewollt: pyqtgraph baut daraus beim
+        Zeichnen ohnehin seine eigene Darstellung.
         """
         if shared_scale is None:
             shared_scale = self._shared_scale
@@ -825,42 +901,105 @@ class PlotBridge(QObject):
         n = data.shape[1]
         if n == 0:
             return []
-        xs = np.arange(n, dtype=np.float64)
+        xs = self.x_axis(n)
         out: list[tuple[np.ndarray, np.ndarray]] = []
-        if shared_scale:
-            for row in range(data.shape[0]):
-                out.append((xs, data[row].astype(np.float64)))
-        else:
-            for row in range(data.shape[0]):
-                series = data[row].astype(np.float64)
-                finite = np.isfinite(series)
+        for row in range(data.shape[0]):
+            series = data[row]
+            ys = self._y_buf[row, :n]
+            if shared_scale:
+                # Kopie statt View: der Ringpuffer laeuft weiter, waehrend
+                # pyqtgraph das Array noch zum Zeichnen haelt.
+                np.copyto(ys, series)
+            else:
+                finite = np.isfinite(series, out=self._mask_buf[:n])
                 if finite.any():
-                    mn = float(series[finite].min())
-                    mx = float(series[finite].max())
+                    # min/max mit `where` statt series[finite].min(): das
+                    # spart die Kopie der gueltigen Werte.
+                    mn = float(series.min(where=finite, initial=np.inf))
+                    mx = float(series.max(where=finite, initial=-np.inf))
                     span = (mx - mn) or 1.0
-                    ys = (series - mn) / span
+                    np.subtract(series, mn, out=ys)
+                    np.multiply(ys, np.float32(1.0 / span), out=ys)
                 else:
-                    ys = np.zeros(n, dtype=np.float64)
-                out.append((xs, ys))
+                    ys.fill(0.0)
+            out.append((xs, ys))
         return out
 
-    def _update_stats(self) -> None:
+    def _update_stats(self, force: bool = False) -> None:
+        """Statistikzeile und Legende neu rechnen — aber hoechstens alle
+        `_STATS_INTERVAL_S`.
+
+        Aufgerufen wird das aus append_block(), also 20-mal pro Sekunde. Das
+        Signal statsChanged laesst QML den Legenden-Repeater komplett neu
+        aufbauen; im vollen Datentakt war das der teuerste einzelne Posten
+        des Plotters — und voellig nutzlos, weil niemand Zahlen 20-mal pro
+        Sekunde liest. `force` umgeht die Drossel, wenn sich die Auswahl
+        geaendert hat (dann stimmen sonst die Namen in der Legende nicht).
+        """
+        now = monotonic()
+        if not force and now < self._stats_due:
+            return
+        self._stats_due = now + _STATS_INTERVAL_S
+        self._refresh_stats()
+        self.statsChanged.emit()
+
+    def _refresh_stats(self) -> None:
+        """Legende UND Statistikzeile in einem Durchlauf ueber das Fenster.
+
+        Frueher liefen dafuer zwei getrennte Auswertungen (curveInfo und
+        diese Methode) mit je eigenem snapshot() und mehreren vollen
+        Array-Durchlaeufen pro Kurve. Jetzt: ein snapshot(), eine
+        isfinite-Maske je Kurve im vorab angelegten Puffer, min/max/σ
+        darueber mit `where=`.
+        """
         data = self.snapshot()
-        if data.shape[1] == 0 or not np.any(np.isfinite(data)):
+        n = data.shape[1]
+        rows = data.shape[0]
+        info: list[dict] = []
+        first: tuple[float, float, float, float] | None = None
+
+        for row, chn in enumerate(self._channels):
+            entry = {
+                "channel": chn,
+                "name": self._names[chn] if chn < len(self._names) else f"Var_{chn:03d}",
+                "unit": self._units.get(chn, ""),
+                "color": CURVE_COLORS[row % len(CURVE_COLORS)],
+                "min": 0.0, "max": 0.0, "last": 0.0, "valid": False,
+            }
+            if n and row < rows:
+                series = data[row]
+                finite = np.isfinite(series, out=self._mask_buf[:n])
+                if finite.any():
+                    entry["min"] = float(series.min(where=finite, initial=np.inf))
+                    entry["max"] = float(series.max(where=finite, initial=-np.inf))
+                    entry["last"] = self._last_finite(series, finite)
+                    entry["valid"] = True
+                    if row == 0:
+                        first = (entry["min"], entry["max"], entry["last"],
+                                 float(np.std(series, where=finite)))
+            info.append(entry)
+
+        self._curve_info = info
+        if first is None:
             return
-        row = data[0]
-        if not np.any(np.isfinite(row)):
-            return
+        mn, mx, last, sigma = first
         name = self._names[self._channels[0]] if self._channels else "—"
         unit = self._units.get(self._channels[0], "")
         suffix = f" {unit}" if unit else ""
-        finite = row[np.isfinite(row)]
         self._stats = (
-            f"{name}:  Min {float(np.min(finite)):.4g}{suffix}  |  "
-            f"Max {float(np.max(finite)):.4g}{suffix}  |  "
-            f"Aktuell {float(finite[-1]):.4g}{suffix}  |  "
-            f"σ {float(np.std(finite)):.4g}"
+            f"{name}:  Min {mn:.4g}{suffix}  |  "
+            f"Max {mx:.4g}{suffix}  |  "
+            f"Aktuell {last:.4g}{suffix}  |  "
+            f"σ {sigma:.4g}"
         )
         if len(self._channels) > 1:
             self._stats += f"   (+{len(self._channels) - 1} weitere Kurven)"
-        self.statsChanged.emit()
+
+    @staticmethod
+    def _last_finite(series: np.ndarray, finite: np.ndarray) -> float:
+        """Juengster gueltiger Wert. Im Normalfall ist das schlicht der
+        letzte — nur bei einer Luecke am rechten Rand wird gesucht."""
+        if finite[-1]:
+            return float(series[-1])
+        idx = np.flatnonzero(finite)
+        return float(series[idx[-1]])

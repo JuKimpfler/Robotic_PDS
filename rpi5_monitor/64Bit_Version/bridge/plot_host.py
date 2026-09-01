@@ -30,8 +30,20 @@ LEISTUNG
 * Redraw ist auf maxFps (Vorgabe 20) gedeckelt — unabhängig von
   Daten-Bursts. Mehrere Pakete pro Poll werden ohnehin zu einem Block
   zusammengefasst.
+* Gezeichnet wird nur, wenn es etwas Neues gibt. Die Datenbrücke meldet über
+  bufferChanged (und Einfrieren/Marken/Auswahl), dass sich etwas geändert
+  hat; ohne solche Meldung überspringt der Takt den ganzen Durchlauf. Im
+  eingefrorenen Bild oder bei abgerissener Telemetrie kostet der Plotter
+  damit gar nichts mehr statt 20 vollständiger Neuzeichnungen pro Sekunde.
+* Ist der Plotter nicht sichtbar (anderer Tab) oder abgeschaltet, läuft der
+  Takt auf idleFps (Vorgabe 4) herunter, statt 20-mal pro Sekunde nur
+  nachzusehen, ob er etwas tun darf.
 * pyqtgraph downsampelt große Fenster automatisch (autoDownsample +
   clipToView), sodass auch 8 Kurven × 1000 Punkte kaum Last machen.
+* Im Image-Modus wird IN EIN FESTES QPixmap gerendert. QWidget.grab() legt
+  bei jedem Aufruf ein neues an — bei 800×400 sind das rund 1,3 MB, also
+  über 25 MB pro Sekunde, die nur entstehen, um sofort wieder freigegeben
+  zu werden.
 * Der Host meldet dem PlotBridge-PerfWatchdog, ob der Plotter sichtbar ist
   und wie lange ein Durchlauf dauerte. Bei anhaltender Überlastung schaltet
   der Wächter den Plotter ab (siehe PlotBridge / PerfWatchdog).
@@ -48,8 +60,11 @@ from PyQt6.QtCore import (
     Qt, QObject, QTimer, QRectF, QRect, QSize, QPoint,
     pyqtProperty, pyqtSignal,
 )
-from PyQt6.QtGui import QColor, QGuiApplication, QPainter, QPixmap, QWindow
+from PyQt6.QtGui import (
+    QColor, QGuiApplication, QPainter, QPixmap, QRegion, QWindow,
+)
 from PyQt6.QtQuick import QQuickPaintedItem
+from PyQt6.QtWidgets import QWidget
 
 import app_settings
 from bridge.plot_bridge import PlotBridge, CURVE_COLORS
@@ -122,8 +137,31 @@ class PyQtGraphHost(QQuickPaintedItem):
         self._built = False
         self._pixmap_fail = 0
 
+        # ── Zustand, um Arbeit zu vermeiden ────────────────────────────────
+        #  _dirty       es gibt etwas Neues zu zeichnen (siehe _mark_dirty)
+        #  _last_x_max  zuletzt gesetzter X-Bereich; setXRange loest sonst
+        #               bei jedem Frame ein volles Neu-Layout der Achsen aus
+        #  _pen_cache   Stifte fuer die Marken, einmal je Stufe angelegt
+        #  _mark_state  je Markenlinie (Wert, Text, Stufe) — nur was sich
+        #               geaendert hat, wird angefasst (setText rendert Text neu)
+        #  _plot_size   aktuelle Groesse des Widgets, damit resize() nicht in
+        #               jedem Frame laeuft
+        #  _live_ys     Puffer fuer die gestrichelte Live-Kurve
+        self._dirty = True
+        self._last_x_max = -1.0
+        self._pen_cache: list = []
+        self._mark_state: list[tuple] = []
+        self._plot_size = QSize(0, 0)
+        self._plot_pos = QPoint(0, 0)
+        self._live_ys: Optional[np.ndarray] = None
+
         self._max_fps = max(1, int(app_settings.get("plotter.maxFps", 20)))
         self._render_interval = max(1, 1000 // self._max_fps)
+        # Wenn nichts zu tun ist (anderer Tab, Plotter aus), reicht ein
+        # gemaechlicher Takt zum Nachsehen — 20 Weckrufe pro Sekunde fuer ein
+        # sofortiges "nein" sind reine Verschwendung.
+        self._idle_fps = max(1, int(app_settings.get("plotter.idleFps", 4)))
+        self._idle_interval = max(1, 1000 // self._idle_fps)
         # pyqtgraph-Performance-Schalter aus settings.json ("plotter").
         self._downsample = bool(app_settings.get("plotter.downsample", True))
         self._antialias = bool(app_settings.get("plotter.antialias", False))
@@ -134,8 +172,8 @@ class PyQtGraphHost(QQuickPaintedItem):
 
         self.xChanged.connect(self._sync_geometry)
         self.yChanged.connect(self._sync_geometry)
-        self.widthChanged.connect(self._sync_geometry)
-        self.heightChanged.connect(self._sync_geometry)
+        self.widthChanged.connect(self._on_size_changed)
+        self.heightChanged.connect(self._on_size_changed)
         self.windowChanged.connect(self._on_window_changed)
 
     # ── QML-Property: die Datenbrücke ───────────────────────────────────────
@@ -149,14 +187,29 @@ class PyQtGraphHost(QQuickPaintedItem):
             try:
                 self._plotter.channelsChanged.disconnect(self._on_channels_changed)
                 self._plotter.frozenChanged.disconnect(self._on_frozen_changed)
+                self._plotter.bufferChanged.disconnect(self._mark_dirty)
+                self._plotter.markersChanged.disconnect(self._mark_dirty)
             except (TypeError, RuntimeError):
                 pass
         self._plotter = bridge
         if bridge is not None:
             bridge.channelsChanged.connect(self._on_channels_changed)
             bridge.frozenChanged.connect(self._on_frozen_changed)
+            # Nur diese Meldungen bedeuten "es gibt ein neues Bild". Ohne sie
+            # ueberspringt der Takt den Durchlauf komplett — siehe _redraw.
+            bridge.bufferChanged.connect(self._mark_dirty)
+            bridge.markersChanged.connect(self._mark_dirty)
             self._build_if_ready()
         self.plotterChanged.emit()
+
+    def _mark_dirty(self) -> None:
+        self._dirty = True
+
+    def _on_size_changed(self) -> None:
+        # Andere Groesse heisst neues Bild — im Image-Modus muss dafuer auch
+        # das Pixmap neu dimensioniert werden (siehe _render_to_pixmap).
+        self._dirty = True
+        self._sync_geometry()
 
     plotter = pyqtProperty(QObject, fget=getPlotter, fset=setPlotter,
                             notify=plotterChanged)
@@ -212,6 +265,11 @@ class PyQtGraphHost(QQuickPaintedItem):
                 self._plot.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
             except Exception:
                 pass
+            # Das Pixmap deckt die ganze Flaeche ab. Ohne diesen Hinweis
+            # loescht Qt Quick den Zwischenspeicher des Items vor jedem
+            # paint() erst transparent — ein voller Durchlauf ueber alle
+            # Pixel, den niemand sieht.
+            self.setOpaquePainting(True)
         self.modeChanged.emit()
 
     # QPA-Plattformen, auf denen natives Reparenting nachweislich zuverlässig
@@ -316,28 +374,58 @@ class PyQtGraphHost(QQuickPaintedItem):
         self._native_win.setVisible(on)
         if not on:
             return
-        self._native_win.setGeometry(x, y, w, h)
-        try:
-            self._plot.resize(w, h)
-        except Exception:
-            pass
+        # Unveraenderte Geometrie nicht anfassen: setGeometry/resize loesen im
+        # Zweifel ein Neu-Layout des Widgets aus, und diese Methode laeuft im
+        # nativen Modus bei jedem Takt.
+        size = QSize(w, h)
+        pos = QPoint(x, y)
+        if self._plot_size != size or self._plot_pos != pos:
+            self._plot_size = size
+            self._plot_pos = pos
+            self._native_win.setGeometry(x, y, w, h)
+            try:
+                self._plot.resize(w, h)
+            except Exception:
+                pass
 
     # ── Redraw ───────────────────────────────────────────────────────────────
+    def _set_idle(self, idle: bool) -> None:
+        """Takt zwischen Zeichen- und Ruhefrequenz umschalten."""
+        want = self._idle_interval if idle else self._render_interval
+        if self._timer.interval() != want:
+            self._timer.setInterval(want)
+
+    def _go_idle(self) -> None:
+        """Nichts zu tun: Plotter stilllegen und den Takt herunterfahren."""
+        self._plotter.setPlotActive(False)
+        if self._mode == "native" and self._native_win is not None:
+            self._native_win.setVisible(False)
+        self._set_idle(True)
+        # Beim naechsten Sichtbarwerden muss wieder ein volles Bild kommen.
+        self._dirty = True
+
     def _redraw(self) -> None:
         if self._plot is None or self._plotter is None:
             return
         if not self._plotter.enabled or self._plotter.overloaded:
-            self._plotter.setPlotActive(False)
-            if self._mode == "native" and self._native_win is not None:
-                self._native_win.setVisible(False)
+            self._go_idle()
             return
         if not self._on_screen():
-            self._plotter.setPlotActive(False)
-            if self._mode == "native" and self._native_win is not None:
-                self._native_win.setVisible(False)
+            self._go_idle()
             return
 
+        self._set_idle(False)
         self._plotter.setPlotActive(True)
+
+        # Die Geometrie kann sich auch ohne neue Daten verschieben (Tabwechsel,
+        # Layout) — das nachzuziehen ist billig und muss immer passieren.
+        if self._mode == "native":
+            self._sync_geometry()
+
+        if not self._dirty:
+            return                 # nichts Neues -> kein Bild, keine Last
+        self._dirty = False
+
         t0 = time.perf_counter()
         try:
             arrays = self._plotter.get_plot_arrays()
@@ -354,8 +442,6 @@ class PyQtGraphHost(QQuickPaintedItem):
         if self._mode == "image":
             self._render_to_pixmap()
             self.update()          # QQuickPaintedItem neu zeichnen lassen
-        elif self._mode == "native":
-            self._sync_geometry()
 
     def _update_curves(self, arrays) -> None:
         n = len(arrays)
@@ -371,12 +457,17 @@ class PyQtGraphHost(QQuickPaintedItem):
 
         if shared != self._last_shared:
             self._last_shared = shared
+            self._last_x_max = -1.0     # Achsen werden ohnehin neu aufgebaut
             if shared:
                 self._plot.enableAutoRange(axis=_Y_AXIS, enable=True)
             else:
                 self._plot.enableAutoRange(axis=_Y_AXIS, enable=False)
                 self._plot.setYRange(-0.1, 1.1, padding=0.0)
-        if last > 0:
+        # setXRange stoesst ein vollstaendiges Neu-Layout der Achsen an. Die
+        # Fensterbreite aendert sich aber nur beim Zoomen oder waehrend sich
+        # der Ring fuellt — nicht in jedem Frame.
+        if last > 0 and last != self._last_x_max:
+            self._last_x_max = last
             self._plot.setXRange(0, last, padding=0.0)
 
     def _ensure_curves(self, n: int) -> None:
@@ -390,31 +481,58 @@ class PyQtGraphHost(QQuickPaintedItem):
             # Antialiasing-Einstellung wirkt ueber die globale pg-Option oben.
             self._curves.append(ci)
 
+    def _marker_pen(self, level: int):
+        """Stift je Markenstufe — einmal angelegt, dann wiederverwendet.
+
+        pg.mkPen() baut jedes Mal einen neuen QPen (und parst die Farbe);
+        vorher passierte das für JEDE Marke in JEDEM Frame.
+        """
+        if not self._pen_cache:
+            self._pen_cache = [
+                pg.mkPen(c, width=1.2, style=Qt.PenStyle.DashLine)
+                for c in _MARKER_COLORS
+            ]
+        return self._pen_cache[min(level, len(self._pen_cache) - 1)]
+
     def _update_markers(self, arrays) -> None:
         marks = self._plotter.visible_markers(self._plotter.pointsCount)
+        if not marks and not self._marker_lines:
+            return                    # Normalfall: keine Marken, nichts zu tun
         n = len(arrays[0][0]) if arrays else 0
         last = max(0, n - 1)
-        # Pool vergrößern. Mit label="" wird das Label-Objekt angelegt
-        # (InfiniteLine.label), das wir unten mit Text fuellen.
-        while len(self._marker_lines) < max(8, len(marks)):
+        # Pool nur so weit vergrößern, wie wirklich Marken da sind (früher
+        # immer mindestens acht Linien samt Textobjekt in der Szene, auch
+        # ohne eine einzige Marke). Mit label="" wird das Label-Objekt
+        # angelegt (InfiniteLine.label), das wir unten mit Text fuellen.
+        while len(self._marker_lines) < len(marks):
             line = pg.InfiniteLine(angle=90, movable=False, label="")
             self._plot.addItem(line)
             self._marker_lines.append(line)
+            self._mark_state.append(None)
         for i, (pos, text, level) in enumerate(marks):
+            # Marken stehen fest im Verlauf; solange sich Position, Text und
+            # Stufe nicht ändern, ist jedes Anfassen der Linie verlorene
+            # Arbeit — label.setText() rendert den Text komplett neu.
+            state = (pos * last, text, level)
+            if self._mark_state[i] == state:
+                continue
+            self._mark_state[i] = state
             line = self._marker_lines[i]
             line.setVisible(True)
             try:
-                line.setValue(pos * last)
-                line.setPen(pg.mkPen(_MARKER_COLORS[min(level, len(_MARKER_COLORS) - 1)],
-                                     width=1.2, style=Qt.PenStyle.DashLine))
+                line.setValue(state[0])
+                line.setPen(self._marker_pen(level))
                 label = getattr(line, "label", None)
                 if label is not None and text:
                     label.setText(text)
-                    label.setColor(QColor(*_MARKER_COLORS[min(level, len(_MARKER_COLORS) - 1)]))
+                    label.setColor(
+                        QColor(*_MARKER_COLORS[min(level, len(_MARKER_COLORS) - 1)]))
             except Exception:
                 pass
         for i in range(len(marks), len(self._marker_lines)):
-            self._marker_lines[i].setVisible(False)
+            if self._mark_state[i] is not None:
+                self._mark_state[i] = None
+                self._marker_lines[i].setVisible(False)
 
     def _update_frozen_overlay(self, arrays) -> None:
         if not self._plotter.frozen:
@@ -427,19 +545,27 @@ class PyQtGraphHost(QQuickPaintedItem):
                 self._live_curve.hide()
             return
         shared = self._plotter.sharedScale
-        xs = np.arange(live.shape[1], dtype=np.float64)
-        series = live[0].astype(np.float64)
+        n = live.shape[1]
+        # Gleiche x-Achse wie die Hauptkurven (dasselbe zwischengespeicherte
+        # Array) und ein eigener, mitwachsender y-Puffer statt vier frischer
+        # Arrays pro Frame.
+        xs = self._plotter.x_axis(n)
+        if self._live_ys is None or self._live_ys.shape[0] < n:
+            self._live_ys = np.empty(n, dtype=np.float32)
+        ys = self._live_ys[:n]
+        series = live[0]
         if shared:
-            ys = series
+            np.copyto(ys, series)
         else:
             finite = np.isfinite(series)
             if finite.any():
-                mn = float(series[finite].min())
-                mx = float(series[finite].max())
+                mn = float(series.min(where=finite, initial=np.inf))
+                mx = float(series.max(where=finite, initial=-np.inf))
                 span = (mx - mn) or 1.0
-                ys = (series - mn) / span
+                np.subtract(series, mn, out=ys)
+                np.multiply(ys, np.float32(1.0 / span), out=ys)
             else:
-                ys = np.zeros_like(xs)
+                ys.fill(0.0)
         if self._live_curve is None:
             pen = pg.mkPen(CURVE_COLORS[0], width=1.4)
             pen.setStyle(Qt.PenStyle.DashLine)
@@ -453,27 +579,41 @@ class PyQtGraphHost(QQuickPaintedItem):
     def _render_to_pixmap(self) -> None:
         w = max(1, int(round(self.width())))
         h = max(1, int(round(self.height())))
-        try:
-            self._plot.resize(w, h)
-            grabbed = self._plot.grab(QRect(0, 0, w, h))
-            if not grabbed.isNull():
-                self._pixmap = grabbed
-                return
-        except Exception:
-            pass
-        # Fallback: explizit in ein Pixmap rendern.
-        try:
-            if self._pixmap is None or self._pixmap.size() != QSize(w, h):
-                self._pixmap = QPixmap(w, h)
+        size = QSize(w, h)
+        if self._pixmap is None or self._pixmap.size() != size:
+            self._pixmap = QPixmap(size)
+            # Ein frisches QPixmap ist uninitialisiert; einmal Grundfarbe,
+            # danach ueberdeckt jeder Render den ganzen Bereich.
             self._pixmap.fill(QColor("#1a1a1a"))
-            p = QPainter(self._pixmap)
-            # self._plot ist ein pyqtgraph.PlotWidget (QGraphicsView-Subklasse).
-            # QGraphicsView.render() hat eine andere Signatur als QWidget.render():
-            # render(painter, target: QRectF, source: QRect, aspectRatioMode).
-            self._plot.render(p, QRectF(0, 0, w, h), QRect(0, 0, w, h))
-            p.end()
+        if self._plot_size != size:
+            self._plot_size = size
+            self._plot.resize(w, h)
+
+        # QWidget.grab() legt bei JEDEM Aufruf ein neues QPixmap an — bei
+        # 800x400 gut 1,3 MB, 20-mal pro Sekunde. Intern macht grab() nichts
+        # anderes als QWidget.render() in genau so ein Pixmap; das rufen wir
+        # direkt auf und behalten das Pixmap.
+        #
+        # Es muss ausdruecklich QWidget.render sein: self._plot ist ein
+        # pyqtgraph.PlotWidget (QGraphicsView-Subklasse), und
+        # QGraphicsView.render() verdeckt die Ueberladungen von QWidget mit
+        # einer voellig anderen Signatur (painter, target: QRectF,
+        # source: QRect, aspectRatioMode).
+        try:
+            QWidget.render(
+                self._plot, self._pixmap, QPoint(0, 0), QRegion(),
+                QWidget.RenderFlag.DrawWindowBackground
+                | QWidget.RenderFlag.DrawChildren,
+            )
         except Exception as exc:  # noqa: BLE001
-            log.warning("Pixmap-Render fehlgeschlagen: %s", exc)
+            # Fallback auf den teuren, aber maximal robusten Weg.
+            log.warning("Pixmap-Render fehlgeschlagen (%s) — grab() als Ersatz.", exc)
+            try:
+                grabbed = self._plot.grab(QRect(0, 0, w, h))
+                if not grabbed.isNull():
+                    self._pixmap = grabbed
+            except Exception as exc2:  # noqa: BLE001
+                log.warning("Auch grab() fehlgeschlagen: %s", exc2)
         # Sicherheitsnetz: bleibt die Bildausgabe im Image-Modus dauerhaft
         # leer, zeigen wir einen lesbaren Fehler statt eines schwarzen Kastens.
         if self._pixmap is None or self._pixmap.isNull():
@@ -488,6 +628,7 @@ class PyQtGraphHost(QQuickPaintedItem):
         # Kurvenzahl/Farben können sich geändert haben -> neu aufbauen.
         self._curves.clear()
         self._marker_lines.clear()
+        self._mark_state.clear()
         self._live_curve = None
         if self._plot is not None:
             try:
@@ -495,11 +636,14 @@ class PyQtGraphHost(QQuickPaintedItem):
             except Exception:
                 pass
         self._last_shared = None
+        self._last_x_max = -1.0
         # Beim nächsten Redraw werden die Kurven neu erzeugt.
+        self._dirty = True
         if self._mode == "image":
             self.update()
 
     def _on_frozen_changed(self) -> None:
+        self._dirty = True
         if self._mode == "image":
             self.update()
 
@@ -518,9 +662,22 @@ class PyQtGraphHost(QQuickPaintedItem):
         w, h = self.width(), self.height()
         if w <= 0 or h <= 0:
             return
-        if self._mode == "image" and self._pixmap is not None and not self._pixmap.isNull():
-            painter.drawPixmap(QRectF(0, 0, w, h), self._pixmap,
-                                QRectF(self._pixmap.rect()))
+        if self._mode == "image":
+            # Mit setOpaquePainting(True) raeumt Qt Quick den Hintergrund
+            # nicht mehr auf — solange noch kein Bild da ist, muss deshalb
+            # hier gefuellt werden, sonst stuenden Speicherreste im Item.
+            if self._pixmap is not None and not self._pixmap.isNull():
+                # Das Pixmap wird in Item-Groesse gerendert; dann ist das ein
+                # glattes Kopieren. Nur wenn die Groesse gerade nachzieht
+                # (ein Frame lang nach dem Umschalten), wird skaliert — das
+                # ist der deutlich teurere Weg.
+                if self._pixmap.size() == QSize(int(w), int(h)):
+                    painter.drawPixmap(0, 0, self._pixmap)
+                else:
+                    painter.drawPixmap(QRectF(0, 0, w, h), self._pixmap,
+                                        QRectF(self._pixmap.rect()))
+            else:
+                painter.fillRect(QRectF(0, 0, w, h), QColor("#1a1a1a"))
         elif self._mode == "error":
             painter.fillRect(QRectF(0, 0, w, h), QColor("#1a1a1a"))
             painter.setPen(QColor("#f48771"))

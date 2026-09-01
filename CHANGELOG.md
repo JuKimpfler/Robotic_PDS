@@ -22,6 +22,71 @@ welchem Roboter läuft.
 
 ---
 
+## 2.6 — Der Plotter kostet deutlich weniger Rechenzeit und Speicher
+
+Der Live-Plotter lief zwar schon über NumPy und pyqtgraph, verhielt sich aber
+so, als wäre Rechenzeit umsonst: er legte im Datentakt fortlaufend neue Arrays
+an, ließ QML die Legende 20-mal pro Sekunde neu aufbauen und zeichnete auch
+dann ein vollständiges Bild, wenn sich überhaupt nichts geändert hatte.
+
+Eine Messung an acht Kurven mit je 500 Punkten zeigt, wo die Last wirklich
+liegt: **rund 95 % gehen für das Rastern der Kurven drauf** (pyqtgraph zeichnet
+Gitter, Achsen und alle Polylinien neu), nur etwa 5 % für die Datenaufbereitung.
+Entsprechend setzt der größte Hebel am **Bildtakt** an, der Rest an Speicher
+und unnötiger Arbeit.
+
+### Geändert
+
+* **Es wird nur noch gezeichnet, wenn es etwas Neues gibt.** Die Datenbrücke
+  meldet über `bufferChanged` (und Einfrieren/Marken/Auswahl), dass sich etwas
+  geändert hat; ohne solche Meldung überspringt der Takt den ganzen Durchlauf.
+  Im eingefrorenen Bild oder bei abgerissener Telemetrie kostet der Plotter
+  damit gar nichts mehr statt 20 vollständiger Neuzeichnungen pro Sekunde.
+* **Ruhetakt statt Vollgas im Hintergrund.** Ist der Plotter nicht sichtbar
+  (anderer Tab) oder abgeschaltet, läuft der Timer auf `plotter.idleFps`
+  (Vorgabe 4) herunter, statt 20-mal pro Sekunde nur nachzusehen, ob er etwas
+  tun darf.
+* **`plotter.maxFps` steht jetzt auf 12 statt 20.** Weil das Rastern die Last
+  dominiert, sind das gut 40 % weniger Rechenzeit — ein Trendverlauf läuft
+  damit immer noch flüssig. Wer die Leistung hat, stellt in `settings.json`
+  wieder 20 (oder mehr) ein.
+* **Legende und Statistikzeile laufen gedrosselt** (`plotter.statsIntervalMs`,
+  Vorgabe 200 ms) und werden in **einem** Durchlauf für alle Kurven berechnet.
+  Vorher stieß jedes Paket ein `statsChanged` an, und QML baute daraufhin den
+  Legenden-Repeater komplett neu auf — bei 20 Hz der teuerste einzelne Posten,
+  obwohl niemand Zahlen 20-mal pro Sekunde liest. `curveInfo` rechnete dabei
+  ein zweites Mal dasselbe. Gemessen: 100 Pakete brauchen statt 37,5 ms nur
+  noch 3,4 ms.
+* **Im Datentakt entstehen keine neuen Arrays mehr.** Ringpuffer, Fenster,
+  Kurvenaufbereitung und Statistik arbeiten in vorab angelegten Puffern
+  (zusammen rund 100 kB, einmalig). `get_plot_arrays()` liefert float32 statt
+  float64. Kurzlebiger Speicher je Zeichendurchlauf: **45 kB → 2,5 kB**, also
+  knapp ein Megabyte pro Sekunde weniger, das der Garbage Collector im
+  GUI-Thread wieder einsammeln muss.
+* **Der Image-Modus rendert in ein festes QPixmap.** `QWidget.grab()` legte bei
+  jedem Bild ein neues an — bei 800×400 gut 1,2 MB, also rund 24 MB/s. Der
+  gleichwertige direkte `QWidget.render()`-Aufruf ist pixelgleich, kommt ohne
+  diese Zuteilung aus und war in der Messung nebenbei 23 % schneller.
+  Zusätzlich `setOpaquePainting(true)`, damit Qt Quick den Hintergrund nicht
+  vor jedem Bild sinnlos leert, und ein 1:1-Blitt statt eines skalierten.
+* **Kleinkram, der sich im Takt summiert:** die x-Achse wird einmal angelegt
+  statt je Bild; `setXRange` (löst ein volles Achsen-Layout aus) nur noch bei
+  echter Änderung; Marken-Stifte einmal je Stufe statt je Marke und Bild;
+  Markenlinien werden nur angefasst, wenn sich Position, Text oder Stufe
+  geändert haben, und der Pool wird gar nicht erst angelegt, solange es keine
+  Marken gibt (vorher immer mindestens acht Linien samt Textobjekt in der
+  Szene).
+
+### Nicht geändert
+
+Die Darstellung, die Bedienung und das Verhalten bei Überlastung sind
+unverändert. `tools/selftest.py` (214 Prüfungen), `check_qml_bindings.py` und
+`qml_smoketest.py` laufen unverändert durch; Ringpufferinhalt, Kurvenwerte und
+Legendenzahlen wurden zusätzlich Wert für Wert gegen die alte Rechenweise
+verglichen.
+
+---
+
 ## 2.5 — Alle Einstellungen in einer Datei, mehrere Einstellungssätze
 
 Bis hierher war „einstellbar" eine Frage des Fundorts: die
