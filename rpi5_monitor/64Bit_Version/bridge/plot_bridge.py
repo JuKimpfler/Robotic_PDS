@@ -114,6 +114,7 @@ _PERF = {
     "disableStallMs":  float(app_settings.get("plotter.perfDisableStallMs", 80.0)),
     "streak":          int(app_settings.get("plotter.perfStreak", 5)),
     "renderDisableMs": float(app_settings.get("plotter.renderDisableMs", 80.0)),
+    "renderStreak":    int(app_settings.get("plotter.renderDisableStreak", 3)),
 }
 
 # Mindestabstand zwischen zwei Statistik-/Legenden-Aktualisierungen. Siehe
@@ -234,6 +235,7 @@ class PlotBridge(QObject):
         self._plot_active = False      # liefert der Host (sichtbar + ein)
         self._render_ms = 0.0         # gleitender Max. eines Plot-Durchlaufs
         self._render_calls = 0        # Warmup-Zähler für note_render
+        self._render_over = 0         # Durchläufe über Budget in Folge
 
         # ── Performance-Wächter ────────────────────────────────────────────
         self._watchdog = PerfWatchdog(
@@ -326,11 +328,19 @@ class PlotBridge(QObject):
         self._watchdog.set_active(active)
 
     def note_render(self, dt_ms: float) -> None:
-        """Host meldet die Dauer eines Plot-Durchlaufs (setData + evtl. Grab).
+        """Host meldet die Dauer eines vollständigen Plot-Durchlaufs.
 
-        Ein einzelner Durchlauf, der das Zeitbudget sprengt, ist ein
-        sicheres Zeichen für Überlastung — unabhängig vom groben
-        Event-Loop-Stall misst der Wächter ohnehin mit.
+        Vollständig heißt: inklusive des Rasterns in das QPixmap — das ist
+        im Image-Modus der mit Abstand teuerste Schritt (siehe
+        plot_host._redraw).
+
+        Abgeschaltet wird erst, wenn MEHRERE Durchläufe hintereinander das
+        Budget sprengen. Ein einzelner teurer Durchlauf ist kein Grund mehr:
+        er kommt beim Tabwechsel, beim Ändern der Fenstergröße oder wenn
+        gerade etwas anderes den Rechner beschäftigt, und der adaptive
+        Bildtakt (plot_host) fängt anhaltende Last ohnehin ab, indem er
+        langsamer zeichnet — das ist die bessere Antwort als "Plotter aus".
+        Der Wächter bleibt das letzte Netz, nicht die erste Reaktion.
         """
         # Gleitender Max: nur sehr langsame Einzelbilder zählen.
         self._render_ms = max(self._render_ms * 0.8, dt_ms)
@@ -340,11 +350,18 @@ class PlotBridge(QObject):
         self._render_calls += 1
         if self._render_calls <= 20:
             return
-        if (not self._overloaded and self._enabled
-                and dt_ms >= _PERF["renderDisableMs"]):
+        if dt_ms < _PERF["renderDisableMs"]:
+            self._render_over = 0
+            return
+        self._render_over += 1
+        if (self._render_over >= _PERF["renderStreak"]
+                and not self._overloaded and self._enabled):
+            over = self._render_over
+            self._render_over = 0
             self._on_overload(
-                f"Ein Plot-Durchlauf dauerte {dt_ms:.0f} ms "
-                f"(Budget {_PERF['renderDisableMs']:.0f} ms).")
+                f"{over} Plot-Durchläufe hintereinander über dem Budget "
+                f"(zuletzt {dt_ms:.0f} ms, Budget "
+                f"{_PERF['renderDisableMs']:.0f} ms).")
 
     # ══════════════════════════════════════════════════════════════════════
     #  Kanalauswahl

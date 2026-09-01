@@ -129,6 +129,40 @@ def _nice_step(raw: float) -> float:
     return 10.0 * base
 
 
+# So viele Bilder lang wird der Takt noch nicht nachgefuehrt: die ersten
+# Durchlaeufe nach Start oder Tabwechsel sind einmalig teurer, weil das
+# Widget erstmals layoutet und Schriften geladen werden.
+_ADAPT_WARMUP = 5
+
+
+def adaptive_interval(frame_ms: float, fast_ms: int, slow_ms: int,
+                      budget: float, current_ms: int) -> int:
+    """Zieltakt aus der gemessenen Dauer EINES vollstaendigen Bildes.
+
+    `budget` sagt, wie viel Luft zwischen zwei Bildern bleiben soll: bei 4,0
+    darf der Plotter hoechstens ein Viertel der Zeit des GUI-Threads
+    verbrauchen. Genau das ist die eigentliche Anforderung — der GUI-Thread
+    haelt auch den 100-Hz-Sendetakt der Fernsteuerung, und der darf nicht
+    warten muessen.
+
+    Zwischen `fast_ms` (maxFps) und `slow_ms` (minFps) begrenzt; die
+    Hysterese von 15 % verhindert, dass der Takt bei kleinen Lastwechseln
+    hin- und herspringt (das saehe man als ungleichmaessigen Bildlauf).
+    """
+    if frame_ms <= 0.0 or not math.isfinite(frame_ms):
+        return current_ms
+    want = frame_ms * budget
+    ziel = int(round(max(fast_ms, min(slow_ms, want))))
+    # Am Anschlag (maxFps bzw. minFps) ohne Hysterese uebernehmen: sonst
+    # bliebe der Takt nach einer Lastspitze fuer immer knapp unter maxFps
+    # stehen, weil der letzte kleine Schritt zurueck nie gross genug ist.
+    am_anschlag = want <= fast_ms or want >= slow_ms
+    if (not am_anschlag and current_ms > 0
+            and abs(ziel - current_ms) < 0.15 * current_ms):
+        return current_ms
+    return ziel
+
+
 def nice_y_range(mn: float, mx: float) -> tuple[float, float] | None:
     """Glatter Y-Bereich, der [mn, mx] mit etwas Luft sicher enthaelt.
 
@@ -210,6 +244,20 @@ class PyQtGraphHost(QQuickPaintedItem):
 
         self._max_fps = max(1, int(app_settings.get("plotter.maxFps", 20)))
         self._render_interval = max(1, 1000 // self._max_fps)
+        # ── Adaptiver Bildtakt ────────────────────────────────────────────
+        #  maxFps ist die OBERgrenze; wie schnell wirklich gezeichnet wird,
+        #  entscheidet die gemessene Dauer eines Bildes. Auf schwacher
+        #  Hardware sinkt der Takt damit sanft ab, statt dass der Waechter
+        #  den Plotter irgendwann ganz abschaltet — vorher gab es nur
+        #  "volle 12 fps" oder "gar nichts".
+        self._adaptive = bool(app_settings.get("plotter.adaptiveFps", True))
+        self._min_fps = max(1, int(app_settings.get("plotter.minFps", 4)))
+        self._slow_interval = max(self._render_interval, 1000 // self._min_fps)
+        self._fps_budget = max(1.0, float(
+            app_settings.get("plotter.fpsBudgetFactor", 4.0)))
+        self._frame_ms = 0.0          # Tiefpass ueber die Bilddauer
+        self._adapt_calls = 0         # Warmup-Zaehler
+        self._active_interval = self._render_interval
         # Wenn nichts zu tun ist (anderer Tab, Plotter aus), reicht ein
         # gemaechlicher Takt zum Nachsehen — 20 Weckrufe pro Sekunde fuer ein
         # sofortiges "nein" sind reine Verschwendung.
@@ -446,10 +494,39 @@ class PyQtGraphHost(QQuickPaintedItem):
 
     # ── Redraw ───────────────────────────────────────────────────────────────
     def _set_idle(self, idle: bool) -> None:
-        """Takt zwischen Zeichen- und Ruhefrequenz umschalten."""
-        want = self._idle_interval if idle else self._render_interval
+        """Takt zwischen Zeichen- und Ruhefrequenz umschalten.
+
+        Im Zeichenbetrieb gilt der adaptive Takt (_active_interval), nicht
+        starr 1000/maxFps — siehe _adapt_interval.
+        """
+        want = self._idle_interval if idle else self._active_interval
         if self._timer.interval() != want:
             self._timer.setInterval(want)
+
+    def _adapt_interval(self, dt_ms: float) -> None:
+        """Bildtakt an die tatsaechlich gemessene Bilddauer anpassen."""
+        if not self._adaptive:
+            return
+        # Tiefpass: ein einzelner Ausreisser (Tabwechsel, Groessenaenderung)
+        # soll den Takt nicht umwerfen, anhaltende Last schon.
+        self._frame_ms = (dt_ms if self._frame_ms <= 0.0
+                          else self._frame_ms * 0.8 + dt_ms * 0.2)
+        self._adapt_calls += 1
+        if self._adapt_calls <= _ADAPT_WARMUP:
+            # Die ersten Bilder nach Start/Tabwechsel sind einmalig teurer
+            # (Widget wird erstmals layoutet); daran darf sich der Dauertakt
+            # nicht festbeissen.
+            return
+        want = adaptive_interval(self._frame_ms, self._render_interval,
+                                 self._slow_interval, self._fps_budget,
+                                 self._active_interval)
+        if want == self._active_interval:
+            return
+        log.info("Plotter-Bildtakt %d -> %d ms (%.1f -> %.1f fps, "
+                 "gemessen %.1f ms je Bild)",
+                 self._active_interval, want,
+                 1000.0 / self._active_interval, 1000.0 / want, self._frame_ms)
+        self._active_interval = want
 
     def _go_idle(self) -> None:
         """Nichts zu tun: Plotter stilllegen und den Takt herunterfahren."""
@@ -506,6 +583,10 @@ class PyQtGraphHost(QQuickPaintedItem):
 
         if self._mode == "image":
             self.update()          # QQuickPaintedItem neu zeichnen lassen
+
+        # Takt an die gemessene Dauer anpassen und sofort uebernehmen.
+        self._adapt_interval(dt)
+        self._set_idle(False)
 
         # Erst ganz zum Schluss melden: note_render() kann den Plotter
         # abschalten (Ueberlastung), und dann sollen die Kurven wenigstens

@@ -213,6 +213,18 @@ DEFAULTS: dict[str, Any] = {
         # ein Trendverlauf laeuft damit immer noch fluessig. Wer die
         # Leistung hat, stellt hier wieder 20 (oder mehr) ein.
         "maxFps": 12,
+        # Der Bildtakt richtet sich nach der gemessenen Dauer EINES Bildes:
+        # maxFps ist nur die Obergrenze, minFps die Untergrenze. Auf
+        # schwacher Hardware sinkt der Takt damit sanft ab, statt dass der
+        # Wächter den Plotter irgendwann ganz abschaltet — vorher gab es nur
+        # "volle 12 fps" oder "gar nichts". fpsBudgetFactor sagt, wie viel
+        # Luft zwischen zwei Bildern bleiben soll: 4,0 = der Plotter darf
+        # höchstens ein Viertel der Zeit des GUI-Threads verbrauchen (der
+        # hält auch den 100-Hz-Sendetakt der Fernsteuerung).
+        # false = starr maxFps wie früher.
+        "adaptiveFps": True,
+        "minFps": 4,
+        "fpsBudgetFactor": 4.0,
         # Takt, wenn der Plotter nichts zu tun hat (anderer Tab, abgeschaltet).
         # Er sieht dann nur nach, ob er wieder zeichnen darf.
         "idleFps": 4,
@@ -242,12 +254,17 @@ DEFAULTS: dict[str, Any] = {
         #   warnStallMs    Staulast ab der gewarnt wird (Plotter läuft noch)
         #   disableStallMs Staulast ab der die Abschaltung gezählt wird
         #   perfStreak      wie oft disableStallMs hintereinander nötig ist
-        #   renderDisableMs einzelner Plot-Durchlauf, der das Budget sprengt
+        #   renderDisableMs   Plot-Durchlauf, der das Budget sprengt
+        #   renderDisableStreak wie oft hintereinander das nötig ist — ein
+        #                     einzelner teurer Durchlauf (Tabwechsel,
+        #                     Größenänderung) ist kein Grund abzuschalten,
+        #                     dafür ist der adaptive Bildtakt da
         "perfMeasureMs": 250,
         "perfWarnStallMs": 35.0,
         "perfDisableStallMs": 80.0,
         "perfStreak": 5,
         "renderDisableMs": 80.0,
+        "renderDisableStreak": 3,
     },
 
     # ── Parameter-Tab ─────────────────────────────────────────────────────
