@@ -42,8 +42,9 @@ Alles, was 20-mal pro Sekunde laeuft (Ringpuffer schreiben, Fenster
 ausschneiden, Kurven fuer die Anzeige aufbereiten), benutzt VORAB ANGELEGTE
 Puffer. Sonst entsteht pro Sekunde ein knappes Megabyte an kurzlebigen
 NumPy-Arrays, das der Garbage Collector wieder einsammeln muss — auf einem
-Raspberry Pi ist genau das als Ruckeln spuerbar. Die Puffer kosten zusammen
-rund 100 kB und werden nie neu angelegt.
+Raspberry Pi ist genau das als Ruckeln spuerbar. Die Puffer haengen an der
+FENSTERBREITE (hoechstens ranges.plotPoints.max Spalten), nicht an der
+Ringgroesse: zusammen rund 60 kB, und sie werden nie neu angelegt.
 
 Aus demselben Grund liefert get_plot_arrays() float32 statt float64: das
 halbiert die kopierte Datenmenge, und pyqtgraph rechnet ohnehin intern in
@@ -154,7 +155,7 @@ class PlotBridge(QObject):
 
         # ── Vorab angelegte Arbeitspuffer ─────────────────────────────────
         #  Siehe Modul-Docstring: im Datentakt wird NICHTS mehr neu
-        #  angelegt. Zusammen rund 100 kB, ein für alle Mal.
+        #  angelegt. Zusammen rund 60 kB, ein für alle Mal.
         #    _snap_buf  Fenster aus snapshot()      (nur bei Ring-Umbruch)
         #    _live_buf  dito fuer live_snapshot()   (eigener Puffer, damit
         #               ein Aufruf den anderen nicht ueberschreibt)
@@ -162,11 +163,21 @@ class PlotBridge(QObject):
         #    _mask_buf  Gueltigkeitsmaske (isfinite) fuer Statistik/Normierung
         #    _xs        x-Achse 0..n-1; haengt nur an n und bleibt deshalb
         #               ueber Frames hinweg dieselbe (auch fuer pyqtgraph)
-        self._snap_buf = np.empty((MAX_CURVES, self._cap), dtype=np.float32)
-        self._live_buf = np.empty((MAX_CURVES, self._cap), dtype=np.float32)
-        self._y_buf    = np.empty((MAX_CURVES, self._cap), dtype=np.float32)
-        self._mask_buf = np.empty(self._cap, dtype=bool)
+        #
+        #  Alle vier haengen an der FENSTERBREITE, nicht an der Ringgroesse:
+        #  angezeigt werden hoechstens `ranges.plotPoints.max` Spalten (600),
+        #  gespeichert werden 1000. Vier Puffer ueber die volle Ringgroesse
+        #  zu legen hiess, 40 % davon nie anzufassen.
+        self._win_cap = self._clamp_points(self._cap)
+        self._snap_buf = np.empty((MAX_CURVES, self._win_cap), dtype=np.float32)
+        self._live_buf = np.empty((MAX_CURVES, self._win_cap), dtype=np.float32)
+        self._y_buf    = np.empty((MAX_CURVES, self._win_cap), dtype=np.float32)
+        self._mask_buf = np.empty(self._win_cap, dtype=bool)
         self._xs       = np.empty(0, dtype=np.float32)
+        # Vorgaengerwert + neuer Block am Stueck — fuer die Flanken-Trigger,
+        # damit eine Flanke genau an der Blockgrenze nicht verloren geht.
+        # Frueher ein np.concatenate je Block (20-mal pro Sekunde).
+        self._trig_buf = np.empty(self._cap + 1, dtype=np.float32)
 
         self._channels: list[int] = [0]
         self._names = [VARIABLE_NAMES.get(i, f"Var_{i:03d}") for i in range(MAX_FLOATS)]
@@ -771,8 +782,12 @@ class PlotBridge(QObject):
         series = block[:, chn].astype(np.float32, copy=False)
         prev = self._last_trig_value
         # Letzter Wert des VORHERIGEN Blocks vorangestellt, damit eine Flanke
-        # genau an der Blockgrenze nicht verloren geht.
-        extended = np.concatenate(([prev], series))
+        # genau an der Blockgrenze nicht verloren geht. Das lief frueher ueber
+        # ein np.concatenate JE BLOCK, also 20-mal pro Sekunde ein frisches
+        # Array; jetzt in den vorab angelegten _trig_buf.
+        extended = self._trig_buf[:n_new + 1]
+        extended[0] = prev
+        extended[1:] = series
         lvl = self._trig_level
         mode = self._trig_mode
 
@@ -826,7 +841,9 @@ class PlotBridge(QObject):
         aufheben will (siehe _frozen_snapshot), muss .copy() aufrufen.
         """
         n_curves = len(self._channels)
-        count = min(points, self._filled)
+        # Auch gegen die Puffergroesse begrenzen: die Puffer sind auf die
+        # groesste anzeigbare Fensterbreite dimensioniert, nicht auf den Ring.
+        count = min(points, self._filled, scratch.shape[1])
         if count <= 0:
             return np.empty((n_curves, 0), dtype=np.float32)
         start = (self._write - count) % self._cap

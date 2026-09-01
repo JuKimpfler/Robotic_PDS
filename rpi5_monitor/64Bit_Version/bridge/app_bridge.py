@@ -25,7 +25,8 @@ from PyQt6.QtCore import QObject, QTimer, pyqtSignal, pyqtProperty, pyqtSlot
 import app_settings
 import runtime_config
 from config import (
-    GUI_TIMER_MS, NODE1_IP, NODE2_IP, VARIABLE_NAMES, NODE_TIMEOUT_SEC,
+    GUI_TIMER_MS, MAX_FLOATS, NODE1_IP, NODE2_IP, VARIABLE_NAMES,
+    NODE_TIMEOUT_SEC,
     UDP_CHANNEL_DESC_REQUEST_PORT_NODE1, UDP_CHANNEL_DESC_REQUEST_PORT_NODE2,
 )
 from network_worker import NetworkManager
@@ -76,6 +77,9 @@ class AppBridge(QObject):
         self._node_connected = {1: False, 2: False}
         self._node_ips = {1: NODE1_IP, 2: NODE2_IP}
         self._shutdown_done = False
+        # Arbeitspuffer fuer _stack(): waechst einmal auf die groesste je
+        # gesehene Batch-Groesse und wird danach wiederverwendet.
+        self._stack_buf: np.ndarray | None = None
 
         # ── Robustheit gegen Neustarts ────────────────────────────────────
         self._last_ts: dict[int, int | None] = {1: None, 2: None}
@@ -317,8 +321,7 @@ class AppBridge(QObject):
         self._diag.note_values(latest)
         self._plotter.append_block(self._stack(batch))
 
-    @staticmethod
-    def _stack(batch: list[np.ndarray]) -> np.ndarray:
+    def _stack(self, batch: list[np.ndarray]) -> np.ndarray:
         """Die Pakete eines Poll-Durchlaufs in EIN 2D-Array legen.
 
         Die Einzelpakete können unterschiedlich lang sein (der Empfänger
@@ -329,14 +332,30 @@ class AppBridge(QObject):
         Ab hier ist alles numpy: der Plotter bekommt einen einzigen Block
         statt einer Python-Liste, und schreibt ihn in einem Rutsch in seinen
         Ringpuffer (siehe plot_bridge.append_block).
+
+        Der Block wird in einen VORAB ANGELEGTEN, bei Bedarf nachwachsenden
+        Puffer gelegt statt in ein frisches np.full(). Das lief 20-mal pro
+        Sekunde und war die letzte regelmäßige Zuteilung im Datenpfad —
+        append_block() kopiert den Inhalt sofort in den Ringpuffer, danach
+        hält niemand mehr eine Referenz darauf.
         """
         n = len(batch)
         width = max(v.shape[0] for v in batch)
         if n == 1:
             return batch[0].reshape(1, -1)
-        block = np.full((n, width), np.nan, dtype=np.float32)
+        buf = self._stack_buf
+        if buf is None or buf.shape[0] < n or buf.shape[1] < width:
+            buf = self._stack_buf = np.empty(
+                (max(n, 8), max(width, MAX_FLOATS)), dtype=np.float32)
+        block = buf[:n, :width]
         for i, v in enumerate(batch):
-            block[i, :v.shape[0]] = v
+            w = v.shape[0]
+            block[i, :w] = v
+            if w < width:
+                # Kanal in diesem Paket nicht belegt -> Linie unterbrechen.
+                # Muss ausdrücklich passieren: der Puffer trägt noch die
+                # Werte des vorigen Durchlaufs.
+                block[i, w:] = np.nan
         return block
 
     # ── Neustart-/Lückenerkennung ─────────────────────────────────────────
