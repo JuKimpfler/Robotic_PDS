@@ -233,6 +233,11 @@ class PlotBridge(QObject):
         self._overloaded = False
         self._perf_message = ""
         self._plot_active = False      # liefert der Host (sichtbar + ein)
+        # Ist der Plotter-Bereich ueberhaupt auf dem Schirm? Nur dann muss
+        # die Statistik gerechnet werden — Legende und Statistikzeile stehen
+        # ausschliesslich im Plotter-Tab. Vorgabe True, damit die Bruecke
+        # ohne Host (Selbsttest, Benchmark) rechnet wie bisher.
+        self._stats_active = True
         self._render_ms = 0.0         # gleitender Max. eines Plot-Durchlaufs
         self._render_calls = 0        # Warmup-Zähler für note_render
         self._render_over = 0         # Durchläufe über Budget in Folge
@@ -326,6 +331,24 @@ class PlotBridge(QObject):
             return
         self._plot_active = active
         self._watchdog.set_active(active)
+
+    def setStatsActive(self, active: bool) -> None:
+        """Host meldet, ob der Plotter-Bereich auf dem Schirm ist.
+
+        Unabhaengig davon, ob der Plotter EINgeschaltet ist: Legende und
+        Statistikzeile stehen auch dann im Bild, wenn der Plotter selbst
+        wegen Ueberlastung aus ist — dann sind sie sogar das Einzige, was
+        noch Zahlen zeigt. Erst wenn der ganze Tab weg ist, rechnet die
+        Statistik nachweislich fuer niemanden.
+        """
+        active = bool(active)
+        if active == self._stats_active:
+            return
+        self._stats_active = active
+        if active:
+            # Beim Sichtbarwerden einmal nachziehen, sonst stuenden bis zum
+            # naechsten faelligen Takt die Zahlen von vorhin im Bild.
+            self._update_stats(force=True)
 
     def note_render(self, dt_ms: float) -> None:
         """Host meldet die Dauer eines vollständigen Plot-Durchlaufs.
@@ -1094,7 +1117,12 @@ class PlotBridge(QObject):
         des Plotters — und voellig nutzlos, weil niemand Zahlen 20-mal pro
         Sekunde liest. `force` umgeht die Drossel, wenn sich die Auswahl
         geaendert hat (dann stimmen sonst die Namen in der Legende nicht).
+
+        Ist der Plotter-Tab gar nicht auf dem Schirm, faellt die Rechnung
+        komplett aus — siehe setStatsActive().
         """
+        if not force and not self._stats_active:
+            return
         now = monotonic()
         if not force and now < self._stats_due:
             return

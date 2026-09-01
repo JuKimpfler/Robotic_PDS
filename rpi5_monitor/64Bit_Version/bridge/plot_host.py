@@ -540,10 +540,16 @@ class PyQtGraphHost(QQuickPaintedItem):
     def _redraw(self) -> None:
         if self._plot is None or self._plotter is None:
             return
+        # Sichtbarkeit zuerst, und ausdruecklich UNABHAENGIG von
+        # enabled/overloaded: Legende und Statistikzeile stehen auch dann im
+        # Bild, wenn der Plotter selbst abgeschaltet ist. Erst wenn der ganze
+        # Tab weg ist, darf die Bruecke aufhoeren zu rechnen.
+        sichtbar = self._on_screen()
+        self._plotter.setStatsActive(sichtbar)
         if not self._plotter.enabled or self._plotter.overloaded:
             self._go_idle()
             return
-        if not self._on_screen():
+        if not sichtbar:
             self._go_idle()
             return
 
@@ -837,6 +843,10 @@ class PyQtGraphHost(QQuickPaintedItem):
         self._timer.stop()
         if self._plotter is not None:
             self._plotter.setPlotActive(False)
+            # Der Timer laeuft nicht mehr, es kommt also keine Meldung ueber
+            # die Sichtbarkeit nach. Im Fehler-Modus ist die Legende das
+            # Einzige, was noch Zahlen zeigt — die darf nicht stehenbleiben.
+            self._plotter.setStatsActive(True)
         self.update()
 
     # ── Paint (Image-/Fehler-Modus; native zeichnet selbst) ────────────────

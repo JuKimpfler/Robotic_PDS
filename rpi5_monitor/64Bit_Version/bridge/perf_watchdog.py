@@ -20,6 +20,11 @@ Der Wächter wertet die Last NUR aus, wenn der Plotter tatsächlich aktiv ist
 einem anderen Teil der App käme, nicht dem Plotter angelastet — und ein
 Plotter, der schon aus ist, wird nicht noch einmal „bestraft“.
 
+Solange der Plotter inaktiv ist, LÄUFT DER TIMER GAR NICHT. Früher tickte er
+ab dem Programmstart dauerhaft mit 4 Hz, auch wenn der Plotter-Tab nie
+geöffnet wurde — vier Weckrufe pro Sekunde für ein sofortiges „nicht aktiv,
+nichts zu tun“.
+
 Schwellen kommen aus settings.json -> "plotter" (siehe app_settings.py).
 """
 from __future__ import annotations
@@ -54,6 +59,7 @@ class PerfWatchdog(QObject):
         self._streak_n = max(1, int(streak))
 
         self._active = False
+        self._armed = False
         self._warned = False
         self._streak = 0
         self._last = monotonic()
@@ -64,27 +70,47 @@ class PerfWatchdog(QObject):
 
     # ── Steuerung ─────────────────────────────────────────────────────────
     def start(self) -> None:
-        self._last = monotonic()
+        """Wächter scharf machen. Der Timer läuft erst, wenn der Plotter
+        auch wirklich aktiv ist (siehe set_active)."""
+        self._armed = True
         self._streak = 0
-        if not self._timer.isActive():
-            self._timer.start()
+        self._sync_timer()
 
     def stop(self) -> None:
-        self._timer.stop()
+        self._armed = False
+        self._sync_timer()
 
     def set_active(self, active: bool) -> None:
         """Plotter liefert gerade Arbeit ab (und darf deshalb Last machen)."""
-        self._active = bool(active)
-        if not self._active:
+        active = bool(active)
+        if active == self._active:
+            return
+        self._active = active
+        if not active:
             # Wenn der Plotter inaktiv ist, zählt ein Stall nicht — er käme
             # sonst von woanders her, und wir würden fälschlich warnen.
             self._streak = 0
+        self._sync_timer()
 
     def reset(self) -> None:
         """Nach manuellem Re-Aktivieren wieder von vorne zählen."""
         self._streak = 0
         self._warned = False
         self._last = monotonic()
+
+    def _sync_timer(self) -> None:
+        """Timer genau dann laufen lassen, wenn er etwas messen kann.
+
+        `_last` wird beim Anlaufen neu gesetzt: sonst zählte die ganze Pause
+        seit dem letzten Tick als Staulast und der erste Tick nach einem
+        Tabwechsel meldete sofort Überlastung.
+        """
+        soll = self._armed and self._active
+        if soll and not self._timer.isActive():
+            self._last = monotonic()
+            self._timer.start()
+        elif not soll and self._timer.isActive():
+            self._timer.stop()
 
     # ── Messung ───────────────────────────────────────────────────────────
     def _tick(self) -> None:
