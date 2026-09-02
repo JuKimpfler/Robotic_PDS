@@ -55,6 +55,13 @@ jobs:
       - name: Selbsttest (ohne Hardware)
         run: python tools/selftest.py
 
+      - name: Plotter — Wert-fuer-Wert-Vergleiche
+        # Belegt, dass die Sparmassnahmen am Plotter das ERGEBNIS nicht
+        # veraendert haben: Ringpuffer, Kurvenarrays und Trigger gegen
+        # unabhaengige Referenzimplementierungen. Braucht kein pyqtgraph,
+        # laeuft deshalb schon in dieser Stufe.
+        run: python tools/plotter_bench.py --verify
+
       - name: Wire-Format Teensy/Node/GUI
         run: python tools/check_wire_format.py
 
