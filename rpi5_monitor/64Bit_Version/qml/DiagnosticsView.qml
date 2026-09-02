@@ -255,6 +255,12 @@ Item {
                             checked: root.settings.autoApplyTeensyConfig
                             onToggled: (v) => root.settings.setAutoApplyTeensyConfig(v)
                         }
+                        AppSwitch {
+                            text: "Aussehen vom Teensy übernehmen"
+                            checked: root.settings.autoApplyTeensySettings
+                            enabled: root.settings.autoApplyTeensyConfig
+                            onToggled: (v) => root.settings.setAutoApplyTeensySettings(v)
+                        }
 
                         Row {
                             spacing: Theme.spacingXs

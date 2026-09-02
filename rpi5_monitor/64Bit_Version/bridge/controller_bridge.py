@@ -297,8 +297,20 @@ class ControllerBridge(QObject):
         # Hot-Plug nur alle 500 ms prüfen (siehe __init__). Solange ein
         # Controller verbunden ist, meldet ein Lesefehler das Abziehen
         # ohnehin sofort.
+        #
+        # Die Bedingung hiess früher `self._joystick is None or <Zeit abgelaufen>`
+        # und hob damit ausgerechnet in dem Fall die Drosselung auf, für den
+        # sie gedacht war: OHNE angeschlossenen Controller ist `_joystick`
+        # immer None, get_count() lief also mit vollen 100 Hz statt 2 Hz.
+        # SDL geht dabei über die Geräteliste — im Sende-Thread, der 10 ms
+        # später schon das nächste Fast-Paket packen soll. Genau das ist der
+        # Grund, warum die Fernsteuerung ohne Controller ins Stocken kam.
+        # Die 500 ms gelten jetzt IMMER; ein frisch eingesteckter Controller
+        # wird dadurch höchstens eine halbe Sekunde später erkannt, und
+        # `_set_disconnected()` setzt `_last_count_check` auf 0, damit ein
+        # ABGEZOGENER sofort wieder geprüft wird.
         now = time.monotonic()
-        if self._joystick is None or (now - self._last_count_check) >= 0.5:
+        if (now - self._last_count_check) >= 0.5:
             self._last_count_check = now
             try:
                 self._count_cache = pygame.joystick.get_count()

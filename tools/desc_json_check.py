@@ -146,7 +146,9 @@ def main() -> int:
         fields[key] = value
 
     for key in ("CHUNKS", "DESCRIPTORS", "JSONLEN", "OVERFLOW", "EVENTS",
-                "ACKS", "TELEMETRY", "USED", "JSON"):
+                "ACKS", "TELEMETRY", "USED", "SIMMS", "BUILDUPDATES",
+                "FASTVALUE", "FASTOK", "RESYNC", "DEGRADED", "PDSOFF",
+                "REVIVED", "JSON"):
         if key not in fields:
             check(f"Ausgabefeld {key} vorhanden", False, out[:300])
             return 1
@@ -163,10 +165,38 @@ def main() -> int:
           int(fields["DESCRIPTORS"]) >= 2, fields["DESCRIPTORS"])
     check("Ereignisse und Logzeilen wurden gesendet",
           int(fields["EVENTS"]) == 4, fields["EVENTS"])
+    # Gegen die simulierte Laufzeit gerechnet statt gegen feste Zahlen: sonst
+    # muessten diese Grenzen bei jeder neuen Testphase nachgezogen werden, und
+    # genau dabei rutscht irgendwann eine echte Abweichung durch.
+    sim_ms = int(fields["SIMMS"])
+    exp_acks = sim_ms / 500.0
+    exp_tlm = sim_ms / 10.0
     check("Parameter-Rueckmeldung laeuft mit 2 Hz",
-          20 <= int(fields["ACKS"]) <= 28, fields["ACKS"])
+          0.9 * exp_acks <= int(fields["ACKS"]) <= 1.05 * exp_acks,
+          f'{fields["ACKS"]} statt ~{exp_acks:.0f}')
     check("Telemetrie laeuft mit 100 Hz weiter",
-          1100 <= int(fields["TELEMETRY"]) <= 1200, fields["TELEMETRY"])
+          0.9 * exp_tlm <= int(fields["TELEMETRY"]) <= 1.02 * exp_tlm,
+          f'{fields["TELEMETRY"]} statt ~{exp_tlm:.0f}')
+
+    # ── Blockierfreiheit (PDS 2.2) ────────────────────────────────────────
+    #  Alle vier Punkte betreffen genau den Fehler, wegen dem der Teensy ohne
+    #  laufende Gegenstelle stehenblieb: der Deskriptor wurde in EINEM Zug
+    #  gebaut, der Parser blieb an einem abgebrochenen Paket haengen, und es
+    #  gab keine Grenze, ab der PDS sich selbst zurueckzieht.
+    build_updates = int(fields["BUILDUPDATES"])
+    check("Deskriptor wird ueber mehrere update() gebaut (nicht in einem Zug)",
+          build_updates >= 2, f"{build_updates} Aufruf(e)")
+    check("Deskriptor ist trotzdem zuegig fertig",
+          build_updates <= 400, f"{build_updates} Aufrufe")
+    check("abgebrochenes Paket setzt den Parser zurueck",
+          int(fields["RESYNC"]) >= 1, fields["RESYNC"])
+    check("das naechste Paket danach kommt vollstaendig an",
+          int(fields["FASTOK"]) == 1, fields["FASTOK"])
+    check("und traegt den richtigen Wert (kein Zufallswert aus der Paketmitte)",
+          abs(float(fields["FASTVALUE"]) - 42.5) < 0.01, fields["FASTVALUE"])
+    check("Notbremse schaltet die Nebenwege ab", fields["DEGRADED"] == "1")
+    check("Notbremse schaltet PDS danach ganz ab", fields["PDSOFF"] == "1")
+    check("PDS.enable(true) hebt die Notbremse wieder auf", fields["REVIVED"] == "1")
 
     # ── Der eigentliche Punkt: ist es gueltiges JSON? ─────────────────────
     try:
@@ -192,7 +222,8 @@ def main() -> int:
     if not used_testcfg:
         return 1
     for key in ("meta", "channels", "units", "param_slow_floats",
-                "param_slow_bools", "param_fast_floats", "param_cfg", "overlays"):
+                "param_slow_bools", "param_fast_floats", "param_cfg",
+                "overlays", "settings"):
         check(f"Abschnitt '{key}' vorhanden", key in data)
 
     meta = data.get("meta", {})
@@ -250,6 +281,29 @@ def main() -> int:
     check("Overlays: extra-Text kommt unveraendert an",
           grid is not None and grid.get("extra") == "channels=0-11,20;cols=2;dx=24;dy=5",
           str(grid))
+
+    # ── Einstellungen der Oberflaeche (PDS 2.2) ──────────────────────────
+    #  Der Typ ist hier das Entscheidende: die GUI prueft jeden Wert gegen
+    #  ihren eigenen Standardwert. Kaeme "ui.dark" als 1 statt als true an,
+    #  wuerde sie ihn stillschweigend verwerfen — und niemand wuesste warum.
+    st = data.get("settings", {})
+    check("settings ist ein Objekt", isinstance(st, dict), str(type(st)))
+    check("Wahrheitswert kommt als true/false", st.get("ui.dark") is True,
+          repr(st.get("ui.dark")))
+    check("Zahl kommt als Zahl",
+          isinstance(st.get("battery.channel"), (int, float))
+          and not isinstance(st.get("battery.channel"), bool)
+          and float(st.get("battery.channel", -1)) == 10.0,
+          repr(st.get("battery.channel")))
+    check("Farbe kommt als Text", st.get("theme.colors.dark.bg") == "#101010",
+          repr(st.get("theme.colors.dark.bg")))
+    check("Listenindex im Punktpfad bleibt erhalten",
+          st.get("plotter.curveColors.0") == "#00ff88"
+          and st.get("plotter.curveColors.1") == "#ff00aa",
+          str({k: v for k, v in st.items() if k.startswith("plotter.curve")}))
+    check("PDS.setting() im Sketch schlaegt die Tabelle in channel_config.h",
+          abs(float(st.get("ui.fontScale", 0)) - 1.25) < 0.001,
+          repr(st.get("ui.fontScale")))
 
     # ── Die GUI muss daraus wirklich ihre Konfiguration bauen koennen ─────
     sys.path.insert(0, str(ROOT / "rpi5_monitor" / "64Bit_Version"))

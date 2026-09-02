@@ -1,7 +1,7 @@
 {
   "name": "PowerDebugSystem",
-  "version": "2.0.0",
-  "description": "Power Debug System (PDS) fuer Teensy 4.x: 200 Telemetrie-Kanaele mit 100 Hz ueber UART, Parameter-/Joystick-Downlink von der GUI und automatische Kanalnamen. Kanalnummern optional - PDS.plot(\"Name\", wert) vergibt sie selbst.",
+  "version": "2.2.0",
+  "description": "Power Debug System (PDS) fuer Teensy 4.x: 200 Telemetrie-Kanaele mit 100 Hz ueber UART, Parameter-/Joystick-Downlink von der GUI, automatische Kanalnamen und Oberflaechen-Einstellungen aus der Firmware. update() blockiert nie, auch nicht ohne Gegenstelle. Kanalnummern optional - PDS.plot(\"Name\", wert) vergibt sie selbst.",
   "keywords": ["teensy", "telemetry", "robocup", "debug", "uart"],
   "license": "MIT",
   "frameworks": "arduino",

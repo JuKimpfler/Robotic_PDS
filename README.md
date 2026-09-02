@@ -223,6 +223,8 @@ Full API, build flags and integration options:
   - [`Kanalnamen_Implementierung.md`](Doku/Kanalnamen_Implementierung.md) — channel/param name + overlay descriptor protocol.
   - [`PS4_Controller_Implementierung.md`](Doku/PS4_Controller_Implementierung.md) — PS4 controller integration and calibration.
   - [`Flash_Implementierung.md`](Doku/Flash_Implementierung.md) — wireless firmware flashing over Bluetooth.
+  - [`Blockierfreiheit.md`](Doku/Blockierfreiheit.md) — why `PDS.update()` can never stall the robot: time budget, RX budget, sliced descriptor build, emergency brake. Also the full analysis of the "Teensy freezes when started without a PS4 controller" bug.
+  - [`Teensy_Einstellungen.md`](Doku/Teensy_Einstellungen.md) — the firmware can set every `settings.json` key of the GUI (colours, font sizes, battery warning, plotter), with the same fingerprint conflict rule as names and overlays.
 
 ---
 
@@ -370,5 +372,7 @@ python rpi5_monitor/64Bit_Version/main_qml.py --simulate
 | Parameters tab looks wrong after a firmware change | The stored configuration only gets replaced when the Teensy's fingerprint changes. Press "Gespeicherte Konfiguration verwerfen" in the Diagnostics tab. |
 | Joystick/controller feels jerky | Check "Verlust" and "Ping" per node in the Diagnostics tab, and whether the node log still says `Telemetrie -> 255.255.255.255`. |
 | Robot restarted for no apparent reason | Look in the Diagnostics log book: with `PDS.enableWatchdog(...)` active, a watchdog reset is reported there as an error on the next boot. |
+| Robot's control loop stutters, or the Teensy seems to stall | `PDS.printStatus()` now prints `update <last>/<max> us` — a maximum far above ~100 µs means something is holding `update()` up. `PDS.degraded()` / `PDS.enabled()` tell you whether the emergency brake already stepped in. See [`Doku/Blockierfreiheit.md`](Doku/Blockierfreiheit.md). |
+| A setting from `channel_config.h` never arrives in the GUI | The Diagnostics log book names every rejected key, and `runtime_config/node<N>/gui_settings.json` keeps the full list. Check that both "Konfiguration vom Teensy übernehmen" and "Aussehen vom Teensy übernehmen" are on. See [`Doku/Teensy_Einstellungen.md`](Doku/Teensy_Einstellungen.md). |
 | Node log says `Sync-Verluste` keeps rising | Bytes are being lost on the Teensy → node UART: check wiring/ground and that the baud rates match. |
 | Node log says `Telemetrie -> 255.255.255.255` | The node has not seen a parameter packet from the GUI yet — is "Übertragung aktiv" enabled? This also costs a lot of Wi-Fi airtime; see the latency doc. |

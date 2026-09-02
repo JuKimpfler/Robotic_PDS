@@ -33,6 +33,17 @@ static const OverlayDef     CHANNEL_OVERLAYS[]      = { {0, "", ""} };
 static constexpr size_t     CHANNEL_OVERLAYS_COUNT  = 0;
 #endif
 
+// GUI_SETTINGS[] ist NEU (PDS 2.2) und bekommt deshalb eine eigene Weiche:
+// eine channel_config.h aus einem bestehenden Roboterprojekt kennt die
+// Tabelle noch nicht, soll aber unveraendert weiter uebersetzen. Wer sie
+// benutzt, setzt in channel_config.h direkt davor
+//     #define PDS_HAS_GUI_SETTINGS 1
+// (die ausgelieferte Vorlage tut das bereits).
+#ifndef PDS_HAS_GUI_SETTINGS
+static const SettingDef GUI_SETTINGS[]     = { SettingDef("", 0.0f) };
+static constexpr size_t GUI_SETTINGS_COUNT = 0;
+#endif
+
 // Die eine, im Sketch benutzte Instanz (siehe PDS.h).
 PowerDebugger PDS;
 
@@ -61,7 +72,8 @@ static_assert(PDS_EVENT_QUEUE_SIZE > 0 && PDS_EVENT_QUEUE_SIZE <= 64,
               "PDS_EVENT_QUEUE_SIZE muss zwischen 1 und 64 liegen");
 static_assert(PDS_UNIT_MAXLEN >= 2, "PDS_UNIT_MAXLEN muss mindestens 2 sein");
 
-static constexpr uint32_t SAMPLE_PERIOD_MS = 10;     // 10 ms -> 100 Hz
+// Der Telemetrietakt liegt seit PDS 2.2 in _samplePeriodMs (Standard 10 ms
+// = 100 Hz) und laesst sich mit setTelemetryRate() zur Laufzeit aendern.
 static constexpr uint32_t WARN_INTERVAL_MS = 1000;   // Rate-Limit fuer Serial-Warnungen
 
 // Ein Deskriptor-Chunk (257 B) alle 20 ms = 12.9 kB/s. Zusammen mit den
@@ -114,7 +126,13 @@ static_assert(PDS_DESC_BUF_BYTES / CHANNEL_DESC_CHUNK_PAYLOAD_MAX < 255,
 // bleibt: die variablen Inhalte (Namen, Param-Konfiguration, Overlays) duerfen
 // nur bis Puffergroesse minus dieser Reserve wachsen, die Struktur passt
 // danach garantiert noch hinein. Siehe JsonBuilder::raw() vs. put().
-static constexpr size_t DESC_STRUCT_RESERVE = 192;
+//
+// 256 statt der frueheren 192: die Abschnittstrenner summieren sich vom
+// ersten Ueberlauf an gerechnet auf 191 Zeichen, mit dem neuen Abschnitt
+// "settings" auf 205. Die alte Reserve war damit auf ein Zeichen genau
+// ausgereizt — ein weiterer Abschnitt haette den Deskriptor bei vollem
+// Puffer ungueltig gemacht.
+static constexpr size_t DESC_STRUCT_RESERVE = 256;
 
 static elapsedMillis DBGTimer;
 static elapsedMillis DescChunkTimer;
@@ -149,23 +167,48 @@ static inline bool txRoomFor(int extraBytes) {
     return UART_DBG.availableForWrite() >= (PACKET_BYTES + extraBytes);
 }
 
+// Klartextmeldungen der Bibliothek. Abschaltbar ueber
+// PDS.setSerialDiagnostics(false); dateilokal, weil pdsWarn() eine freie
+// Funktion ist und auch aus const-Methoden heraus benutzt wird.
+static bool g_serialDiag = true;
+
+// Ist im USB-Serial-Puffer Platz fuer `len` Zeichen?
+//
+// DAS IST DER ENTSCHEIDENDE PUNKT und nicht bloss Feinschliff: Serial.print()
+// auf dem Teensy 4 WARTET, wenn der Host die Schnittstelle geoeffnet hat, sie
+// aber gerade nicht leerliest (ein offenes, weggescrolltes Terminalfenster
+// genuegt) — bis zu 120 ms je Aufruf. Genau so lange steht dann auch die
+// Regelschleife des Roboters. Mit dieser Abfrage faellt die Meldung lieber
+// aus, statt zu warten.
+static inline bool serialRoomFor(int len) {
+    if (!g_serialDiag) return false;
+    if (!Serial) return false;                 // kein Terminal offen
+    return Serial.availableForWrite() >= len;
+}
+
 // Serial-Warnungen sind im Roboterbetrieb Nebensache und duerfen den
-// 100-Hz-Takt nicht stoeren: hoechstens eine pro Sekunde, und nur wenn ein
-// USB-Serial-Terminal ueberhaupt offen ist (sonst blockiert print() nicht,
-// verbraucht aber trotzdem Zeit im TX-Puffer).
+// 100-Hz-Takt nicht stoeren: hoechstens eine pro Sekunde, nur wenn ein
+// USB-Serial-Terminal offen ist UND dessen Puffer die Zeile auch aufnimmt.
 static void pdsWarn(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
 static void pdsWarn(const char* fmt, ...) {
     uint32_t now = millis();
     if (now - _lastWarnMs < WARN_INTERVAL_MS) return;
+    if (!g_serialDiag || !Serial) return;
     _lastWarnMs = now;
-    if (!Serial) return;
     char line[128];
     va_list args;
     va_start(args, fmt);
-    vsnprintf(line, sizeof(line), fmt, args);
+    const int n = vsnprintf(line, sizeof(line), fmt, args);
     va_end(args);
+    // +8 fuer "[PDS] " und den Zeilenumbruch.
+    if (!serialRoomFor((n > 0 ? n : 0) + 8)) return;
     Serial.print("[PDS] ");
     Serial.println(line);
+}
+
+void PowerDebugger::setSerialDiagnostics(bool on) {
+    _serialDiagOn = on;    // Member  — fuer printStatus()/Diagnose
+    g_serialDiag  = on;    // dateilokal — fuer pdsWarn(), das keine Instanz kennt
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -183,6 +226,15 @@ void PowerDebugger::Channel(uint8_t chn, float val, const char* name) {
 
 void PowerDebugger::setName(uint8_t chn, const char* name) {
     if (chn >= ACTIVE_CHANNELS || !name || !name[0]) return;
+
+    // Unveraendert? Dann NICHTS anfassen — insbesondere nicht _descBuilt.
+    //
+    // Das ist kein Feinschliff: PDS.Channel(12, wert, "Name") ist ein voellig
+    // ueblicher Aufruf mitten in der Regelschleife und landete hier 100x pro
+    // Sekunde. Jeder dieser Aufrufe erklaerte den Deskriptor fuer ungueltig,
+    // und die naechste Namensmeldung baute die kompletten 24 kB JSON neu auf.
+    if (strncmp(_names[chn], name, CHANNEL_NAME_MAXLEN - 1) == 0) return;
+
     strncpy(_names[chn], name, CHANNEL_NAME_MAXLEN - 1);
     _names[chn][CHANNEL_NAME_MAXLEN - 1] = '\0';
     // Namen sind Teil des Deskriptors -> beim naechsten Sendevorgang neu bauen.
@@ -321,16 +373,17 @@ void PowerDebugger::error(const char* fmt, ...) {
 }
 
 bool PowerDebugger::sendNextEvent() {
-    if (_evCount == 0) return false;
+    if (_evCount == 0 || !_eventsOn) return false;
 
     // Rate-Limit: eine Endlosschleife mit log() im Roboter-Code darf den
-    // Uplink nicht fluten (siehe PDS_EVENT_MAX_PER_SEC in params.h).
+    // Uplink nicht fluten (Standard PDS_EVENT_MAX_PER_SEC aus params.h,
+    // zur Laufzeit ueber setEventRateLimit()).
     const uint32_t now = millis();
     if (now - _evWindowStartMs >= 1000) {
         _evWindowStartMs = now;
         _evInWindow = 0;
     }
-    if (_evInWindow >= PDS_EVENT_MAX_PER_SEC) return false;
+    if (_evInWindow >= _eventMaxPerSec) return false;
 
     const EventEntry& e = _evQueue[_evHead];
     const int total = PDS_EVENT_HEADER_BYTES + (int)e.len;
@@ -580,124 +633,309 @@ bool putParamDef(JsonBuilder& j, bool& first, const ParamDef& d) {
 
 }  // namespace
 
-void PowerDebugger::buildDescriptorJson() {
+// ══════════════════════════════════════════════════════════════════════════
+//  Deskriptor: JSON in SCHEIBEN bauen
+// ══════════════════════════════════════════════════════════════════════════
+//  Frueher entstand der komplette JSON-Text (bis 24 kB, ueber 1500
+//  vsnprintf-Aufrufe) in EINEM Aufruf mitten im update(). Das waren je nach
+//  Konfiguration mehrere Millisekunden am Stueck — und zwar genau dann, wenn
+//  keine GUI da ist und der Deskriptor deshalb regelmaessig wiederholt wird.
+//  Fuer eine Regelschleife, die alle 10 ms fertig sein soll, ist das ein
+//  Aussetzer, kein Rundungsfehler.
+//
+//  Jetzt merken sich _descStage/_descIdx, wo der letzte Aufruf aufgehoert
+//  hat: je update() wandern hoechstens PDS_DESC_BUILD_STEP Eintraege in den
+//  Puffer, und nur solange vom Zeitbudget noch etwas uebrig ist. Der
+//  Deskriptor braucht dadurch ein paar Zyklen laenger — er wird ohnehin
+//  chunkweise mit 20 ms Abstand verschickt, das faellt also nicht auf.
+namespace {
+
+// Abschnitte des Deskriptors, in genau der Reihenfolge, in der sie im JSON
+// stehen. Die Zwischenzeichen schreibt jeweils der UEBERGANG zum naechsten
+// Abschnitt, die Reserve DESC_STRUCT_RESERVE haelt dafuer Platz frei.
+enum : uint8_t {
+    DS_META = 0, DS_CHANNELS, DS_UNITS,
+    DS_PSF, DS_PSB, DS_PFF,
+    DS_CFG_SF, DS_CFG_SB, DS_CFG_FF, DS_CFG_JS,
+    DS_OVERLAYS, DS_SETTINGS,
+    DS_DONE = 0xFF
+};
+
+}  // namespace
+
+void PowerDebugger::beginDescriptorBuild() {
+    _descStage    = DS_META;
+    _descIdx      = 0;
+    _descPos      = 0;
+    _descFirst    = true;
+    _descOverflow = false;
+    _descBuilt    = false;
+}
+
+bool PowerDebugger::buildDescriptorStep() {
+    if (_descStage == DS_DONE) return true;
+
+    // JsonBuilder ist zustandslos ausser pos/overflow — die beiden liegen als
+    // Member vor und werden hier nur ein- und wieder ausgehaengt.
     JsonBuilder j(_descBuf, sizeof(_descBuf));
+    j.pos      = _descPos;
+    j.overflow = _descOverflow;
+
+    int budget = PDS_DESC_BUILD_STEP;
+
+    switch (_descStage) {
 
     // ── meta: Firmware-Version und Eckdaten ───────────────────────────────
-    j.raw("{\"meta\":{");
-    j.put("\"pds\":\"%s\",\"wire\":%d,\"channels\":%d,\"used\":%d",
-          PDS_VERSION, (int)PDS_WIRE_VERSION, (int)ACTIVE_CHANNELS, (int)_autoNext);
-    j.put(",\"build\":\"%s %s\"", __DATE__, __TIME__);
-    if (_fwVersion[0]) {
-        j.put(",\"fw\":\"");
-        j.putEscaped(_fwVersion);
-        j.put("\"");
-    }
-    if (_wdtWasReset) j.put(",\"wdt_reset\":true");
-
-    j.raw("},\"channels\":{");
-    bool first = true;
-    for (int i = 0; i < ACTIVE_CHANNELS; i++) {
-        if (!putNameEntry(j, first, i, _names[i])) break;
-    }
-
-    j.raw("},\"units\":{");
-    first = true;
-    for (uint8_t i = 0; i < _unitCount; i++) {
-        if (!putNameEntry(j, first, _units[i].chn, _units[i].unit)) break;
-    }
-
-    // ── Param-Namen (schlanker Pfad, den die GUI seit jeher liest) ────────
-    j.raw("},\"param_slow_floats\":{");
-    first = true;
-    for (size_t i = 0; i < PARAM_SLOW_FLOATS_COUNT; i++) {
-        if (!putNameEntry(j, first, PARAM_SLOW_FLOATS[i].index, PARAM_SLOW_FLOATS[i].name)) break;
-    }
-
-    j.raw("},\"param_slow_bools\":{");
-    first = true;
-    for (size_t i = 0; i < PARAM_SLOW_BOOLS_COUNT; i++) {
-        if (!putNameEntry(j, first, PARAM_SLOW_BOOLS[i].index, PARAM_SLOW_BOOLS[i].name)) break;
-    }
-
-    j.raw("},\"param_fast_floats\":{");
-    first = true;
-    for (size_t i = 0; i < PARAM_FAST_FLOATS_COUNT; i++) {
-        if (!putNameEntry(j, first, PARAM_FAST_FLOATS[i].index, PARAM_FAST_FLOATS[i].name)) break;
-    }
-
-    // ── Vollstaendige Widget-Konfiguration des Parameter-Tabs ─────────────
-    j.raw("},\"param_cfg\":{\"slow_floats\":[");
-    first = true;
-    for (size_t i = 0; i < PARAM_SLOW_FLOATS_COUNT; i++) {
-        if (!putParamDef(j, first, PARAM_SLOW_FLOATS[i])) break;
-    }
-    j.raw("],\"slow_bools\":[");
-    first = true;
-    for (size_t i = 0; i < PARAM_SLOW_BOOLS_COUNT; i++) {
-        if (!putParamDef(j, first, PARAM_SLOW_BOOLS[i])) break;
-    }
-    j.raw("],\"fast_floats\":[");
-    first = true;
-    for (size_t i = 0; i < PARAM_FAST_FLOATS_COUNT; i++) {
-        if (!putParamDef(j, first, PARAM_FAST_FLOATS[i])) break;
-    }
-    j.raw("],\"joysticks\":[");
-    first = true;
-    for (size_t i = 0; i < PARAM_JOYSTICKS_COUNT; i++) {
-        const JoystickDef& js = PARAM_JOYSTICKS[i];
-        if (!js.name || !js.name[0]) continue;
-        if (!j.fits(strlen(js.name) * 6 + 160)) break;
-        if (!first) j.put(",");
-        first = false;
-        j.put("{\"n\":\"");
-        j.putEscaped(js.name);
-        j.put("\",\"s\":\"%s\",\"x\":%d,\"y\":%d,\"xr\":[",
-              js.source ? js.source : "fast", (int)js.x_index, (int)js.y_index);
-        j.putNum(js.x_min); j.put(",");
-        j.putNum(js.x_max); j.put("],\"yr\":[");
-        j.putNum(js.y_min); j.put(",");
-        j.putNum(js.y_max);
-        j.put("],\"c\":%s}", js.return_to_center ? "true" : "false");
-    }
-
-    // ── Overlays der Systemansicht ────────────────────────────────────────
-    j.raw("]},\"overlays\":[");
-    bool firstOverlay = true;
-    for (size_t i = 0; i < CHANNEL_OVERLAYS_COUNT; i++) {
-        const OverlayDef& ov = CHANNEL_OVERLAYS[i];
-        if (!ov.type || !ov.type[0]) continue;
-        const size_t need = strlen(ov.label ? ov.label : "") * 6
-                          + strlen(ov.extra ? ov.extra : "") * 6
-                          + strlen(ov.type) + 220;
-        if (!j.fits(need)) break;
-        if (!firstOverlay) j.put(",");
-        firstOverlay = false;
-        j.put("{\"group\":%d,\"type\":\"%s\",\"label\":\"", ov.group, ov.type);
-        j.putEscaped(ov.label);
-        j.put("\"");
-        if (ov.channel  >= 0) j.put(",\"channel\":%d",  ov.channel);
-        if (ov.channel2 >= 0) j.put(",\"channel2\":%d", ov.channel2);
-        if (ov.min_val != 0.0f || ov.max_val != 0.0f) {
-            j.put(",\"min\":"); j.putNum(ov.min_val);
-            j.put(",\"max\":"); j.putNum(ov.max_val);
-        }
-        if (ov.x_pct >= 0.0f) {
-            j.put(",\"x_pct\":"); j.putNum(ov.x_pct);
-            j.put(",\"y_pct\":"); j.putNum(ov.y_pct);
-        }
-        if (ov.extra && ov.extra[0]) {
-            j.put(",\"extra\":\"");
-            j.putEscaped(ov.extra);
+    case DS_META:
+        j.raw("{\"meta\":{");
+        j.put("\"pds\":\"%s\",\"wire\":%d,\"channels\":%d,\"used\":%d",
+              PDS_VERSION, (int)PDS_WIRE_VERSION, (int)ACTIVE_CHANNELS, (int)_autoNext);
+        j.put(",\"build\":\"%s %s\"", __DATE__, __TIME__);
+        j.put(",\"rate\":%u", (unsigned)telemetryRate());
+        if (_fwVersion[0]) {
+            j.put(",\"fw\":\"");
+            j.putEscaped(_fwVersion);
             j.put("\"");
         }
-        j.put("}");
-    }
-    j.raw("]}");
+        if (_wdtWasReset) j.put(",\"wdt_reset\":true");
+        j.raw("},\"channels\":{");
+        _descStage = DS_CHANNELS; _descIdx = 0; _descFirst = true;
+        break;
 
-    _descJsonLen    = j.pos;
-    _descOverflow   = j.overflow;
-    _descChunkCount = (uint16_t)((j.pos + CHANNEL_DESC_CHUNK_PAYLOAD_MAX - 1)
+    case DS_CHANNELS:
+        while (budget-- > 0 && _descIdx < (uint16_t)ACTIVE_CHANNELS) {
+            if (!putNameEntry(j, _descFirst, _descIdx, _names[_descIdx])) {
+                _descIdx = (uint16_t)ACTIVE_CHANNELS;   // Puffer voll -> Rest weglassen
+                break;
+            }
+            _descIdx++;
+        }
+        if (_descIdx >= (uint16_t)ACTIVE_CHANNELS) {
+            j.raw("},\"units\":{");
+            _descStage = DS_UNITS; _descIdx = 0; _descFirst = true;
+        }
+        break;
+
+    case DS_UNITS:
+        while (budget-- > 0 && _descIdx < _unitCount) {
+            if (!putNameEntry(j, _descFirst, _units[_descIdx].chn, _units[_descIdx].unit)) {
+                _descIdx = _unitCount;
+                break;
+            }
+            _descIdx++;
+        }
+        if (_descIdx >= _unitCount) {
+            j.raw("},\"param_slow_floats\":{");
+            _descStage = DS_PSF; _descIdx = 0; _descFirst = true;
+        }
+        break;
+
+    // ── Param-Namen (schlanker Pfad, den die GUI seit jeher liest) ────────
+    case DS_PSF:
+        while (budget-- > 0 && _descIdx < (uint16_t)PARAM_SLOW_FLOATS_COUNT) {
+            if (!putNameEntry(j, _descFirst, PARAM_SLOW_FLOATS[_descIdx].index,
+                               PARAM_SLOW_FLOATS[_descIdx].name)) {
+                _descIdx = (uint16_t)PARAM_SLOW_FLOATS_COUNT;
+                break;
+            }
+            _descIdx++;
+        }
+        if (_descIdx >= (uint16_t)PARAM_SLOW_FLOATS_COUNT) {
+            j.raw("},\"param_slow_bools\":{");
+            _descStage = DS_PSB; _descIdx = 0; _descFirst = true;
+        }
+        break;
+
+    case DS_PSB:
+        while (budget-- > 0 && _descIdx < (uint16_t)PARAM_SLOW_BOOLS_COUNT) {
+            if (!putNameEntry(j, _descFirst, PARAM_SLOW_BOOLS[_descIdx].index,
+                               PARAM_SLOW_BOOLS[_descIdx].name)) {
+                _descIdx = (uint16_t)PARAM_SLOW_BOOLS_COUNT;
+                break;
+            }
+            _descIdx++;
+        }
+        if (_descIdx >= (uint16_t)PARAM_SLOW_BOOLS_COUNT) {
+            j.raw("},\"param_fast_floats\":{");
+            _descStage = DS_PFF; _descIdx = 0; _descFirst = true;
+        }
+        break;
+
+    case DS_PFF:
+        while (budget-- > 0 && _descIdx < (uint16_t)PARAM_FAST_FLOATS_COUNT) {
+            if (!putNameEntry(j, _descFirst, PARAM_FAST_FLOATS[_descIdx].index,
+                               PARAM_FAST_FLOATS[_descIdx].name)) {
+                _descIdx = (uint16_t)PARAM_FAST_FLOATS_COUNT;
+                break;
+            }
+            _descIdx++;
+        }
+        if (_descIdx >= (uint16_t)PARAM_FAST_FLOATS_COUNT) {
+            j.raw("},\"param_cfg\":{\"slow_floats\":[");
+            _descStage = DS_CFG_SF; _descIdx = 0; _descFirst = true;
+        }
+        break;
+
+    // ── Vollstaendige Widget-Konfiguration des Parameter-Tabs ─────────────
+    case DS_CFG_SF:
+        while (budget-- > 0 && _descIdx < (uint16_t)PARAM_SLOW_FLOATS_COUNT) {
+            if (!putParamDef(j, _descFirst, PARAM_SLOW_FLOATS[_descIdx])) {
+                _descIdx = (uint16_t)PARAM_SLOW_FLOATS_COUNT;
+                break;
+            }
+            _descIdx++;
+        }
+        if (_descIdx >= (uint16_t)PARAM_SLOW_FLOATS_COUNT) {
+            j.raw("],\"slow_bools\":[");
+            _descStage = DS_CFG_SB; _descIdx = 0; _descFirst = true;
+        }
+        break;
+
+    case DS_CFG_SB:
+        while (budget-- > 0 && _descIdx < (uint16_t)PARAM_SLOW_BOOLS_COUNT) {
+            if (!putParamDef(j, _descFirst, PARAM_SLOW_BOOLS[_descIdx])) {
+                _descIdx = (uint16_t)PARAM_SLOW_BOOLS_COUNT;
+                break;
+            }
+            _descIdx++;
+        }
+        if (_descIdx >= (uint16_t)PARAM_SLOW_BOOLS_COUNT) {
+            j.raw("],\"fast_floats\":[");
+            _descStage = DS_CFG_FF; _descIdx = 0; _descFirst = true;
+        }
+        break;
+
+    case DS_CFG_FF:
+        while (budget-- > 0 && _descIdx < (uint16_t)PARAM_FAST_FLOATS_COUNT) {
+            if (!putParamDef(j, _descFirst, PARAM_FAST_FLOATS[_descIdx])) {
+                _descIdx = (uint16_t)PARAM_FAST_FLOATS_COUNT;
+                break;
+            }
+            _descIdx++;
+        }
+        if (_descIdx >= (uint16_t)PARAM_FAST_FLOATS_COUNT) {
+            j.raw("],\"joysticks\":[");
+            _descStage = DS_CFG_JS; _descIdx = 0; _descFirst = true;
+        }
+        break;
+
+    case DS_CFG_JS:
+        while (budget-- > 0 && _descIdx < (uint16_t)PARAM_JOYSTICKS_COUNT) {
+            const JoystickDef& js = PARAM_JOYSTICKS[_descIdx];
+            if (!js.name || !js.name[0]) { _descIdx++; continue; }
+            if (!j.fits(strlen(js.name) * 6 + 160)) {
+                _descIdx = (uint16_t)PARAM_JOYSTICKS_COUNT;
+                break;
+            }
+            if (!_descFirst) j.put(",");
+            _descFirst = false;
+            j.put("{\"n\":\"");
+            j.putEscaped(js.name);
+            j.put("\",\"s\":\"%s\",\"x\":%d,\"y\":%d,\"xr\":[",
+                  js.source ? js.source : "fast", (int)js.x_index, (int)js.y_index);
+            j.putNum(js.x_min); j.put(",");
+            j.putNum(js.x_max); j.put("],\"yr\":[");
+            j.putNum(js.y_min); j.put(",");
+            j.putNum(js.y_max);
+            j.put("],\"c\":%s}", js.return_to_center ? "true" : "false");
+            _descIdx++;
+        }
+        if (_descIdx >= (uint16_t)PARAM_JOYSTICKS_COUNT) {
+            j.raw("]},\"overlays\":[");
+            _descStage = DS_OVERLAYS; _descIdx = 0; _descFirst = true;
+        }
+        break;
+
+    // ── Overlays der Systemansicht ────────────────────────────────────────
+    case DS_OVERLAYS:
+        while (budget-- > 0 && _descIdx < (uint16_t)CHANNEL_OVERLAYS_COUNT) {
+            const OverlayDef& ov = CHANNEL_OVERLAYS[_descIdx];
+            if (!ov.type || !ov.type[0]) { _descIdx++; continue; }
+            const size_t need = strlen(ov.label ? ov.label : "") * 6
+                              + strlen(ov.extra ? ov.extra : "") * 6
+                              + strlen(ov.type) + 220;
+            if (!j.fits(need)) {
+                _descIdx = (uint16_t)CHANNEL_OVERLAYS_COUNT;
+                break;
+            }
+            if (!_descFirst) j.put(",");
+            _descFirst = false;
+            j.put("{\"group\":%d,\"type\":\"%s\",\"label\":\"", ov.group, ov.type);
+            j.putEscaped(ov.label);
+            j.put("\"");
+            if (ov.channel  >= 0) j.put(",\"channel\":%d",  ov.channel);
+            if (ov.channel2 >= 0) j.put(",\"channel2\":%d", ov.channel2);
+            if (ov.min_val != 0.0f || ov.max_val != 0.0f) {
+                j.put(",\"min\":"); j.putNum(ov.min_val);
+                j.put(",\"max\":"); j.putNum(ov.max_val);
+            }
+            if (ov.x_pct >= 0.0f) {
+                j.put(",\"x_pct\":"); j.putNum(ov.x_pct);
+                j.put(",\"y_pct\":"); j.putNum(ov.y_pct);
+            }
+            if (ov.extra && ov.extra[0]) {
+                j.put(",\"extra\":\"");
+                j.putEscaped(ov.extra);
+                j.put("\"");
+            }
+            j.put("}");
+            _descIdx++;
+        }
+        if (_descIdx >= (uint16_t)CHANNEL_OVERLAYS_COUNT) {
+            j.raw("],\"settings\":{");
+            _descStage = DS_SETTINGS; _descIdx = 0; _descFirst = true;
+        }
+        break;
+
+    // ── Einstellungen der Oberflaeche (siehe PDS.setting()) ───────────────
+    //  Punktpfad -> Wert, typrichtig: Wahrheitswerte als true/false, Zahlen
+    //  als Zahl, Text in Anfuehrungszeichen. Die GUI prueft jeden Wert gegen
+    //  ihren eigenen Standardwert (app_settings.py) und behaelt bei einem
+    //  Typfehler den eigenen.
+    case DS_SETTINGS:
+        while (budget-- > 0 && _descIdx < _settingCount) {
+            const SettingEntry& s = _settings[_descIdx];
+            if (!j.fits(strlen(s.key) * 6 + PDS_SETTING_TEXT_MAXLEN * 6 + 48)) {
+                _descIdx = _settingCount;
+                break;
+            }
+            if (!_descFirst) j.put(",");
+            _descFirst = false;
+            j.put("\"");
+            j.putEscaped(s.key);
+            j.put("\":");
+            if (s.kind == PDS_SETTING_BOOL) {
+                j.put(s.num != 0.0f ? "true" : "false");
+            } else if (s.kind == PDS_SETTING_TEXT) {
+                j.put("\"");
+                j.putEscaped(s.text);
+                j.put("\"");
+            } else {
+                j.putNum(s.num);
+            }
+            _descIdx++;
+        }
+        if (_descIdx >= _settingCount) {
+            j.raw("}}");
+            _descStage = DS_DONE;
+        }
+        break;
+
+    default:
+        // Unmoegliche Stufe (verirrter Speicher): sauber abschliessen, statt
+        // endlos weiterzulaufen.
+        j.raw("}}");
+        _descStage = DS_DONE;
+        break;
+    }
+
+    _descPos      = j.pos;
+    _descOverflow = j.overflow;
+
+    if (_descStage != DS_DONE) return false;
+
+    _descJsonLen    = _descPos;
+    _descChunkCount = (uint16_t)((_descPos + CHANNEL_DESC_CHUNK_PAYLOAD_MAX - 1)
                                   / CHANNEL_DESC_CHUNK_PAYLOAD_MAX);
     if (_descChunkCount == 0) _descChunkCount = 1;   // leerer Deskriptor -> 1 leerer Chunk
     _descBuilt = true;
@@ -706,11 +944,38 @@ void PowerDebugger::buildDescriptorJson() {
         pdsWarn("Deskriptor gekuerzt (%u B Puffer voll) - PDS_DESC_BUF_BYTES erhoehen",
                 (unsigned)sizeof(_descBuf));
     }
+    return true;
+}
+
+// Sendewunsch anmelden. Der eigentliche Versand beginnt erst, wenn der
+// Deskriptor fertig gebaut ist (siehe update()) — announceChannelNames()
+// bleibt damit ein Aufruf, der nichts kostet und nichts blockiert.
+void PowerDebugger::requestDescriptorSend(bool force) {
+    if (!_descOn) return;
+    if (_descNextChunk != 0xFFFF) return;    // laeuft schon
+    if (_descWanted) return;                 // steht schon an
+
+    // Mindestabstand: eine zappelnde Verbindung (GUI kommt und geht im
+    // 100-ms-Takt) loeste frueher an JEDER steigenden Flanke einen neuen
+    // Versand aus. Bei einem 6-kB-Deskriptor sind das 24 Chunks und ein
+    // kompletter Neubau, mehrmals pro Sekunde — genau daran erstickte der
+    // Teensy, wenn die Gegenstelle unregelmaessig sendete.
+    //
+    // `force` uebergeht den Abstand: eine ausdrueckliche Anfrage der GUI
+    // ("Kanalnamen anfordern") soll sofort beantwortet werden, sie kommt ja
+    // nicht von allein alle 100 ms.
+    const uint32_t now = millis();
+    if (!force && _descLastStartMs != 0
+            && (now - _descLastStartMs) < PDS_DESC_MIN_GAP_MS) return;
+    _descLastStartMs = now;
+
+    _descWanted = true;
+    if (!_descBuilt) beginDescriptorBuild();
 }
 
 void PowerDebugger::startDescriptorSend() {
-    if (!_descBuilt) buildDescriptorJson();
     _descNextChunk = 0;
+    _descWanted    = false;
     DescChunkTimer = 0;
 }
 
@@ -784,8 +1049,36 @@ void PowerDebugger::sendTelemetryPacket() {
 //  systematisch uebersehen -- der Fast-Kanal kam nur mit 50 statt 100 Hz an.
 //  Jetzt wird das Fenster erst gefuellt und danach bei jedem Byte geprueft.
 void PowerDebugger::pollParamUart() {
-    while (UART_DBG.available()) {
+    const uint32_t nowMs = millis();
+
+    // ── Abgebrochenes Paket: nach einer Ruhezeit von vorn anfangen ────────
+    //  Bricht die Gegenstelle mitten in einem Paket ab (GUI stuerzt ab, Kabel
+    //  wackelt, Node startet neu), wartete der Parser bisher UNBEGRENZT auf
+    //  die fehlenden Bytes. Traf spaeter wieder etwas ein, verfuetterte er
+    //  dessen Anfang als vermeintliche Nutzlast an das abgebrochene Paket —
+    //  und legte einen aus der Mitte eines fremden Pakets zusammengesetzten
+    //  ZUFALLSWERT in _fastFloats, samt frischem _lastFastRxMs. linkOk()
+    //  meldete dabei "alles in Ordnung". Bei einem Joystick- oder Gas-Kanal
+    //  faehrt der Roboter damit davon. Der Parser fing sich erst nach dem
+    //  naechsten vollstaendigen Paket wieder, im Slow-Fall nach ueber 200
+    //  Bytes; genau diese Luecke schliesst der Timeout.
+    if (_rxExpectedLen != 0 && PDS_RX_PACKET_TIMEOUT_MS > 0
+            && (nowMs - _rxLastByteMs) >= (uint32_t)PDS_RX_PACKET_TIMEOUT_MS) {
+        _rxExpectedLen = 0;
+        _rxFill        = 0;
+        _rxResyncCount++;
+    }
+
+    // Byte-Budget: ein Dauerstrom auf der Leitung (defekte Gegenstelle,
+    // verstellte Baudrate, Stoerung) darf diese Schleife nicht festhalten.
+    // Was nicht mehr hineinpasst, liegt im 2-kB-RX-Puffer und ist im
+    // naechsten update() dran.
+    int budget = _rxByteBudget;
+    bool gotAnything = false;
+
+    while (budget-- > 0 && UART_DBG.available()) {
         const uint8_t b = (uint8_t)UART_DBG.read();
+        gotAnything = true;
 
         if (_rxExpectedLen == 0) {
             if (_rxFill < 4) {
@@ -806,7 +1099,9 @@ void PowerDebugger::pollParamUart() {
                 _rxExpectedLen = PARAM_FAST_PACKET_BYTES;
             } else if (magic == CHANNEL_DESC_REQUEST_MAGIC) {
                 // Kein Payload -- das Paket ist mit dem Magic schon komplett.
-                startDescriptorSend();
+                // Nur ANMELDEN: gebaut und gesendet wird in update(), damit
+                // eine Anfrage der GUI hier nichts kostet.
+                requestDescriptorSend(true);
                 _rxFill = 0;
             }
             // sonst: unbekannter Magic -- Fenster bleibt, naechstes Byte pruefen
@@ -838,6 +1133,11 @@ void PowerDebugger::pollParamUart() {
             }
         }
     }
+
+    // Einmal je Aufruf statt einmal je Byte: die Aufloesung des Timeouts
+    // sind 50 ms, ein paar hundert Mikrosekunden Ungenauigkeit sind dabei
+    // bedeutungslos — 1024 millis()-Aufrufe je update() waeren es nicht.
+    if (gotAnything) _rxLastByteMs = nowMs;
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -892,11 +1192,11 @@ float PowerDebugger::fastParam(const char* name) const {
 }
 
 bool PowerDebugger::paramsAreFresh() const {
-    return (_lastSlowRxMs != 0) && (millis() - _lastSlowRxMs < PARAM_SLOW_TIMEOUT_MS);
+    return (_lastSlowRxMs != 0) && (millis() - _lastSlowRxMs < _slowTimeoutMs);
 }
 
 bool PowerDebugger::fastParamsAreFresh() const {
-    return (_lastFastRxMs != 0) && (millis() - _lastFastRxMs < PARAM_FAST_TIMEOUT_MS);
+    return (_lastFastRxMs != 0) && (millis() - _lastFastRxMs < _fastTimeoutMs);
 }
 
 uint32_t PowerDebugger::fastParamAgeMs() const {
@@ -958,11 +1258,14 @@ void PowerDebugger::printStatus(Print& out) const {
                (unsigned long)_txPktCount, (unsigned long)_txDrops,
                (unsigned long)_slowPktCount, (unsigned long)_fastPktCount,
                (unsigned long)fastParamAgeMs(),
-               (unsigned long)_paramSyncLosses,
+               (unsigned long)_paramSyncLosses, (unsigned long)_rxResyncCount,
                (unsigned)_autoNext,
                (unsigned long)_evSent, (unsigned long)_evDrops,
+               (unsigned long)_lastUpdateUs, (unsigned long)_maxUpdateUs,
                _wdtOn ? " | WDT" : "",
-               _descOverflow ? " | DESKRIPTOR GEKUERZT" : "");
+               _descOverflow ? " | DESKRIPTOR GEKUERZT" : "",
+               _degraded ? " | NOTBREMSE" : "",
+               _enabled ? "" : " | PDS AUS");
 }
 
 void PowerDebugger::enableSelfDiagnostics(int firstChannel) {
@@ -980,6 +1283,212 @@ void PowerDebugger::enableSelfDiagnostics(int firstChannel) {
 
 // ══════════════════════════════════════════════════════════════════════════
 
+// ══════════════════════════════════════════════════════════════════════════
+//  Einstellungen der BIBLIOTHEK
+// ══════════════════════════════════════════════════════════════════════════
+//  Alle Setter begrenzen ihren Wert, statt ihn zu verwerfen oder zu
+//  uebernehmen: ein Tippfehler (setTelemetryRate(10000)) soll weder den
+//  Uplink sprengen noch stillschweigend folgenlos bleiben.
+
+namespace {
+template <class T>
+inline T pdsClamp(T v, T lo, T hi) { return v < lo ? lo : (v > hi ? hi : v); }
+}  // namespace
+
+void PowerDebugger::setTelemetryRate(uint16_t hz) {
+    hz = pdsClamp<uint16_t>(hz, 1, 1000);
+    // Auf ganze Millisekunden gerundet — der Takt haengt an elapsedMillis.
+    uint32_t ms = 1000UL / hz;
+    if (ms == 0) ms = 1;
+    _samplePeriodMs = ms;
+}
+
+uint16_t PowerDebugger::telemetryRate() const {
+    return (uint16_t)(_samplePeriodMs ? (1000UL / _samplePeriodMs) : 0);
+}
+
+void PowerDebugger::setParamAckInterval(uint32_t ms) {
+    _ackIntervalMs = pdsClamp<uint32_t>(ms, 100, 10000);
+}
+
+void PowerDebugger::setEventRateLimit(uint16_t perSecond) {
+    _eventMaxPerSec = pdsClamp<uint16_t>(perSecond, 1, 200);
+}
+
+void PowerDebugger::setDescriptorRepeat(uint32_t startMs, uint32_t maxMs) {
+    if (startMs != 0) startMs = pdsClamp<uint32_t>(startMs, 500, 3600000UL);
+    if (maxMs == 0)   maxMs   = startMs > _descRepeatMaxMs ? startMs : _descRepeatMaxMs;
+    if (maxMs < startMs) maxMs = startMs;
+    _descRepeatBaseMs = startMs;
+    _descRepeatMaxMs  = maxMs;
+    _descRepeatMs     = startMs;
+}
+
+void PowerDebugger::setFastTimeout(uint32_t ms) {
+    _fastTimeoutMs = pdsClamp<uint32_t>(ms, 20, 60000);
+}
+
+void PowerDebugger::setSlowTimeout(uint32_t ms) {
+    _slowTimeoutMs = pdsClamp<uint32_t>(ms, 100, 60000);
+}
+
+void PowerDebugger::setAutoChannelBase(uint8_t chn) {
+    if (chn >= ACTIVE_CHANNELS) {
+        pdsWarn("setAutoChannelBase(%u) liegt ausserhalb ACTIVE_CHANNELS=%d",
+                (unsigned)chn, ACTIVE_CHANNELS);
+        return;
+    }
+    if (chn > _autoNext) _autoNext = chn;   // schon vergebene Kanaele bleiben
+}
+
+void PowerDebugger::setRxByteBudget(uint16_t bytes) {
+    _rxByteBudget = pdsClamp<uint16_t>(bytes, 64, 8192);
+}
+
+void PowerDebugger::setPanicLimit(uint32_t us, uint8_t strikes) {
+    _panicUs      = (us == 0) ? 0 : pdsClamp<uint32_t>(us, 200, 1000000UL);
+    _panicStrikes = strikes;
+    _panicSeen    = 0;
+}
+
+void PowerDebugger::enable(bool on) {
+    if (on) {
+        // enable(true) hebt auch eine ausgeloeste Notbremse wieder auf —
+        // sonst gaebe es aus dem Sparbetrieb keinen Rueckweg ausser einem
+        // Neustart des Roboters.
+        _degraded  = false;
+        _panicSeen = 0;
+    }
+    _enabled = on;
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+//  Einstellungen der OBERFLAECHE (Punktpfade aus settings.json der GUI)
+// ══════════════════════════════════════════════════════════════════════════
+
+PowerDebugger::SettingEntry* PowerDebugger::findOrAddSetting(const char* key) {
+    if (!key || !key[0]) return nullptr;
+
+    for (uint8_t i = 0; i < _settingCount; i++) {
+        if (strncmp(_settings[i].key, key, PDS_SETTING_KEY_MAXLEN - 1) == 0)
+            return &_settings[i];
+    }
+    if (_settingCount >= PDS_MAX_SETTINGS) {
+        pdsWarn("Keine Einstellung mehr frei fuer \"%s\" (PDS_MAX_SETTINGS=%d)",
+                key, PDS_MAX_SETTINGS);
+        return nullptr;
+    }
+    if (strlen(key) >= PDS_SETTING_KEY_MAXLEN) {
+        // Abgeschnitten waere der Punktpfad ein ANDERER Schluessel, und die
+        // GUI legte still einen unbenutzten Eintrag an. Lieber ablehnen.
+        pdsWarn("Einstellungsname zu lang: \"%s\" (max %d Zeichen)",
+                key, PDS_SETTING_KEY_MAXLEN - 1);
+        return nullptr;
+    }
+
+    SettingEntry& e = _settings[_settingCount++];
+    strncpy(e.key, key, PDS_SETTING_KEY_MAXLEN - 1);
+    e.key[PDS_SETTING_KEY_MAXLEN - 1] = '\0';
+    e.text[0] = '\0';
+    e.num     = 0.0f;
+    e.kind    = PDS_SETTING_NUM;
+    return &e;
+}
+
+bool PowerDebugger::setting(const char* key, float value) {
+    SettingEntry* e = findOrAddSetting(key);
+    if (!e) return false;
+    if (!isfinite(value)) value = 0.0f;     // NaN/Inf waeren kein gueltiges JSON
+    if (e->kind == PDS_SETTING_NUM && e->num == value) return true;
+    e->kind = PDS_SETTING_NUM;
+    e->num  = value;
+    _descBuilt = false;                     // Deskriptor neu bauen lassen
+    return true;
+}
+
+bool PowerDebugger::setting(const char* key, bool value) {
+    SettingEntry* e = findOrAddSetting(key);
+    if (!e) return false;
+    const float v = value ? 1.0f : 0.0f;
+    if (e->kind == PDS_SETTING_BOOL && e->num == v) return true;
+    e->kind = PDS_SETTING_BOOL;
+    e->num  = v;
+    _descBuilt = false;
+    return true;
+}
+
+bool PowerDebugger::setting(const char* key, const char* value) {
+    if (!value) value = "";
+    SettingEntry* e = findOrAddSetting(key);
+    if (!e) return false;
+    if (e->kind == PDS_SETTING_TEXT
+            && strncmp(e->text, value, PDS_SETTING_TEXT_MAXLEN - 1) == 0) return true;
+    if (strlen(value) >= PDS_SETTING_TEXT_MAXLEN) {
+        pdsWarn("Wert von \"%s\" zu lang (max %d Zeichen)",
+                key, PDS_SETTING_TEXT_MAXLEN - 1);
+        return false;
+    }
+    e->kind = PDS_SETTING_TEXT;
+    strncpy(e->text, value, PDS_SETTING_TEXT_MAXLEN - 1);
+    e->text[PDS_SETTING_TEXT_MAXLEN - 1] = '\0';
+    _descBuilt = false;
+    return true;
+}
+
+bool PowerDebugger::removeSetting(const char* key) {
+    if (!key || !key[0]) return false;
+    for (uint8_t i = 0; i < _settingCount; i++) {
+        if (strncmp(_settings[i].key, key, PDS_SETTING_KEY_MAXLEN - 1) != 0) continue;
+        // Luecke schliessen: die Reihenfolge im Deskriptor ist bedeutungslos,
+        // der letzte Eintrag darf also nach vorn ruecken.
+        _settings[i] = _settings[_settingCount - 1];
+        _settingCount--;
+        _descBuilt = false;
+        return true;
+    }
+    return false;
+}
+
+void PowerDebugger::clearSettings() {
+    if (_settingCount == 0) return;
+    _settingCount = 0;
+    _descBuilt = false;
+}
+
+// ── Bequeme Namen fuer die haeufigsten Faelle ─────────────────────────────
+
+void PowerDebugger::guiBatteryWarning(int channel, float warnBelow,
+                                       float criticalBelow, float holdSeconds) {
+    setting("battery.enabled", channel >= 0);
+    setting("battery.channel", channel);
+    setting("battery.warn_below", warnBelow);
+    setting("battery.critical_below", criticalBelow);
+    setting("battery.hold_seconds", holdSeconds);
+}
+
+void PowerDebugger::guiPlotter(int historySeconds, int points, int maxCurves) {
+    if (historySeconds > 0) setting("plotter.historySeconds", historySeconds);
+    if (points > 0)         setting("plotter.defaultPoints", points);
+    if (maxCurves > 0)      setting("plotter.maxCurves", maxCurves);
+}
+
+void PowerDebugger::guiCurveColor(int index, const char* color) {
+    if (index < 0 || index > 7 || !color) return;
+    // Punktpfad mit Listenindex — die GUI loest "plotter.curveColors.3"
+    // auf das vierte Element der Farbliste auf.
+    char key[PDS_SETTING_KEY_MAXLEN];
+    snprintf(key, sizeof(key), "plotter.curveColors.%d", index);
+    setting(key, color);
+}
+
+void PowerDebugger::guiColor(const char* name, const char* color, bool dark) {
+    if (!name || !name[0] || !color) return;
+    char key[PDS_SETTING_KEY_MAXLEN];
+    snprintf(key, sizeof(key), "theme.colors.%s.%s", dark ? "dark" : "light", name);
+    setting(key, color);
+}
+
+
 void PowerDebugger::begin() {
     // Debug-Array + Namens-Registry initialisieren
     for (int i = 0; i < MAX_FLOATS; i++) debugData[i] = 0.0f;
@@ -989,6 +1498,26 @@ void PowerDebugger::begin() {
     _autoNext   = PDS_AUTO_CHANNEL_BASE;
     _evHead = _evCount = _evInWindow = 0;
     _evWindowStartMs = millis();
+
+    // Selbstschutz zuruecksetzen: nach einem Neustart der Bibliothek soll
+    // eine frueher ausgeloeste Notbremse nicht weiterwirken.
+    _enabled  = true;
+    _degraded = false;
+    _panicSeen = 0;
+    _lastUpdateUs = _maxUpdateUs = 0;
+    _budgetOverruns = _panicCount = 0;
+    g_serialDiag = _serialDiagOn;
+
+    // Deskriptor-Bau: noch nichts angefangen.
+    _descStage    = 0;
+    _descIdx      = 0;
+    _descPos      = 0;
+    _descFirst    = true;
+    _descBuilt    = false;
+    _descOverflow = false;
+    _descWanted   = false;
+    _descLastStartMs = 0;
+    _descRepeatMs = _descRepeatBaseMs;
 
     if (PDS_FW_VERSION[0]) setFirmwareVersion(PDS_FW_VERSION);
 
@@ -1020,6 +1549,19 @@ void PowerDebugger::begin() {
     for (int i = 0; i < PARAM_FAST_FLOAT_COUNT; i++) _fastFloats[i]  = 0.0f;
     _rxFill = 0;
     _rxExpectedLen = 0;
+    _rxLastByteMs  = millis();
+    _rxResyncCount = 0;
+
+    // Einstellungen aus channel_config.h uebernehmen. Im Sketch gesetzte
+    // Werte (PDS.setting(...) in setup()) ueberschreiben sie danach, weil
+    // setup() nach begin() weiterlaeuft.
+    for (size_t i = 0; i < GUI_SETTINGS_COUNT; i++) {
+        const SettingDef& d = GUI_SETTINGS[i];
+        if (!d.key || !d.key[0]) continue;
+        if (d.kind == PDS_SETTING_BOOL)      setting(d.key, d.num != 0.0f);
+        else if (d.kind == PDS_SETTING_TEXT) setting(d.key, d.text);
+        else                                 setting(d.key, d.num);
+    }
 
     // Namens-/Overlay-Deskriptor beim Boot melden — aber nicht sofort:
     // plot()/track() registrieren ihre Namen erst in setup()/dem ersten
@@ -1037,9 +1579,33 @@ void PowerDebugger::begin() {
     }
 }
 
+// ══════════════════════════════════════════════════════════════════════════
+//  update() — der einzige Aufruf im loop(), und er wartet auf NICHTS
+// ══════════════════════════════════════════════════════════════════════════
+//  Die Reihenfolge ist Absicht:
+//
+//    1. Watchdog fuettern      — passiert IMMER, auch wenn PDS abgeschaltet
+//                                oder in der Notbremse ist. Wer den Watchdog
+//                                eingeschaltet hat, verlaesst sich darauf.
+//    2. Param-Downlink lesen   — mit Byte-Budget; muss vor dem Senden laufen,
+//                                damit fastParam() direkt nach update() den
+//                                frischesten Stand liefert.
+//    3. Telemetrie senden      — der 100-Hz-Takt, hat Vorrang vor allem
+//                                anderen und schreibt nie blockierend.
+//    4. Alles Uebrige          — Ereignisse, Parameter-Rueckmeldung,
+//                                Deskriptor: NUR solange vom Zeitbudget noch
+//                                etwas uebrig ist. Was nicht drankommt,
+//                                kommt im naechsten Aufruf dran.
+//    5. Selbstmessung          — dauert ein Aufruf trotzdem laenger als das
+//                                Panik-Limit, schaltet PDS erst die
+//                                Nebenwege und dann sich selbst ab.
 void PowerDebugger::update() {
     // ── Watchdog zuerst: solange update() laeuft, laeuft auch der Roboter.
     feedWatchdog();
+
+    if (!_enabled) return;      // Not-Aus fuer PDS selbst (siehe enable())
+
+    const uint32_t t0 = micros();
 
     // ── Param-Downlink: nicht-blockierend, jede update()-Iteration.
     //    Bewusst vor dem Telemetrie-Versand, damit fastParam() direkt nach
@@ -1047,14 +1613,14 @@ void PowerDebugger::update() {
     //    um einen Zyklus alten.
     pollParamUart();
 
-    // ── Alle 10 ms: Telemetriepaket senden (100 Hz) ─────────────────────
-    if (DBGTimer >= SAMPLE_PERIOD_MS) {
+    // ── Alle _samplePeriodMs: Telemetriepaket senden (Standard 100 Hz) ───
+    if (_telemetryOn && DBGTimer >= _samplePeriodMs) {
         // Nachlauf statt Reset auf 0: verhindert, dass sich die Sendefrequenz
         // bei einer laengeren loop()-Iteration dauerhaft nach unten verschiebt.
         // Nur wenn wir mehr als eine ganze Periode hinterherhinken, wird hart
         // resynchronisiert (sonst wuerden Pakete nachgeholt/gebuendelt).
-        if (DBGTimer >= 2 * SAMPLE_PERIOD_MS) DBGTimer = 0;
-        else                                  DBGTimer -= SAMPLE_PERIOD_MS;
+        if (DBGTimer >= 2 * _samplePeriodMs) DBGTimer = 0;
+        else                                 DBGTimer -= _samplePeriodMs;
 
         if (_diagFirstChannel >= 0) {
             const int c = _diagFirstChannel;
@@ -1069,36 +1635,65 @@ void PowerDebugger::update() {
         sendTelemetryPacket();
     }
 
-    // ── Ereignisse/Logzeilen: hoechstens eines pro update(), und nur wenn
-    //    im TX-Puffer noch ein komplettes Telemetriepaket zusaetzlich Platz
-    //    hat (txRoomFor). Marken sollen zeitnah ankommen, duerfen den
-    //    100-Hz-Takt aber unter keinen Umstaenden verdraengen.
-    sendNextEvent();
+    // ── Ab hier ist alles OPTIONAL und laeuft nur mit Restbudget ────────
+    //  Ereignisse/Logzeilen: hoechstens eines pro update(), und nur wenn im
+    //  TX-Puffer noch ein komplettes Telemetriepaket zusaetzlich Platz hat
+    //  (txRoomFor). Marken sollen zeitnah ankommen, duerfen den 100-Hz-Takt
+    //  aber unter keinen Umstaenden verdraengen.
+    if (budgetLeft(t0)) sendNextEvent();
 
     // ── Parameter-Rueckmeldung an die GUI (2 Hz) ─────────────────────────
-    if (_paramAckOn && ParamAckTimer >= PARAM_ACK_INTERVAL_MS) {
+    if (_paramAckOn && ParamAckTimer >= _ackIntervalMs && budgetLeft(t0)) {
         ParamAckTimer = 0;
         sendParamAck();
     }
 
-    // ── Deskriptor: ein Chunk alle DESC_CHUNK_PERIOD_MS, solange ein
-    //    Sendevorgang laeuft (Boot, GUI-Anfrage oder Wiederverbindung).
-    if (_descNextChunk != 0xFFFF && DescChunkTimer >= DESC_CHUNK_PERIOD_MS) {
-        if (txRoomFor(CHANNEL_DESC_CHUNK_PACKET_BYTES)) {
+    // ── Deskriptor: bauen und senden, beides nur mit Restbudget ──────────
+    //  Als einziger Weg faellt er in der Notbremse (_degraded) ganz aus: er
+    //  ist der einzige, der ueberhaupt nennenswert Zeit brauchen KANN.
+    //  Ereignisse und Rueckmeldung sind ein memcpy fester Groesse und
+    //  bleiben deshalb an — die Notbremse selbst meldet sich darueber.
+    if (!_degraded && budgetLeft(t0)) updateDescriptor(t0);
+
+    noteUpdateDuration((uint32_t)(micros() - t0));
+}
+
+// Alles rund um den Namens-/Overlay-Deskriptor. Ausgelagert, damit update()
+// selbst kurz und lesbar bleibt — der Ablauf ist verzwickter als er aussieht:
+// bauen, senden, wiederholen und die Flanke "GUI ist wieder da" haengen alle
+// am selben Zustand.
+void PowerDebugger::updateDescriptor(uint32_t startUs) {
+    if (!_descOn) return;
+
+    // ── 1) Ein angemeldeter Deskriptor wird zuerst fertig GEBAUT ─────────
+    //  Scheibchenweise, solange Budget da ist. Erst danach beginnt der
+    //  Versand — ein halb gebauter Deskriptor darf die Leitung nicht sehen.
+    if (_descWanted) {
+        while (!_descBuilt && budgetLeft(startUs)) {
+            if (buildDescriptorStep()) break;
+        }
+        if (_descBuilt) startDescriptorSend();
+        return;
+    }
+
+    // ── 2) Laufender Versand: ein Chunk alle DESC_CHUNK_PERIOD_MS ────────
+    if (_descNextChunk != 0xFFFF) {
+        if (DescChunkTimer >= DESC_CHUNK_PERIOD_MS
+                && txRoomFor(CHANNEL_DESC_CHUNK_PACKET_BYTES)) {
             DescChunkTimer = 0;
             sendNextDescChunk();
         }
         return;
     }
 
-    // ── Erste Namensmeldung nach dem Boot ───────────────────────────────
+    // ── 3) Erste Namensmeldung nach dem Boot ─────────────────────────────
     if (_bootAnnounceAtMs != 0 && (int32_t)(millis() - _bootAnnounceAtMs) >= 0) {
         _bootAnnounceAtMs = 0;
-        startDescriptorSend();
+        requestDescriptorSend(true);
         return;
     }
 
-    // ── Robustheit gegen Neustarts (auf BEIDEN Seiten) ──────────────────
+    // ── 4) Robustheit gegen Neustarts (auf BEIDEN Seiten) ────────────────
     //  Der Deskriptor wurde frueher ausschliesslich beim Boot des Teensy
     //  gesendet. Startete die GUI (oder der Pi-Zero-Node) danach neu, waren
     //  die Kanalnamen weg, bis jemand von Hand "Kanalnamen anfordern"
@@ -1106,9 +1701,11 @@ void PowerDebugger::update() {
     //
     //    a) Flanke "Verbindung zur GUI kommt (wieder) zustande" -> senden.
     //       Deckt: GUI/Node startet neu, waehrend der Teensy durchlaeuft.
+    //       requestDescriptorSend() haelt dabei den Mindestabstand ein —
+    //       eine zappelnde Verbindung loest damit KEINEN Dauerversand aus.
     //    b) In Ruhe (keine GUI) wiederholen, beginnend bei
-    //       PDS_DESC_REPEAT_MS und mit jedem unbeantworteten Versuch
-    //       verdoppelt bis PDS_DESC_REPEAT_MAX_MS.
+    //       _descRepeatBaseMs und mit jedem unbeantworteten Versuch
+    //       verdoppelt bis _descRepeatMaxMs.
     //       Deckt: Teensy startet neu, bevor GUI/Node ueberhaupt da sind —
     //       ohne im reinen Wettkampfbetrieb (nie eine GUI) dauerhaft
     //       Bandbreite zu verbrauchen.
@@ -1116,15 +1713,58 @@ void PowerDebugger::update() {
     if (linkUp != _linkWasUp) {
         _linkWasUp = linkUp;
         if (linkUp) {
-            _descRepeatMs = PDS_DESC_REPEAT_MS;   // GUI da -> wieder schnell reagieren
-            startDescriptorSend();
+            _descRepeatMs = _descRepeatBaseMs;   // GUI da -> wieder schnell reagieren
+            requestDescriptorSend();
         }
-    } else if (!linkUp && PDS_DESC_REPEAT_MS > 0 && DescChunkTimer >= _descRepeatMs) {
-        startDescriptorSend();
-        if (_descRepeatMs < (uint32_t)PDS_DESC_REPEAT_MAX_MS) {
+    } else if (!linkUp && _descRepeatBaseMs > 0 && DescChunkTimer >= _descRepeatMs) {
+        DescChunkTimer = 0;          // auch dann weiterzaehlen, wenn der
+        requestDescriptorSend();     // Mindestabstand den Versand verwirft
+        if (_descRepeatMs < _descRepeatMaxMs) {
             _descRepeatMs *= 2;
-            if (_descRepeatMs > (uint32_t)PDS_DESC_REPEAT_MAX_MS)
-                _descRepeatMs = PDS_DESC_REPEAT_MAX_MS;
+            if (_descRepeatMs > _descRepeatMaxMs) _descRepeatMs = _descRepeatMaxMs;
         }
+    }
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+//  Notbremse
+// ══════════════════════════════════════════════════════════════════════════
+//  Die letzte Sicherung: Wenn update() trotz Budget und Scheibenbau laenger
+//  braucht als das Panik-Limit, ist in dieser Bibliothek etwas kaputt —
+//  ein Zeiger, eine Endlosschleife, ein UART-Treiber, der doch wartet. Der
+//  Roboter darf daran nicht sterben. Also schaltet PDS erst seine Nebenwege
+//  ab (Telemetrie und Fernsteuerung bleiben) und im Wiederholungsfall sich
+//  selbst. Beides meldet es, solange es das noch kann.
+void PowerDebugger::noteUpdateDuration(uint32_t us) {
+    _lastUpdateUs = us;
+    if (us > _maxUpdateUs) _maxUpdateUs = us;
+    if (_budgetUs != 0 && us > _budgetUs) _budgetOverruns++;
+
+    if (_panicStrikes == 0 || _panicUs == 0 || us <= _panicUs) {
+        _panicSeen = 0;                  // ein einzelner Ausreisser zaehlt nicht
+        return;
+    }
+
+    _panicCount++;
+    if (_panicSeen < 0xFF) _panicSeen++;
+    if (_panicSeen < _panicStrikes) return;
+
+    _panicSeen = 0;
+    if (!_degraded) {
+        _degraded = true;
+        // Die Meldung geht ueber die normale Warteschlange raus, solange die
+        // Leitung noch steht — sie ist der einzige Hinweis, den die GUI auf
+        // dieses Ereignis je bekommt. (Wer enableEvents(false) gesetzt hat,
+        // bekommt sie nicht; das ist dann eine bewusste Entscheidung.)
+        pushEvent(PDS_EVENT_KIND_LOG, PDS_LEVEL_ERROR,
+                   "PDS-Notbremse: Nebenwege abgeschaltet", (float)us);
+        pdsWarn("Notbremse: update() brauchte %lu us (Limit %lu) - "
+                "Deskriptor/Ereignisse/Rueckmeldung sind aus",
+                (unsigned long)us, (unsigned long)_panicUs);
+    } else {
+        _enabled = false;
+        pdsWarn("Notbremse: update() brauchte trotz Sparbetrieb %lu us - "
+                "PDS ist jetzt aus (PDS.enable(true) hebt das auf)",
+                (unsigned long)us);
     }
 }

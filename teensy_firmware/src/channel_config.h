@@ -164,3 +164,60 @@ static const OverlayDef CHANNEL_OVERLAYS[] = {
     //     "body2_channel_x=2;body2_channel_y=3;body2_channel_angle=4" },
 };
 static constexpr size_t CHANNEL_OVERLAYS_COUNT = sizeof(CHANNEL_OVERLAYS) / sizeof(CHANNEL_OVERLAYS[0]);
+
+
+// ══════════════════════════════════════════════════════════════════════════
+//  5) Einstellungen der OBERFLAECHE, die der Roboter vorgibt
+// ══════════════════════════════════════════════════════════════════════════
+//  Derselbe Punktpfad wie in der settings.json der GUI. Was hier steht,
+//  reist im Deskriptor mit, wird auf dem Raspberry Pi dauerhaft gespeichert
+//  und gilt damit auch beim naechsten Start ohne eingeschalteten Roboter.
+//
+//  Der Typ ergibt sich aus dem geschriebenen Wert:
+//      { "ui.dark",                true      }   Wahrheitswert
+//      { "ui.fontScale",           1.2f      }   Zahl
+//      { "plotter.historySeconds", 20        }   Zahl (ganz)
+//      { "theme.colors.dark.bg",   "#101010" }   Text/Farbe
+//
+//  ── Was geht (Auszug aus settings.json — es gilt JEDER Schluessel) ──────
+//    ui.dark  ui.fontScale  ui.kiosk  ui.keyboardControl  ui.startTab
+//    battery.enabled  battery.channel  battery.warn_below
+//    battery.critical_below  battery.hold_seconds
+//    ranges.fontScale.min|max|step   (Grenzen der Bedienelemente)
+//    theme.fontSize.base|table|large|small|xlarge   theme.touchTargetMin
+//    theme.spacing.xs|s|m|l          theme.radius.s|m|l
+//    theme.colors.dark.<name>        theme.colors.light.<name>
+//    window.fullscreen  window.width  window.height  window.headerHeight
+//    plotter.historySeconds  plotter.defaultPoints  plotter.maxCurves
+//    plotter.curveColors.0 .. .7     plotter.markerColors.0 .. .2
+//    params.undoDepth  params.spinBoxFactor
+//    diagnostics.eventLogMax
+//    controller.deadzone  controller.axis_left_x  controller.button_r1  ...
+//
+//  ── Was NICHT geht ─────────────────────────────────────────────────────
+//    "network.*" — eine falsche IP in der Firmware wuerde genau die Leitung
+//    kappen, ueber die man sie korrigieren muesste. Die GUI verwirft diesen
+//    Abschnitt aus dem Deskriptor grundsaetzlich.
+//
+//  Unsinnige Werte kosten hoechstens IHR Feld: die GUI prueft jeden Wert
+//  gegen ihren eigenen Standardwert und behaelt bei einem Typfehler den
+//  eigenen (siehe rpi5_monitor/64Bit_Version/app_settings.py).
+//
+//  Dasselbe geht auch im Sketch:  PDS.setting("ui.dark", true);
+//  Der Bediener kann die Uebernahme im Diagnose-Tab abschalten.
+
+#define PDS_HAS_GUI_SETTINGS 1
+static const SettingDef GUI_SETTINGS[] = {
+    // { "ui.dark",                  true      },
+    // { "ui.fontScale",             1.1f      },
+    // { "ui.startTab",              2         },   // 2 = Systemansicht
+    // { "battery.enabled",          true      },
+    // { "battery.channel",          10        },
+    // { "battery.warn_below",       11.5f     },
+    // { "battery.critical_below",   10.8f     },
+    // { "plotter.historySeconds",   20        },
+    // { "plotter.curveColors.0",    "#00ff88" },
+    // { "theme.colors.dark.bg",     "#101010" },
+};
+static constexpr size_t GUI_SETTINGS_COUNT =
+    sizeof(GUI_SETTINGS) / sizeof(GUI_SETTINGS[0]);

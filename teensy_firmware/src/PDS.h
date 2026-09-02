@@ -49,6 +49,18 @@
  *    PDS.enableWatchdog(2000);        in setup(): Reset, wenn update() 2 s
  *                                     lang nicht mehr aufgerufen wird.
  *
+ *  ── Oberflaeche vom Roboter aus einstellen ─────────────────────────────
+ *    PDS.setting("ui.dark", true);            jeder Punktpfad aus der
+ *    PDS.setting("ui.fontScale", 1.2f);       settings.json der GUI
+ *    PDS.setting("plotter.historySeconds", 20);
+ *    PDS.guiBatteryWarning(10, 11.5f, 10.8f); dasselbe, nur benannt
+ *
+ *  ── Blockierfreiheit ───────────────────────────────────────────────────
+ *    update() haelt den Roboter NIE an — auch nicht ohne GUI, bei Muell auf
+ *    der Leitung oder bei einer Fehlfunktion in dieser Bibliothek. Siehe
+ *    den Abschnitt BLOCKIERFREIHEIT weiter unten; nachmessen mit
+ *    PDS.maxUpdateMicros() / PDS.degraded().
+ *
  *  ── Verkabelung ────────────────────────────────────────────────────────
  *    Teensy Pin 14 (TX3) ──→ RPi Zero Pin 10 (GPIO15, UART RX)
  *    Teensy Pin 15 (RX3) ←── RPi Zero Pin  8 (GPIO14, UART TX)   PFLICHT
@@ -81,7 +93,7 @@
 #endif
 
 // Versionsnummer der Bibliothek (fuer Doku/Diagnose, siehe printStatus()).
-#define PDS_VERSION "2.1"
+#define PDS_VERSION "2.2"
 
 // Version der ROBOTER-Firmware. Wird im Deskriptor an die GUI gemeldet, damit
 // dort sichtbar ist, welcher Stand auf welchem Roboter laeuft. Per Build-Flag
@@ -153,6 +165,94 @@
 // PDS_DESC_REPEAT_MS zurueckgesetzt.
 #ifndef PDS_DESC_REPEAT_MAX_MS
 #define PDS_DESC_REPEAT_MAX_MS 60000
+#endif
+
+// ══════════════════════════════════════════════════════════════════════════
+//  BLOCKIERFREIHEIT — die wichtigste Zusage dieser Bibliothek
+// ══════════════════════════════════════════════════════════════════════════
+//  PDS.update() darf den Roboter unter KEINEN Umstaenden anhalten. Nicht,
+//  wenn die GUI fehlt. Nicht, wenn sie mitten im Satz abstuerzt. Nicht, wenn
+//  auf der Leitung Muell ankommt. Und auch nicht, wenn in dieser Bibliothek
+//  selbst etwas kaputt ist. Dafuer sorgen vier Mechanismen, die alle ueber
+//  die Konstanten hier eingestellt werden (zur Laufzeit: setUpdateBudget(),
+//  setRxByteBudget(), setPanicLimit()):
+//
+//    1. ZEITBUDGET   update() misst sich selbst. Alles ausser Telemetrie und
+//                    Param-Empfang laeuft nur, solange vom Budget noch etwas
+//                    uebrig ist — der Rest wartet auf den naechsten Aufruf.
+//    2. RX-BUDGET    Der Param-Parser liest hoechstens so viele Bytes je
+//                    Aufruf. Ein Dauerstrom auf der Leitung kann die Schleife
+//                    damit nicht festhalten.
+//    3. SCHEIBEN     Der Namens-Deskriptor (bis 24 kB JSON) wird ueber viele
+//                    update()-Aufrufe hinweg zusammengesetzt statt in einem
+//                    Rutsch. Vorher waren das mehrere Millisekunden am Stueck.
+//    4. NOTBREMSE    Dauert ein update() trotzdem laenger als das Panik-
+//                    Limit, schaltet PDS erst die Nebenwege ab (Deskriptor,
+//                    Ereignisse, Rueckmeldung) und im Wiederholungsfall sich
+//                    selbst. Der Roboter laeuft weiter, nur eben blind.
+//
+//  Nicht dazu gehoert der Roboter-Code selbst: bleibt loop() an anderer
+//  Stelle haengen, hilft nur der Hardware-Watchdog (enableWatchdog()).
+
+// Zeit, die update() fuer die OPTIONALEN Aufgaben verbrauchen darf. Telemetrie
+// und Param-Empfang laufen immer (zusammen ~40 us). 0 = kein Budget.
+#ifndef PDS_UPDATE_BUDGET_US
+#define PDS_UPDATE_BUDGET_US 400
+#endif
+
+// Ab dieser Dauer gilt ein update() als Fehlfunktion (Normalwert: 30..80 us).
+#ifndef PDS_UPDATE_PANIC_US
+#define PDS_UPDATE_PANIC_US 5000
+#endif
+
+// So oft darf das Panik-Limit gerissen werden, bevor PDS erst die Nebenwege
+// und danach sich selbst abschaltet. 0 = Notbremse aus.
+#ifndef PDS_UPDATE_PANIC_STRIKES
+#define PDS_UPDATE_PANIC_STRIKES 5
+#endif
+
+// Hoechstens so viele empfangene Bytes verarbeitet ein update(). Der Downlink
+// traegt ~3.3 kB/s; selbst eine 20-Hz-Schleife braucht davon nur 165 Bytes.
+#ifndef PDS_RX_BYTE_BUDGET
+#define PDS_RX_BYTE_BUDGET 1024
+#endif
+
+// Bricht die Gegenstelle mitten in einem Paket ab, wartete der Parser bisher
+// unbegrenzt auf die fehlenden Bytes — und verfuetterte, sobald wieder etwas
+// kam, dessen Anfang als vermeintliche Nutzlast. Herausgekommen ist dabei
+// kein leerer, sondern ein ZUFALLSWERT in fastParam(), mit frischem
+// Zeitstempel: linkOk() meldete "alles in Ordnung", waehrend am Gas-Kanal
+// eine Zahl aus der Mitte eines fremden Pakets stand. Nach dieser Zeit ohne
+// Fortschritt faengt der Parser stattdessen von vorn an. 0 = aus.
+#ifndef PDS_RX_PACKET_TIMEOUT_MS
+#define PDS_RX_PACKET_TIMEOUT_MS 50
+#endif
+
+// Mindestabstand zwischen zwei Deskriptor-Sendevorgaengen. Ohne ihn loeste
+// eine zappelnde Verbindung (GUI kommt und geht im 100-ms-Takt) an jeder
+// steigenden Flanke einen neuen 24-kB-Versand aus.
+#ifndef PDS_DESC_MIN_GAP_MS
+#define PDS_DESC_MIN_GAP_MS 1000
+#endif
+
+// So viele Eintraege (Kanalnamen, Parameter, Overlays) wandern je update()
+// in den Deskriptor-Puffer. Kleiner = gleichmaessigere Schleifenzeit,
+// groesser = der Deskriptor steht schneller.
+#ifndef PDS_DESC_BUILD_STEP
+#define PDS_DESC_BUILD_STEP 12
+#endif
+
+// ── Oberflaechen-Einstellungen, die der Teensy vorgibt ────────────────────
+//  Siehe setting() weiter unten. RAM-Bedarf:
+//  PDS_MAX_SETTINGS * (KEY_MAXLEN + TEXT_MAXLEN + 8) Byte.
+#ifndef PDS_MAX_SETTINGS
+#define PDS_MAX_SETTINGS 32
+#endif
+#ifndef PDS_SETTING_KEY_MAXLEN
+#define PDS_SETTING_KEY_MAXLEN 32      // inkl. Nullterminator ("theme.colors.dark.accentAmber" = 30)
+#endif
+#ifndef PDS_SETTING_TEXT_MAXLEN
+#define PDS_SETTING_TEXT_MAXLEN 24     // inkl. Nullterminator ("#aarrggbb" = 10)
 #endif
 
 // Bindungs-Typ eines per bind()/track() registrierten Kanals (Auto-Sampling).
@@ -350,10 +450,8 @@ class PowerDebugger {
         bool  getParamBool(uint8_t index) const { return paramBool((int)index); }
         float getFastParam(uint8_t index) const { return fastParam((int)index); }
 
-        /// Rueckmeldung an die GUI: welche Parameter haelt der Teensy gerade
-        /// wirklich? Laeuft automatisch mit 2 Hz. Nur abschalten, wenn jedes
-        /// Byte Uplink zaehlt.
-        void enableParamAck(bool on) { _paramAckOn = on; }
+        // Rueckmeldung an die GUI ein-/ausschalten: siehe enableParamAck()
+        // im Abschnitt "Einstellungen der BIBLIOTHEK".
 
         // ══════════════════════════════════════════════════════════════
         //  Verbindungszustand
@@ -406,6 +504,163 @@ class PowerDebugger {
         const char* firmwareVersion() const { return _fwVersion; }
 
         // ══════════════════════════════════════════════════════════════
+        //  Einstellungen der BIBLIOTHEK (frueher nur Build-Flags)
+        // ══════════════════════════════════════════════════════════════
+        //  Alles hier darf jederzeit umgestellt werden, nicht nur in
+        //  setup(). Unsinnige Werte werden begrenzt statt uebernommen —
+        //  ein Tippfehler kostet hoechstens diese eine Einstellung.
+
+        /// Telemetrietakt in Hz (1..1000, Standard 100). Weniger Takt =
+        /// weniger Uplink: 50 Hz halbiert die 81 % Leitungsbelegung.
+        void     setTelemetryRate(uint16_t hz);
+        uint16_t telemetryRate() const;
+
+        /// Telemetrie ganz abschalten (Kanaele werden weiter gepflegt, es
+        /// geht nur nichts mehr raus). Fernsteuerung bleibt aktiv.
+        void enableTelemetry(bool on) { _telemetryOn = on; }
+        bool telemetryEnabled() const { return _telemetryOn; }
+
+        /// Abstand der Parameter-Rueckmeldung in ms (100..10000, Standard 500).
+        void setParamAckInterval(uint32_t ms);
+
+        /// Rueckmeldung an die GUI: welche Parameter haelt der Teensy gerade
+        /// wirklich? Laeuft automatisch mit 2 Hz. Nur abschalten, wenn jedes
+        /// Byte Uplink zaehlt.
+        void enableParamAck(bool on) { _paramAckOn = on; }
+
+        /// Hoechstens so viele Ereignisse/Logzeilen pro Sekunde (1..200,
+        /// Standard PDS_EVENT_MAX_PER_SEC). enableEvents(false) haelt sie
+        /// komplett zurueck — event()/log() sind dann folgenlos, aber immer
+        /// noch nicht blockierend.
+        void setEventRateLimit(uint16_t perSecond);
+        void enableEvents(bool on) { _eventsOn = on; }
+
+        /// Wiederholabstand der Namensmeldung, solange keine GUI da ist.
+        /// `startMs` = 0 schaltet die Wiederholung ab.
+        void setDescriptorRepeat(uint32_t startMs, uint32_t maxMs = 0);
+        void enableDescriptor(bool on) { _descOn = on; }
+
+        /// Schwellen fuer linkOk() / paramsAreFresh() / fastParamsAreFresh().
+        /// Ein Roboter mit langsamer Funkstrecke darf hier hoeher gehen —
+        /// er verlaengert damit aber auch seinen eigenen Not-Aus.
+        void setFastTimeout(uint32_t ms);
+        void setSlowTimeout(uint32_t ms);
+
+        /// Ab diesem Kanal vergibt plot()/track() automatisch. Nur vor dem
+        /// ersten plot()/track() sinnvoll (sonst bleiben die bereits
+        /// vergebenen Kanaele, wo sie sind).
+        void setAutoChannelBase(uint8_t chn);
+
+        /// Klartextmeldungen der Bibliothek ueber USB-Serial (Tippfehler in
+        /// Param-Namen, voller Deskriptor, ...). Standard: an. Die Ausgabe
+        /// ist immer nicht-blockierend — sie faellt aus, statt zu warten.
+        void setSerialDiagnostics(bool on);
+
+        // ══════════════════════════════════════════════════════════════
+        //  Blockierfreiheit / Selbstschutz  (siehe Kopf dieser Datei)
+        // ══════════════════════════════════════════════════════════════
+
+        /// Zeitbudget je update() in Mikrosekunden fuer alles ausser
+        /// Telemetrie und Param-Empfang. 0 = kein Budget.
+        void     setUpdateBudget(uint32_t us) { _budgetUs = us; }
+        uint32_t updateBudget() const         { return _budgetUs; }
+
+        /// Hoechstens so viele empfangene Bytes je update() verarbeiten
+        /// (64..8192). Schuetzt gegen einen Dauerstrom auf der Leitung.
+        void setRxByteBudget(uint16_t bytes);
+
+        /// Ab welcher update()-Dauer PDS von einer Fehlfunktion ausgeht und
+        /// nach wie vielen Verstoessen es sich abschaltet. strikes = 0
+        /// schaltet die Notbremse ab.
+        void setPanicLimit(uint32_t us, uint8_t strikes);
+
+        /// PDS komplett stilllegen bzw. wieder anschalten. update() kostet
+        /// abgeschaltet nur noch den Watchdog-Griff (~0.2 us) — gedacht als
+        /// Not-Aus fuer die Bibliothek selbst, z. B. aus dem Roboter-Code
+        /// heraus, wenn eine Messung absolute Ruhe auf der Leitung braucht.
+        /// enable(true) hebt auch eine ausgeloeste Notbremse wieder auf.
+        void enable(bool on);
+        bool enabled()  const { return _enabled; }
+
+        /// true, wenn die Notbremse die Nebenwege abgeschaltet hat: es geht
+        /// dann nur noch Telemetrie raus, Parameter kommen weiter an.
+        bool degraded() const { return _degraded; }
+
+        uint32_t lastUpdateMicros() const { return _lastUpdateUs; }
+        uint32_t maxUpdateMicros()  const { return _maxUpdateUs; }
+        uint32_t budgetOverruns()   const { return _budgetOverruns; }
+        uint32_t panicCount()       const { return _panicCount; }
+        void     resetUpdateStats() { _maxUpdateUs = 0; _budgetOverruns = 0; }
+
+        // ══════════════════════════════════════════════════════════════
+        //  Einstellungen der OBERFLAECHE vom Roboter aus
+        // ══════════════════════════════════════════════════════════════
+        //  Alles, was in settings.json der GUI steht, laesst sich hier
+        //  vorgeben — mit demselben Punktpfad. Die Werte reisen im
+        //  Namens-Deskriptor mit und werden auf dem Pi dauerhaft
+        //  gespeichert, gelten also auch beim naechsten Start ohne Roboter.
+        //
+        //      void setup() {
+        //          PDS.begin();
+        //          PDS.setting("ui.dark", true);
+        //          PDS.setting("ui.fontScale", 1.2f);
+        //          PDS.setting("plotter.historySeconds", 20);
+        //          PDS.setting("theme.colors.dark.accentGreen", "#00ff88");
+        //      }
+        //
+        //  Statt im Sketch geht auch die Tabelle GUI_SETTINGS[] in
+        //  channel_config.h — dieselbe Wirkung, nur an einer Stelle.
+        //
+        //  Zwei Dinge, die bewusst NICHT gehen:
+        //    * "network.*" — eine falsche IP in der Firmware wuerde genau
+        //      die Leitung kappen, ueber die man sie korrigieren muesste.
+        //      Die GUI verwirft diesen Abschnitt.
+        //    * Werte, die nicht zum Typ der Einstellung passen. Die GUI
+        //      prueft jeden gegen ihre Standardwerte und behaelt sonst den
+        //      eigenen — ein Tippfehler kostet nie mehr als dieses Feld.
+        //
+        //  Der Bediener kann die Uebernahme komplett abschalten
+        //  (Diagnose-Tab, "Konfiguration vom Teensy uebernehmen").
+
+        /// Eine Einstellung vorgeben. Gibt false zurueck, wenn die Tabelle
+        /// voll ist (PDS_MAX_SETTINGS) oder der Schluessel leer war.
+        bool setting(const char* key, float       value);
+        bool setting(const char* key, double      value) { return setting(key, (float)value); }
+        bool setting(const char* key, int         value) { return setting(key, (float)value); }
+        bool setting(const char* key, bool        value);
+        bool setting(const char* key, const char* value);
+
+        /// Eine vorgegebene Einstellung wieder zuruecknehmen (die GUI
+        /// benutzt dann wieder ihren eigenen Wert).
+        bool removeSetting(const char* key);
+        void clearSettings();
+        uint8_t settingCount() const { return _settingCount; }
+
+        // ── Bequeme Namen fuer die haeufigsten Faelle ──────────────────
+        //  Reine Abkuerzungen fuer setting() — wer etwas sucht, das hier
+        //  nicht steht, nimmt den Punktpfad aus settings.json direkt.
+        void guiDarkMode(bool on)         { setting("ui.dark", on); }
+        void guiFontScale(float scale)    { setting("ui.fontScale", scale); }
+        void guiKiosk(bool on)            { setting("ui.kiosk", on); }
+        void guiKeyboardControl(bool on)  { setting("ui.keyboardControl", on); }
+        /// 0=Tabelle 1=Plotter 2=System 3=Parameter 4=Diagnose
+        void guiStartTab(int tab)         { setting("ui.startTab", tab); }
+
+        /// Akku-Warnung der GUI. `channel` = -1 schaltet sie ab.
+        void guiBatteryWarning(int channel, float warnBelow, float criticalBelow,
+                                float holdSeconds = 2.0f);
+
+        /// Grundeinstellung des Plotters. Werte <= 0 bleiben unveraendert.
+        void guiPlotter(int historySeconds, int points = 0, int maxCurves = 0);
+
+        /// Farbe einer Plotter-Kurve (0..7), z. B. "#00d4ff".
+        void guiCurveColor(int index, const char* color);
+
+        /// Eine Theme-Farbe setzen, z. B. guiColor("accentGreen", "#00ff88").
+        /// `dark = false` aendert stattdessen das helle Schema.
+        void guiColor(const char* name, const char* color, bool dark = true);
+
+        // ══════════════════════════════════════════════════════════════
         //  Diagnose
         // ══════════════════════════════════════════════════════════════
 
@@ -414,9 +669,16 @@ class PowerDebugger {
         uint32_t txPacketCount()    const { return _txPktCount; }
         uint32_t txDropCount()      const { return _txDrops; }
         uint32_t paramSyncLosses()  const { return _paramSyncLosses; }
+        /// Wie oft ein abgebrochenes Paket den Parser zurueckgesetzt hat
+        /// (siehe PDS_RX_PACKET_TIMEOUT_MS). Steigt der Wert dauerhaft,
+        /// verliert die Strecke Bytes.
+        uint32_t rxResyncCount()    const { return _rxResyncCount; }
         uint8_t  usedChannels()     const { return _autoNext; }
         bool     descriptorTruncated() const { return _descOverflow; }
         size_t   descriptorBytes()  const { return _descJsonLen; }
+        /// true, sobald der Deskriptor fertig gebaut im Puffer steht (er
+        /// entsteht scheibenweise ueber mehrere update()-Aufrufe).
+        bool     descriptorReady()  const { return _descBuilt; }
 
         /// Eine Zeile Klartext-Diagnose, z. B. 1x/s im Sketch:
         ///   PDS.printStatus();          // -> USB-Serial
@@ -430,8 +692,12 @@ class PowerDebugger {
         /// Sendet den Namens-/Overlay-Deskriptor (erneut) an die GUI.
         /// Passiert automatisch beim Boot, in Ruhe alle PDS_DESC_REPEAT_MS
         /// und sobald die Verbindung zur GUI (wieder) zustande kommt —
-        /// von Hand also nur noetig, wenn man Namen zur Laufzeit aendert.
-        void announceChannelNames() { startDescriptorSend(); }
+        /// von Hand also nur noetig, wenn man Namen oder Einstellungen zur
+        /// Laufzeit aendert.
+        ///
+        /// Kostet nichts und wartet auf nichts: der Aufruf meldet nur einen
+        /// Wunsch an, gebaut und gesendet wird scheibchenweise in update().
+        void announceChannelNames() { requestDescriptorSend(true); }
 
     private:
         // ── Telemetrie-Versand ─────────────────────────────────────────
@@ -454,6 +720,11 @@ class PowerDebugger {
         uint8_t  _rxBuf[PARAM_SLOW_PACKET_BYTES];
         int      _rxFill        = 0;
         int      _rxExpectedLen = 0;
+
+        // Zeitpunkt des letzten empfangenen Bytes — fuer den Resync-Timeout
+        // eines abgebrochenen Pakets (siehe PDS_RX_PACKET_TIMEOUT_MS).
+        uint32_t _rxLastByteMs  = 0;
+        uint32_t _rxResyncCount = 0;
 
         // ── Parameter-Rueckmeldung ─────────────────────────────────────
         bool     _paramAckOn = true;
@@ -529,18 +800,76 @@ class PowerDebugger {
         char _fwVersion[48] = {0};
 
         // ── Namens-/Overlay-Deskriptor -> GUI ──────────────────────────
+        //  Der Deskriptor wird SCHEIBENWEISE gebaut (siehe Blockierfreiheit
+        //  im Kopf dieser Datei): _descStage/_descIdx merken sich, wo der
+        //  letzte update()-Aufruf aufgehoert hat, _descPos/_descFirst den
+        //  Zustand des JSON-Schreibers dazwischen.
         size_t  _descJsonLen    = 0;
         uint16_t _descChunkCount = 0;
         uint16_t _descNextChunk  = 0xFFFF;   // 0xFFFF = kein Sendevorgang aktiv
         bool     _descBuilt     = false;
         bool     _descOverflow  = false;
+        bool     _descWanted    = false;   // Sendewunsch, wartet ggf. auf den Bau
         bool     _linkWasUp     = false;   // fuer die Flanke "GUI wieder da"
-        uint32_t _descRepeatMs  = PDS_DESC_REPEAT_MS;   // waechst bis PDS_DESC_REPEAT_MAX_MS
+        uint32_t _descRepeatMs  = PDS_DESC_REPEAT_MS;   // waechst bis _descRepeatMaxMs
         uint32_t _bootAnnounceAtMs = 0;    // 0 = erste Meldung schon raus
+        uint32_t _descLastStartMs  = 0;    // fuer PDS_DESC_MIN_GAP_MS
+        uint8_t  _descStage     = 0;       // 0xFF = fertig gebaut
+        uint16_t _descIdx       = 0;
+        size_t   _descPos       = 0;
+        bool     _descFirst     = true;
 
-        void buildDescriptorJson();
+        void beginDescriptorBuild();
+        bool buildDescriptorStep();        ///< true, wenn der Deskriptor fertig ist
+        void requestDescriptorSend(bool force = false);
         void startDescriptorSend();
         void sendNextDescChunk();
+        void updateDescriptor(uint32_t startUs);   ///< bauen/senden/wiederholen
+
+        // ── Einstellungen der Oberflaeche (siehe setting()) ────────────
+        struct SettingEntry {
+            char    key[PDS_SETTING_KEY_MAXLEN];
+            char    text[PDS_SETTING_TEXT_MAXLEN];
+            float   num;
+            uint8_t kind;
+        };
+        SettingEntry _settings[PDS_MAX_SETTINGS];
+        uint8_t      _settingCount = 0;
+        SettingEntry* findOrAddSetting(const char* key);
+
+        // ── Laufzeit-Einstellungen der Bibliothek ──────────────────────
+        uint32_t _samplePeriodMs = 10;   // 10 ms -> 100 Hz (setTelemetryRate)
+        uint32_t _ackIntervalMs  = PARAM_ACK_INTERVAL_MS;
+        uint16_t _eventMaxPerSec = (uint16_t)PDS_EVENT_MAX_PER_SEC;
+        uint32_t _descRepeatBaseMs = PDS_DESC_REPEAT_MS;
+        uint32_t _descRepeatMaxMs  = PDS_DESC_REPEAT_MAX_MS;
+        uint32_t _fastTimeoutMs  = PARAM_FAST_TIMEOUT_MS;
+        uint32_t _slowTimeoutMs  = PARAM_SLOW_TIMEOUT_MS;
+        uint16_t _rxByteBudget   = PDS_RX_BYTE_BUDGET;
+        bool     _telemetryOn    = true;
+        bool     _eventsOn       = true;
+        bool     _descOn         = true;
+        bool     _serialDiagOn   = true;
+
+        // ── Selbstschutz (Zeitbudget + Notbremse) ──────────────────────
+        uint32_t _budgetUs       = PDS_UPDATE_BUDGET_US;
+        uint32_t _panicUs        = PDS_UPDATE_PANIC_US;
+        uint8_t  _panicStrikes   = PDS_UPDATE_PANIC_STRIKES;
+        uint8_t  _panicSeen      = 0;
+        uint32_t _lastUpdateUs   = 0;
+        uint32_t _maxUpdateUs    = 0;
+        uint32_t _budgetOverruns = 0;
+        uint32_t _panicCount     = 0;
+        bool     _enabled        = true;
+        bool     _degraded       = false;
+
+        /// Ist vom Zeitbudget noch etwas uebrig? `startUs` ist der
+        /// micros()-Wert vom Anfang des update()-Aufrufs.
+        bool budgetLeft(uint32_t startUs) const {
+            if (_budgetUs == 0) return true;
+            return (uint32_t)(micros() - startUs) < _budgetUs;
+        }
+        void noteUpdateDuration(uint32_t us);
 };
 
 // Fertige globale Instanz — im Sketch einfach `PDS.` benutzen.

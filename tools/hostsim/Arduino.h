@@ -24,14 +24,25 @@
 #include <string.h>
 #include <math.h>
 #include <vector>
+#include <deque>
 
 // ── Steuerbare Uhr ────────────────────────────────────────────────────────
 //  Der Test soll Zeit vergehen lassen können, ohne wirklich zu warten.
 extern unsigned long pds_sim_millis;
 extern unsigned long pds_sim_micros;
 
+// Um so viel rueckt micros() bei JEDEM Aufruf weiter. 0 = die Uhr steht
+// still (Standard, macht die Ausgabe reproduzierbar). Mit einem Wert > 0
+// laesst sich das Zeitbudget von PDS.update() wirklich ausreizen — sonst
+// bliebe der scheibenweise Deskriptor-Bau ungetestet, weil ohne
+// vergehende Zeit nie ein Budget aufgebraucht wird.
+extern unsigned long pds_sim_micros_step;
+
 inline unsigned long millis() { return pds_sim_millis; }
-inline unsigned long micros() { return pds_sim_micros; }
+inline unsigned long micros() {
+    pds_sim_micros += pds_sim_micros_step;
+    return pds_sim_micros;
+}
 
 inline void pds_sim_advance(unsigned long ms) {
     pds_sim_millis += ms;
@@ -59,6 +70,10 @@ public:
     // In der Attrappe ist nie ein Terminal offen — genau wie im Roboter,
     // wenn der Teensy ohne USB-Kabel läuft. pdsWarn() gibt dann nichts aus.
     explicit operator bool() const { return false; }
+    // Wird von serialRoomFor() in PDS.cpp abgefragt: die Bibliothek schreibt
+    // nur nach USB-Serial, wenn dort auch Platz ist (ein volles USB-CDC
+    // blockiert auf dem echten Teensy bis zu 120 ms).
+    int availableForWrite() { return 0; }
 };
 extern UsbSerial Serial;
 
@@ -68,13 +83,27 @@ static const int SERIAL_8N1 = 0;
 class HardwareSerial : public Print {
 public:
     std::vector<uint8_t> tx;
+    std::deque<uint8_t>  rx;                   // was der Node "geschickt" hat
 
     void begin(unsigned long, int = SERIAL_8N1) {}
     void addMemoryForWrite(void*, size_t) {}
     void addMemoryForRead(void*, size_t) {}
     int availableForWrite() { return 8192; }   // nie voll -> nichts wird verworfen
-    int available() { return 0; }              // kein Downlink im Test
-    int read() { return -1; }
+
+    /// Bytes in den Empfangspuffer legen — damit laesst sich der
+    /// Param-Downlink (auch ein abgebrochenes Paket) nachstellen.
+    void feed(const void* data, size_t n) {
+        const uint8_t* p = (const uint8_t*)data;
+        rx.insert(rx.end(), p, p + n);
+    }
+
+    int available() { return (int)rx.size(); }
+    int read() {
+        if (rx.empty()) return -1;
+        const int b = rx.front();
+        rx.pop_front();
+        return b;
+    }
 
     size_t write(const uint8_t* buf, size_t len) override {
         tx.insert(tx.end(), buf, buf + len);

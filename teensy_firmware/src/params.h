@@ -187,6 +187,14 @@ static constexpr uint8_t CHANNEL_NAME_MAXLEN = 24;                 // inkl. Null
 //  Orten waeren eine Fehlerquelle, sobald sich ein Feld aendert.
 // ============================================================
 
+// Werttyp einer Oberflaechen-Einstellung (siehe SettingDef weiter unten und
+// PowerDebugger::setting()). Bewusst getrennt von "Zahl", damit im JSON
+// wirklich `true`/`false` statt `1`/`0` steht — die GUI prueft den Typ gegen
+// ihre Standardwerte und wuerde eine 1 an einem Schalter verwerfen.
+static constexpr uint8_t PDS_SETTING_NUM  = 0;
+static constexpr uint8_t PDS_SETTING_BOOL = 1;
+static constexpr uint8_t PDS_SETTING_TEXT = 2;
+
 /// Fester Name fuer einen Debug-Kanal (nur noetig fuer Kanaele, die NICHT
 /// per plot()/track()/Channel(...,name) im Sketch benannt werden).
 struct ChannelNameDef {
@@ -238,4 +246,35 @@ struct OverlayDef {
     float       x_pct    = -1.0f;      ///< Position auf dem Bild (0..100, -1 = ungenutzt)
     float       y_pct    = -1.0f;
     const char* extra    = "";         ///< "key=value;..." bzw. Kanalliste
+};
+
+/// EINE Einstellung der Oberflaeche, die der Teensy vorgibt.
+///
+/// `key` ist derselbe Punktpfad wie in settings.json der GUI, also z. B.
+/// "ui.dark", "ui.fontScale", "plotter.historySeconds" oder
+/// "theme.colors.dark.bg". Der Typ ergibt sich aus dem geschriebenen Wert:
+///
+///     { "ui.dark",              false      }   -> Wahrheitswert
+///     { "plotter.historySeconds", 20       }   -> Zahl
+///     { "theme.colors.dark.bg", "#101010"  }   -> Text/Farbe
+///
+/// Die GUI fuehrt das mit ihren eigenen Standardwerten zusammen und prueft
+/// dabei jeden Typ (siehe rpi5_monitor/64Bit_Version/app_settings.py) — ein
+/// unsinniger Wert kostet hoechstens dieses eine Feld.
+struct SettingDef {
+    const char* key;
+    uint8_t     kind;      ///< PDS_SETTING_NUM | _BOOL | _TEXT
+    float       num;
+    const char* text;
+
+    constexpr SettingDef(const char* k, float v)
+        : key(k), kind(PDS_SETTING_NUM),  num(v), text(nullptr) {}
+    constexpr SettingDef(const char* k, double v)
+        : key(k), kind(PDS_SETTING_NUM),  num((float)v), text(nullptr) {}
+    constexpr SettingDef(const char* k, int v)
+        : key(k), kind(PDS_SETTING_NUM),  num((float)v), text(nullptr) {}
+    constexpr SettingDef(const char* k, bool v)
+        : key(k), kind(PDS_SETTING_BOOL), num(v ? 1.0f : 0.0f), text(nullptr) {}
+    constexpr SettingDef(const char* k, const char* v)
+        : key(k), kind(PDS_SETTING_TEXT), num(0.0f), text(v) {}
 };

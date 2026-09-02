@@ -41,6 +41,7 @@ import os
 from pathlib import Path
 from typing import Any
 
+import app_settings
 from config import RUNTIME_CONFIG_DIR, runtime_config_path
 
 log = logging.getLogger(__name__)
@@ -48,6 +49,7 @@ log = logging.getLogger(__name__)
 PARAM_CONFIG_NAME  = "param_config.json"
 VISUALS_NAME       = "visuals_overlays.json"
 DESCRIPTOR_NAME    = "descriptor.json"
+GUI_SETTINGS_NAME  = "gui_settings.json"
 
 _HASH_KEY = "_teensy_hash"
 TEENSY_HASH_KEY = _HASH_KEY      # oeffentlicher Name fuer andere Module
@@ -359,6 +361,54 @@ def param_config_path_for(node_id: int, fallback: Path) -> Path:
     path = runtime_config_path(node_id, PARAM_CONFIG_NAME)
     return path if path.exists() else fallback
 
+
+# ══════════════════════════════════════════════════════════════════════════
+#  Oberflaechen-Einstellungen des Teensy
+# ══════════════════════════════════════════════════════════════════════════
+#  Seit PDS 2.2 liegt im Deskriptor ein Abschnitt "settings" (Punktpfad ->
+#  Wert). Er wird nach derselben Regel behandelt wie alles andere aus dem
+#  Teensy (siehe "Wer gewinnt bei einem Konflikt?" am Anfang der Datei):
+#
+#      Fingerabdruck unveraendert -> nichts tun. Wer die Schriftgroesse in
+#                                    der GUI nachgestellt hat, behaelt sie.
+#      Fingerabdruck geaendert    -> uebernehmen. Eine neue Firmware setzt
+#                                    sich durch.
+#
+#  Gemerkt wird der Fingerabdruck in einer eigenen kleinen Datei je Node.
+#  Sie enthaelt zusaetzlich, was uebernommen und was verworfen wurde — im
+#  Zweifelsfall am Spielfeldrand ist das die einzige Stelle, an der man
+#  nachsehen kann, warum eine Einstellung aus der Firmware nicht ankam.
+
+def sync_gui_settings(node_id: int, flat: dict) -> tuple[dict, list[str]]:
+    """Einstellungen des Teensy uebernehmen, falls sie sich geaendert haben.
+
+    Rueckgabe: (uebernommen, verworfen). Beide leer, wenn es nichts zu tun
+    gab — der Aufrufer meldet dann auch nichts.
+    """
+    if not isinstance(flat, dict) or not flat:
+        return {}, []
+
+    digest = teensy_hash(flat)
+    stored = load_json(node_id, GUI_SETTINGS_NAME)
+    if stored is not None and stored.get(_HASH_KEY) == digest:
+        return {}, []               # unveraendert -> lokale Bearbeitung behalten
+
+    applied, rejected = app_settings.apply_teensy_settings(flat)
+
+    # Den Fingerabdruck AUCH dann merken, wenn nichts uebernommen wurde:
+    # sonst wuerde dieselbe unbrauchbare Vorgabe bei jedem Deskriptor erneut
+    # durchprobiert und jedes Mal dieselbe Warnung ins Logbuch schreiben.
+    save_json(node_id, GUI_SETTINGS_NAME, {
+        _HASH_KEY: digest,
+        "applied": applied,
+        "rejected": rejected,
+    })
+
+    if applied:
+        app_settings.save(app_settings.SETTINGS)
+        log.info("Node %d: %d Oberflaechen-Einstellung(en) vom Teensy uebernommen "
+                 "(%d verworfen).", node_id, len(applied), len(rejected))
+    return applied, rejected
 
 def save_descriptor(node_id: int, data: dict) -> bool:
     """Den kompletten Roh-Deskriptor mitschreiben.

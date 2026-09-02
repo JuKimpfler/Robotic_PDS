@@ -68,3 +68,23 @@ static const OverlayDef CHANNEL_OVERLAYS[] = {
     { 3, "table",    "Tabelle",   -1, -1,  0.0f, 0.0f, -1.0f, -1.0f, "0-9,15,20-22" },
 };
 static constexpr size_t CHANNEL_OVERLAYS_COUNT = sizeof(CHANNEL_OVERLAYS) / sizeof(CHANNEL_OVERLAYS[0]);
+
+// ── Einstellungen der Oberflaeche (PDS 2.2) ───────────────────────────────
+//  Absichtlich mit den unangenehmen Faellen: alle drei Werttypen, ein
+//  Anfuehrungszeichen im Wert, ein Listenindex im Punktpfad und ein
+//  "network."-Schluessel, den die GUI verwerfen MUSS.
+#define PDS_HAS_GUI_SETTINGS 1
+static const SettingDef GUI_SETTINGS[] = {
+    { "ui.dark",                true      },
+    { "ui.fontScale",           1.15f     },
+    { "ui.startTab",            2         },
+    { "battery.channel",        10        },
+    { "battery.warn_below",     11.5f     },
+    { "plotter.historySeconds", 20        },
+    { "plotter.curveColors.0",  "#00ff88" },
+    { "theme.colors.dark.bg",   "#101010" },
+    { "network.rpi5Ip",         "1.2.3.4" },
+};
+static constexpr size_t GUI_SETTINGS_COUNT =
+    sizeof(GUI_SETTINGS) / sizeof(GUI_SETTINGS[0]);
+

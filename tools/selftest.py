@@ -31,6 +31,10 @@ testen kann, und die erfahrungsgemaess die meisten Fehler enthalten:
                                 die Grenzen der Schieberegler, Profile
                                 speichern/laden, Uebernahme der alten
                                 ui_settings.json
+ 17. Teensy-Einstellungen    — Punktpfade aus dem Deskriptor: was ankommt,
+                                was verworfen wird (network, falscher Typ,
+                                unbekannter Pfad) und die Konfliktregel
+                                Firmware <-> Handarbeit
 
 Benoetigt nur die Standardbibliothek. numpy/PyQt6/pyserial/pygame duerfen
 fehlen — fehlende Module werden fuer den Test durch Attrappen ersetzt.
@@ -1131,13 +1135,127 @@ def test_app_settings() -> None:
     check("get() erfindet nichts", aps.get("gibt.es.nicht", "-") == "-")
 
 
+def test_teensy_settings() -> None:
+    section("17) Einstellungen vom Teensy (PDS 2.2)")
+    import copy
+    import app_settings as aps
+
+    # Der Teensy schickt Punktpfad -> Wert. Alles hier ist ein Fall, der
+    # frueher gar nicht vorkommen konnte und deshalb auch nicht abgesichert
+    # war: die Werte kommen ueber UART/WLAN aus einer Firmware, die jemand
+    # anders uebersetzt hat.
+    data = aps.normalize({})
+    vorher_bg = data["theme"]["colors"]["dark"]["bg"]
+
+    applied, rejected = aps.apply_teensy_settings({
+        "ui.dark": False,                       # Wahrheitswert
+        "ui.fontScale": 1.25,                   # Zahl
+        "plotter.historySeconds": 20,           # ganze Zahl
+        "theme.colors.dark.bg": "#101010",      # Farbe
+        "plotter.curveColors.0": "#00ff88",     # Listenindex im Pfad
+        "battery.channel": 10,
+    }, data)
+    check("Wahrheitswert kommt an", data["ui"]["dark"] is False)
+    check("Zahl kommt an", data["ui"]["fontScale"] == 1.25)
+    check("ganze Zahl bleibt ganz",
+          data["plotter"]["historySeconds"] == 20
+          and isinstance(data["plotter"]["historySeconds"], int),
+          repr(data["plotter"]["historySeconds"]))
+    check("Farbe kommt an", data["theme"]["colors"]["dark"]["bg"] == "#101010")
+    check("Listenindex im Punktpfad trifft das richtige Element",
+          data["plotter"]["curveColors"][0] == "#00ff88",
+          str(data["plotter"]["curveColors"][:2]))
+    check("alle sechs gelten als uebernommen", len(applied) == 6, str(applied))
+    check("nichts wurde dabei verworfen", rejected == [], str(rejected))
+
+    # Ab hier: alles, was NICHT durchkommen darf. Jeder Fall kostet genau
+    # sein eigenes Feld und laesst den Rest in Ruhe.
+    data = aps.normalize({})
+    applied, rejected = aps.apply_teensy_settings({
+        "network.rpi5Ip": "1.2.3.4",       # gesperrt: kappt die eigene Leitung
+        "gibtesnicht.foo": 1,              # Pfad existiert nicht
+        "ui.dark": "ja",                   # falscher Typ
+        "theme.colors.dark.bg": "gruen",   # keine Farbe
+        "theme.colors.dark": "#101010",    # zeigt auf einen ganzen Abschnitt
+        "plotter.curveColors.99": "#fff",  # Listenindex ausserhalb
+        "ui.kiosk": True,                  # ... und ein gueltiger daneben
+    }, data)
+    check("network.* wird verworfen", "network.rpi5Ip" in rejected)
+    check("die Netzwerkeinstellung bleibt unveraendert",
+          data["network"]["rpi5Ip"] == aps.DEFAULTS["network"]["rpi5Ip"],
+          data["network"]["rpi5Ip"])
+    check("unbekannter Pfad wird verworfen", "gibtesnicht.foo" in rejected)
+    check("falscher Typ wird verworfen", "ui.dark" in rejected)
+    check("und der bisherige Wert bleibt stehen",
+          data["ui"]["dark"] is aps.DEFAULTS["ui"]["dark"])
+    check("Text ohne # an einer Farbstelle wird verworfen",
+          "theme.colors.dark.bg" in rejected
+          and data["theme"]["colors"]["dark"]["bg"] == vorher_bg)
+    check("ein ganzer Abschnitt laesst sich nicht ersetzen",
+          "theme.colors.dark" in rejected
+          and isinstance(data["theme"]["colors"]["dark"], dict))
+    check("Listenindex ausserhalb wird verworfen",
+          "plotter.curveColors.99" in rejected)
+    check("der gueltige Wert daneben kommt trotzdem an",
+          data["ui"]["kiosk"] is True and applied == {"ui.kiosk": True},
+          str(applied))
+
+    # Ein Wert ausserhalb seines eigenen Bereichs macht den Regler
+    # unbedienbar — auch wenn er aus der Firmware kommt.
+    data = aps.normalize({})
+    aps.apply_teensy_settings({"ui.fontScale": 99.0}, data)
+    check("Wert aus der Firmware wird in seinen Bereich gelegt",
+          data["ui"]["fontScale"] == aps.DEFAULTS["ranges"]["fontScale"]["max"],
+          repr(data["ui"]["fontScale"]))
+
+    # ── Die Konfliktregel: neue Firmware setzt sich durch, Handarbeit
+    #    zwischendurch bleibt stehen (siehe runtime_config.sync_gui_settings)
+    import runtime_config as rc
+    with tempfile.TemporaryDirectory() as tmp:
+        rc.RUNTIME_CONFIG_DIR = Path(tmp)
+        original = copy.deepcopy(aps.SETTINGS)
+        # sync_gui_settings() speichert den neuen Stand — und zwar in die
+        # ECHTE settings.json des Entwicklungsrechners. Der Selbsttest darf
+        # dem Bediener nicht seine Schriftgroesse verstellen, also zeigt der
+        # Pfad waehrenddessen ins Temporaerverzeichnis.
+        orig_path = aps.SETTINGS_PATH
+        aps.SETTINGS_PATH = Path(tmp) / "settings.json"
+        try:
+            flat = {"ui.fontScale": 1.3}
+            applied, _ = rc.sync_gui_settings(1, flat)
+            check("erste Uebernahme greift", applied == {"ui.fontScale": 1.3},
+                  str(applied))
+
+            # Bediener stellt danach von Hand um ...
+            aps.SETTINGS["ui"]["fontScale"] = 1.0
+            applied, _ = rc.sync_gui_settings(1, flat)
+            check("unveraenderte Firmware ueberschreibt die Handarbeit nicht",
+                  applied == {} and aps.SETTINGS["ui"]["fontScale"] == 1.0,
+                  str(applied))
+
+            # ... eine geaenderte Firmware aber schon.
+            applied, _ = rc.sync_gui_settings(1, {"ui.fontScale": 1.45})
+            check("geaenderte Firmware setzt sich durch",
+                  aps.SETTINGS["ui"]["fontScale"] == 1.45, str(applied))
+
+            # Auch eine Vorgabe, von der nichts durchkommt, wird gemerkt —
+            # sonst warnte jeder Deskriptor aufs Neue.
+            rc.sync_gui_settings(1, {"network.rpi5Ip": "1.2.3.4"})
+            applied, rejected = rc.sync_gui_settings(1, {"network.rpi5Ip": "1.2.3.4"})
+            check("eine komplett verworfene Vorgabe wird nur einmal geprueft",
+                  applied == {} and rejected == [], str(rejected))
+        finally:
+            aps.SETTINGS_PATH = orig_path
+            aps.replace(original)
+
 def main() -> int:
     print("Power Debug System — Selbsttest")
     for fn in (test_wire_format, test_frame_assemblers, test_descriptor,
                test_param_io, test_bt_protocol, test_qml_bindings,
                test_aux_uplink, test_runtime_config, test_textgrid,
                test_overlay_editor, test_thread_attribute_clash,
-               test_plot_markers_and_controller, test_app_settings):
+               test_plot_markers_and_controller, test_app_settings,
+               test_teensy_settings):
         try:
             fn()
         except Exception as exc:            # noqa: BLE001

@@ -59,8 +59,12 @@ class ChannelRegistry:
     # Vollstaendige Widget-Konfiguration des Parameter-Tabs, so wie sie in
     # channel_config.h steht (siehe runtime_config.param_config_from_descriptor).
     param_cfg:              dict           = field(default_factory=dict)
-    # {"pds": "2.1", "fw": "...", "build": "...", "wire": 2, "channels": 200}
+    # {"pds": "2.2", "fw": "...", "build": "...", "wire": 2, "channels": 200}
     meta:                   dict           = field(default_factory=dict)
+    # Einstellungen der Oberflaeche, die der Teensy vorgibt (PDS 2.2):
+    # Punktpfad -> Wert, z. B. {"ui.dark": True, "plotter.historySeconds": 20}.
+    # Siehe app_settings.apply_teensy_settings().
+    settings:               dict           = field(default_factory=dict)
     received:               bool           = False
 
     @classmethod
@@ -96,6 +100,17 @@ class ChannelRegistry:
         raw_cfg = data.get("param_cfg", {})
         param_cfg = raw_cfg if isinstance(raw_cfg, dict) else {}
 
+        # Nur Skalare: alles andere kann der Teensy gar nicht schicken, und
+        # was ueber UART/WLAN hereinkommt, wird grundsaetzlich geprueft und
+        # nicht geglaubt. Die inhaltliche Pruefung (gibt es den Pfad? passt
+        # der Typ?) macht app_settings.apply_teensy_settings().
+        raw_settings = data.get("settings", {})
+        settings = {}
+        if isinstance(raw_settings, dict):
+            settings = {k: v for k, v in raw_settings.items()
+                        if isinstance(k, str) and k
+                        and isinstance(v, (str, int, float, bool))}
+
         return cls(
             channel_names=_int_keyed(data.get("channels", {})),
             channel_units=_int_keyed(data.get("units", {})),
@@ -105,13 +120,14 @@ class ChannelRegistry:
             overlays=overlays,
             param_cfg=param_cfg,
             meta=meta,
+            settings=settings,
             received=True,
         )
 
     def is_empty(self) -> bool:
         return not (self.channel_names or self.param_slow_float_names
                     or self.param_slow_bool_names or self.param_fast_float_names
-                    or self.overlays or self.param_cfg)
+                    or self.overlays or self.param_cfg or self.settings)
 
     def firmware_label(self) -> str:
         """Kurztext fuer die Statuszeile, z. B. "fw 1.4.2 - PDS 2.1"."""

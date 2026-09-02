@@ -102,6 +102,12 @@ DEFAULTS: dict[str, Any] = {
         "keyboardControl": True,
         "startTab": 0,           # 0=Tabelle 1=Plotter 2=System 3=Param 4=Diagnose
         "autoApplyTeensyConfig": True,
+        # Der Teensy kann seit PDS 2.2 auch das AUSSEHEN vorgeben
+        # (PDS.setting("ui.dark", ...) bzw. GUI_SETTINGS in channel_config.h).
+        # Eigener Schalter, weil das eine andere Entscheidung ist als die
+        # Kanalnamen: wer sein Tablet dauerhaft hell haben will, soll die
+        # Namen trotzdem bekommen. Siehe apply_teensy_settings().
+        "autoApplyTeensySettings": True,
     },
 
     # ── Akku-Warnung (rein optisch, siehe bridge/diag_bridge.py) ──────────
@@ -669,6 +675,124 @@ def replace(data: dict) -> None:
     SETTINGS.clear()
     SETTINGS.update(copy.deepcopy(data))
 
+
+# ══════════════════════════════════════════════════════════════════════════
+#  Einstellungen, die der TEENSY vorgibt
+# ══════════════════════════════════════════════════════════════════════════
+#  Seit PDS 2.2 schickt der Teensy im Namens-Deskriptor einen Abschnitt
+#  "settings": Punktpfad -> Wert, mit genau denselben Pfaden wie in dieser
+#  Datei (PDS.setting("ui.dark", true) bzw. GUI_SETTINGS in
+#  channel_config.h). Damit laesst sich die komplette Oberflaeche aus der
+#  Firmware heraus einstellen — Farben, Schriftgroessen, Akku-Warnung,
+#  Plotter, Reglergrenzen.
+#
+#  Es gilt dasselbe Prinzip wie fuer die Datei selbst: ein unsinniger Wert
+#  kostet hoechstens SEIN Feld.
+#
+#      Pfad gibt es nicht      -> verworfen (steht im Log)
+#      Typ passt nicht         -> verworfen, der lokale Wert bleibt
+#      Pfad zeigt auf ein
+#      ganzes Objekt/eine
+#      ganze Liste             -> verworfen (der Teensy schickt nur Skalare)
+#      "network.*"             -> verworfen, siehe unten
+#
+#  network.* ist bewusst gesperrt: eine falsche IP in der Firmware wuerde
+#  genau die Leitung kappen, ueber die man sie korrigieren muesste. Der
+#  Roboter darf sein Aussehen bestimmen, nicht den Weg zu sich selbst.
+TEENSY_BLOCKED_SECTIONS = ("network",)
+TEENSY_BLOCKED_KEYS = ("version", "_hinweis")
+
+
+def _resolve_path(root: Any, parts: list[str]):
+    """(Behaelter, Schluessel) fuer einen Punktpfad — None, wenn es ihn nicht gibt.
+
+    Kann auch in Listen hinein: "plotter.curveColors.0" landet auf dem
+    ersten Element der Farbliste.
+    """
+    node = root
+    for part in parts[:-1]:
+        if isinstance(node, dict):
+            if part not in node:
+                return None
+            node = node[part]
+        elif isinstance(node, list):
+            try:
+                idx = int(part)
+            except (TypeError, ValueError):
+                return None
+            if not 0 <= idx < len(node):
+                return None
+            node = node[idx]
+        else:
+            return None
+
+    last = parts[-1]
+    if isinstance(node, dict):
+        return (node, last) if last in node else None
+    if isinstance(node, list):
+        try:
+            idx = int(last)
+        except (TypeError, ValueError):
+            return None
+        return (node, idx) if 0 <= idx < len(node) else None
+    return None
+
+
+def apply_teensy_settings(flat: dict, data: dict | None = None
+                          ) -> tuple[dict[str, Any], list[str]]:
+    """Punktpfad->Wert aus dem Deskriptor in den aktiven Stand uebernehmen.
+
+    Rueckgabe: (uebernommen, verworfen) — beides fuer die Statuszeile und
+    das Logbuch der GUI, damit man am Roboter sieht, was angekommen ist.
+    """
+    if data is None:
+        data = SETTINGS
+    applied: dict[str, Any] = {}
+    rejected: list[str] = []
+
+    if not isinstance(flat, dict):
+        return applied, rejected
+
+    for dotted, value in flat.items():
+        if not isinstance(dotted, str) or not dotted:
+            continue
+        parts = dotted.split(".")
+        if parts[0] in TEENSY_BLOCKED_SECTIONS or dotted in TEENSY_BLOCKED_KEYS:
+            log.warning("Teensy-Einstellung %s ist gesperrt — verworfen.", dotted)
+            rejected.append(dotted)
+            continue
+
+        target = _resolve_path(data, parts)
+        if target is None:
+            log.warning("Teensy-Einstellung %s gibt es hier nicht — verworfen.", dotted)
+            rejected.append(dotted)
+            continue
+
+        container, key = target
+        current = container[key]
+        if isinstance(current, (dict, list)):
+            log.warning("Teensy-Einstellung %s zeigt auf einen ganzen Abschnitt "
+                        "— verworfen.", dotted)
+            rejected.append(dotted)
+            continue
+
+        # Der Typ des BISHERIGEN Werts entscheidet, was erlaubt ist — genau
+        # wie beim Einlesen der Datei (siehe _merge_value).
+        merged = _merge_value(current, value, dotted)
+        if merged == current and value != current:
+            rejected.append(dotted)     # _merge_value hat schon geloggt
+            continue
+        container[key] = merged
+        applied[dotted] = merged
+
+    if applied:
+        # Die Zusagen der Datei gelten auch fuer den Teensy: ein Bereich mit
+        # max <= min macht jeden Regler unbedienbar, und ein Wert ausserhalb
+        # seines Bereichs laesst sich hinterher nicht mehr zurueckdrehen.
+        _fix_ranges(data)
+        _clamp_into_ranges(data)
+
+    return applied, rejected
 
 def get(dotted: str, default: Any = None) -> Any:
     """Wert ueber einen Pfad lesen: get("theme.spacing.m") -> 16.

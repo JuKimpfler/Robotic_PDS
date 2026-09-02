@@ -457,12 +457,48 @@ class AppBridge(QObject):
         except Exception:                            # noqa: BLE001
             log.exception("Konfiguration von Node %d konnte nicht gespeichert werden.", node_id)
             return
+
+        self._apply_teensy_settings(node_id, registry)
+
         if written:
             self.statusMessage.emit(
                 f"Parameter-Konfiguration von Node {node_id} übernommen und gespeichert.")
             self._diag.add_local(f"Node {node_id}: Parameter-Konfiguration übernommen", 0)
             if node_id == self._active_node:
                 self._params.reload_for_node(node_id)
+
+    def _apply_teensy_settings(self, node_id: int, registry: ChannelRegistry) -> None:
+        """Oberflächen-Einstellungen aus dem Deskriptor übernehmen (PDS 2.2).
+
+        Eigener Schalter neben autoApplyTeensyConfig: Kanalnamen will man
+        praktisch immer vom Roboter, das Aussehen des eigenen Tablets nicht
+        unbedingt. Ein Fehler hier darf außerdem die Übernahme der
+        Parameter-Konfiguration nicht mitreißen — deshalb gefangen.
+        """
+        if not registry.settings or not self._settings.autoApplyTeensySettings:
+            return
+        try:
+            applied, rejected = runtime_config.sync_gui_settings(node_id, registry.settings)
+        except Exception:                            # noqa: BLE001
+            log.exception("Einstellungen von Node %d konnten nicht übernommen werden.",
+                          node_id)
+            return
+        if not applied and not rejected:
+            return                                   # unverändert, nichts zu melden
+
+        if applied:
+            self._settings.reloadExternal()
+            self.statusMessage.emit(
+                f"{len(applied)} Einstellung(en) von Node {node_id} übernommen.")
+            self._diag.add_local(
+                f"Node {node_id}: {len(applied)} Oberflächen-Einstellung(en) "
+                f"vom Teensy übernommen", 0)
+        if rejected:
+            # Sichtbar machen, statt still zu schlucken: ein Tippfehler in
+            # channel_config.h fällt sonst nie auf.
+            self._diag.add_local(
+                f"Node {node_id}: Einstellung(en) verworfen — "
+                + ", ".join(sorted(rejected)[:5]), 1)
 
     def _apply_registry(self, registry: ChannelRegistry) -> None:
         """Empfangene Namen/Einheiten/Overlays in alle Tabs übernehmen."""

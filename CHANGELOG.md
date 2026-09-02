@@ -22,6 +22,178 @@ welchem Roboter läuft.
 
 ---
 
+## 2.8 — Das PDS hält den Roboter nie wieder auf, und der Roboter stellt die Oberfläche ein
+
+Zwei Dinge in einem Zug, weil beide dieselbe Stelle betreffen: die
+Teensy-Bibliothek. Der erste Teil ist eine Fehlerbehebung, der zweite eine
+Erweiterung.
+
+### Der Fehler: ohne Gegenstelle stand der Teensy
+
+Gemeldet wurde: *„Das PDS legt den ganzen Teensy lahm, sobald es ohne
+angeschlossenen PS4-Controller gestartet wird. Ist der Controller einmal
+eingesteckt, läuft alles wieder — auch wenn man ihn danach wieder abzieht."*
+
+Dahinter steckten **vier** Stellen, die alle dasselbe gemeinsam hatten: sie
+waren nicht nach oben begrenzt. Solange die Gegenstelle sauber mit 100 Hz
+sendete, fiel keine davon auf.
+
+1. **Der Namens-Deskriptor entstand in EINEM Zug.** Bis zu 24 kB JSON,
+   über 1500 `vsnprintf`-Aufrufe — mitten in `update()`, also mitten in der
+   Regelschleife des Roboters. Und ausgerechnet **ohne** GUI passierte das
+   regelmäßig, weil der Deskriptor dann alle 5 s wiederholt wird.
+2. **Eine zappelnde Verbindung löste den Versand immer wieder neu aus.**
+   `linkOk()` wird aus dem Alter des letzten Fast-Pakets gebildet (150 ms).
+   Kam die Fernsteuerung unregelmäßig, wechselte der Zustand mehrmals pro
+   Sekunde — und **jede** steigende Flanke startete einen kompletten
+   Deskriptor-Versand neu, samt Neubau.
+3. **Der Param-Parser blieb an einem abgebrochenen Paket hängen.** Brach die
+   Gegenstelle mitten im Paket ab (Absturz, Neustart des Node, Wackler),
+   wartete er unbegrenzt auf die fehlenden Bytes — und verfütterte dabei die
+   erste Hälfte des **nächsten** Pakets als vermeintliche Nutzlast. Das
+   Ergebnis war kein leerer Wert, sondern ein **Zufallswert in
+   `fastParam()`**: bei einem Joystick-Kanal fährt der Roboter davon.
+4. **`Serial.print()` durfte warten.** `pdsWarn()` prüfte nur, ob ein
+   USB-Terminal offen ist — nicht, ob dessen Puffer die Zeile auch aufnimmt.
+   Auf dem Teensy 4 wartet `print()` in diesem Fall bis zu **120 ms**.
+   `printStatus()` hatte gar keine Prüfung.
+
+Warum der Controller den Unterschied machte, stand auf der anderen Seite der
+Leitung: `ControllerBridge.poll()` fragte `pygame.joystick.get_count()`
+**genau dann mit vollen 100 Hz ab, wenn kein Controller angeschlossen war** —
+die Drosselung auf 2 Hz war als `if self._joystick is None or <Zeit
+abgelaufen>` geschrieben und damit ohne Controller wirkungslos. SDL geht
+dabei über die Geräteliste, im selben Thread, der 10 ms später das nächste
+Fast-Paket packen soll. Der Takt wurde unregelmäßig — und traf auf einen
+Teensy, der genau darauf empfindlich reagierte.
+
+### Die Zusage: `update()` wartet auf nichts
+
+Der eigentliche Punkt ist nicht die einzelne Behebung, sondern dass das jetzt
+eine **zugesicherte Eigenschaft** der Bibliothek ist, nicht länger eine
+Eigenschaft des Betriebsfalls. Vier Mechanismen, alle einstellbar:
+
+| | Was | Standard |
+|---|---|---|
+| **Zeitbudget** | Alles außer Telemetrie und Param-Empfang läuft nur, solange vom Budget etwas übrig ist. Der Rest wartet auf den nächsten Aufruf. | `PDS_UPDATE_BUDGET_US` = 400 µs |
+| **RX-Budget** | Der Parser liest höchstens so viele Bytes je Aufruf. Ein Dauerstrom auf der Leitung kann die Schleife nicht festhalten. | `PDS_RX_BYTE_BUDGET` = 1024 |
+| **Scheiben** | Der Deskriptor wird über viele `update()` hinweg zusammengesetzt (Zustandsmaschine über die Abschnitte). | `PDS_DESC_BUILD_STEP` = 12 Einträge |
+| **Notbremse** | Dauert ein `update()` trotzdem länger als das Panik-Limit, schaltet PDS erst den Deskriptor ab und danach sich selbst. Telemetrie und Fernsteuerung bleiben so lange wie möglich. | `PDS_UPDATE_PANIC_US` = 5 ms, 5 Verstöße |
+
+Dazu: ein **Resync-Timeout** im Parser (`PDS_RX_PACKET_TIMEOUT_MS` = 50 ms)
+gegen abgebrochene Pakete, ein **Mindestabstand** zwischen zwei
+Deskriptor-Versänden (`PDS_DESC_MIN_GAP_MS` = 1 s) gegen die zappelnde
+Verbindung, und `Serial`-Ausgaben, die auf `availableForWrite()` prüfen und
+lieber ausfallen als zu warten (`PDS.setSerialDiagnostics(false)` schaltet
+sie ganz ab).
+
+Nachmessen kann man das im Sketch:
+
+```cpp
+PDS.printStatus();          // ... | update 41/312 us | ...
+PDS.maxUpdateMicros();      // längster Aufruf seit dem Start
+PDS.budgetOverruns();       // wie oft das Budget nicht reichte
+PDS.degraded();             // true = Notbremse hat den Deskriptor abgeschaltet
+```
+
+`tools/desc_json_check.py` führt die Bibliothek dafür wirklich aus: der
+Deskriptor **muss** über mehrere `update()` entstehen, ein abgebrochenes
+Paket **muss** den Parser zurücksetzen (und das nächste Paket muss mit dem
+richtigen Wert ankommen, nicht mit einem aus der Paketmitte), und die
+Notbremse **muss** greifen.
+
+### Neu: der Roboter stellt die Oberfläche ein
+
+Alles, was in `settings.json` der GUI steht, lässt sich jetzt aus der
+Firmware vorgeben — mit demselben Punktpfad:
+
+```cpp
+void setup() {
+    PDS.begin();
+    PDS.setting("ui.dark", true);
+    PDS.setting("ui.fontScale", 1.2f);
+    PDS.setting("plotter.historySeconds", 20);
+    PDS.setting("theme.colors.dark.accentGreen", "#00ff88");
+    PDS.guiBatteryWarning(10, 11.5f, 10.8f);     // dasselbe, nur benannt
+}
+```
+
+Der Typ ergibt sich aus dem geschriebenen Wert (`true` → Wahrheitswert,
+`20` → Zahl, `"#..."` → Text). Statt im Sketch geht auch die Tabelle
+`GUI_SETTINGS[]` in `channel_config.h`. Die Werte reisen im Deskriptor mit
+(neuer Abschnitt `"settings"`), werden auf dem Pi je Node gespeichert und
+gelten damit auch beim nächsten Start ohne eingeschalteten Roboter.
+
+Es gilt dieselbe Konfliktregel wie für Kanalnamen und Overlays: **unveränderte
+Firmware überschreibt keine Handarbeit, geänderte Firmware setzt sich durch.**
+Und dasselbe Fehlerprinzip wie für die Datei selbst: ein unsinniger Wert
+kostet höchstens sein eigenes Feld —
+
+* Pfad gibt es nicht → verworfen,
+* Typ passt nicht → verworfen, der lokale Wert bleibt,
+* Pfad zeigt auf einen ganzen Abschnitt → verworfen,
+* Wert außerhalb seines Bereichs → hineingelegt,
+* `network.*` → **grundsätzlich** verworfen. Eine falsche IP in der Firmware
+  würde genau die Leitung kappen, über die man sie korrigieren müsste.
+
+Verworfene Schlüssel landen im Logbuch der GUI, damit ein Tippfehler in
+`channel_config.h` nicht still verschwindet. Im Diagnose-Tab steht dafür ein
+eigener Schalter neben „Konfiguration vom Teensy übernehmen": die Kanalnamen
+will man praktisch immer vom Roboter, das Aussehen des eigenen Tablets nicht
+unbedingt.
+
+### Neu: die Bibliothek ist zur Laufzeit einstellbar
+
+Was vorher nur als Build-Flag ging, geht jetzt auch im Sketch — begrenzt statt
+verworfen, ein Tippfehler kostet also nie mehr als diese eine Einstellung:
+
+```cpp
+PDS.setTelemetryRate(50);          // 1..1000 Hz  (halbiert die Leitungslast)
+PDS.enableTelemetry(false);        // Kanäle weiter pflegen, nichts senden
+PDS.setParamAckInterval(1000);     // Rückmeldung seltener
+PDS.setEventRateLimit(5);          // höchstens 5 Meldungen/s
+PDS.setDescriptorRepeat(10000);    // Namensmeldung ohne GUI alle 10 s
+PDS.setFastTimeout(200);           // Schwelle für linkOk()
+PDS.setUpdateBudget(250);          // Zeitbudget je update()
+PDS.setRxByteBudget(512);
+PDS.setPanicLimit(3000, 3);        // Notbremse schärfer stellen
+PDS.enable(false);                 // PDS ganz stilllegen (und wieder an)
+```
+
+### Geändert
+
+* **`teensy_firmware/src/PDS.h`/`PDS.cpp`** — Zeitbudget, Notbremse,
+  scheibenweiser Deskriptor-Bau, RX-Budget, Resync-Timeout, Mindestabstand
+  zwischen Deskriptor-Versänden, nicht-blockierende `Serial`-Ausgabe,
+  Einstellungstabelle, alle Laufzeit-Setter. `PDS_VERSION` = 2.2.
+* **`teensy_firmware/src/params.h`** — `SettingDef` und die Werttypen.
+  Kein Wire-Format geändert, `PDS_WIRE_VERSION` bleibt 2: der Deskriptor
+  ist JSON, ein zusätzlicher Abschnitt ist für ältere GUIs unsichtbar.
+* **`teensy_firmware/src/channel_config.h`** — Abschnitt 5 `GUI_SETTINGS[]`.
+  Eine `channel_config.h` aus einem bestehenden Projekt kennt die Tabelle
+  nicht und übersetzt unverändert weiter (Weiche `PDS_HAS_GUI_SETTINGS`).
+* **`rpi5_monitor/.../app_settings.py`** — `apply_teensy_settings()` mit
+  Punktpfad-Auflösung bis in Listen hinein, Typprüfung und Sperrliste; neuer
+  Schlüssel `ui.autoApplyTeensySettings`.
+* **`rpi5_monitor/.../runtime_config.py`** — `sync_gui_settings()` mit
+  Fingerabdruck je Node (`gui_settings.json`).
+* **`rpi5_monitor/.../channel_registry.py`** — Abschnitt `settings` aus dem
+  Deskriptor, defensiv gelesen (nur Skalare).
+* **`rpi5_monitor/.../bridge/app_bridge.py`** — Übernahme, Statusmeldung und
+  Logbucheintrag für Übernommenes wie Verworfenes.
+* **`rpi5_monitor/.../bridge/settings_bridge.py`**, **`DiagnosticsView.qml`** —
+  der zweite Schalter und `reloadExternal()`, damit die Oberfläche den neuen
+  Stand auch anzeigt und nicht nur speichert.
+* **`rpi5_monitor/.../bridge/controller_bridge.py`** — die Hot-Plug-Abfrage
+  ist jetzt **immer** auf 2 Hz gedrosselt (siehe oben).
+* **`tools/hostsim/`**, **`tools/desc_json_check.py`**, **`tools/selftest.py`** —
+  die Attrappe kann jetzt auch Bytes in den Empfänger legen und die Uhr
+  während eines `update()` weiterlaufen lassen; damit sind Blockierfreiheit
+  und Einstellungen wirklich ausgeführt und nicht nur übersetzt (+21
+  Prüfungen).
+
+---
+
 ## 2.7 — Der Plotter richtet sich nach der Hardware, statt umzukippen
 
 Version 2.6 hat die großen Posten beseitigt. Übrig blieb ein Verhalten, das

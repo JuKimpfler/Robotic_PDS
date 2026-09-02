@@ -190,6 +190,138 @@ finden sich von allein wieder ein.
 
 ---
 
+## Blockierfreiheit — `update()` wartet auf nichts
+
+Die wichtigste Zusage dieser Bibliothek: **`PDS.update()` haelt den Roboter
+unter keinen Umstaenden an.** Nicht ohne GUI, nicht wenn die Gegenstelle
+mitten im Satz abstuerzt, nicht bei Muell auf der Leitung — und auch nicht,
+wenn in dieser Bibliothek selbst etwas kaputt ist.
+
+Das ist keine Eigenschaft des Normalbetriebs, sondern vier eingebaute
+Grenzen:
+
+| | Was | Standard | Zur Laufzeit |
+|---|---|---|---|
+| **Zeitbudget** | Alles ausser Telemetrie und Param-Empfang laeuft nur, solange vom Budget etwas uebrig ist. Der Rest wartet auf den naechsten Aufruf. | 400 µs | `setUpdateBudget(us)` |
+| **RX-Budget** | Der Param-Parser liest hoechstens so viele Bytes je Aufruf. Ein Dauerstrom auf der Leitung kann die Schleife nicht festhalten. | 1024 B | `setRxByteBudget(n)` |
+| **Scheiben** | Der Namens-Deskriptor (bis 24 kB JSON) wird ueber viele `update()` hinweg zusammengesetzt statt in einem Rutsch. | 12 Eintraege/Aufruf | `PDS_DESC_BUILD_STEP` |
+| **Notbremse** | Dauert ein `update()` trotzdem laenger als das Panik-Limit, faellt zuerst der Deskriptor weg und danach PDS ganz. Telemetrie und Fernsteuerung bleiben so lange wie moeglich. | 5 ms, 5 Verstoesse | `setPanicLimit(us, n)` |
+
+Dazu kommen ein **Resync-Timeout** im Parser (50 ms) gegen abgebrochene
+Pakete und ein **Mindestabstand** zwischen zwei Deskriptor-Versaenden (1 s),
+damit eine zappelnde Verbindung keinen Dauerversand ausloest.
+
+`Serial`-Ausgaben der Bibliothek pruefen vorher `availableForWrite()` und
+fallen lieber aus, als zu warten: auf dem Teensy 4 wartet `Serial.print()`
+bis zu **120 ms**, wenn der Host die Schnittstelle offen hat, sie aber nicht
+leerliest — ein weggescrolltes Terminalfenster reicht dafuer.
+`PDS.setSerialDiagnostics(false)` schaltet sie ganz ab.
+
+Nachmessen statt hoffen:
+
+```cpp
+PDS.printStatus();          // ... | update 41/312 us | ...
+PDS.maxUpdateMicros();      // laengster Aufruf seit dem Start
+PDS.lastUpdateMicros();
+PDS.budgetOverruns();       // wie oft das Budget nicht reichte
+PDS.degraded();             // true = Notbremse hat den Deskriptor abgeschaltet
+PDS.enabled();              // false = Notbremse hat PDS abgeschaltet
+PDS.enable(true);           // hebt beides wieder auf
+```
+
+Nicht dazu gehoert der Roboter-Code selbst: bleibt `loop()` an anderer Stelle
+haengen, hilft nur der Watchdog (siehe oben).
+
+---
+
+## Die Oberflaeche vom Roboter aus einstellen
+
+Alles, was in der `settings.json` der GUI steht, laesst sich aus der Firmware
+vorgeben — mit demselben Punktpfad:
+
+```cpp
+void setup() {
+    PDS.begin();
+    PDS.setting("ui.dark", true);                       // Wahrheitswert
+    PDS.setting("ui.fontScale", 1.2f);                  // Zahl
+    PDS.setting("plotter.historySeconds", 20);          // ganze Zahl
+    PDS.setting("theme.colors.dark.accentGreen", "#00ff88");   // Farbe
+}
+```
+
+Der Typ ergibt sich aus dem geschriebenen Wert. Fuer die haeufigsten Faelle
+gibt es benannte Abkuerzungen:
+
+```cpp
+PDS.guiDarkMode(true);
+PDS.guiFontScale(1.2f);
+PDS.guiKiosk(true);
+PDS.guiStartTab(2);                            // 2 = Systemansicht
+PDS.guiBatteryWarning(10, 11.5f, 10.8f);       // Kanal, Warnung, Alarm
+PDS.guiPlotter(20, 500, 8);                    // Sekunden, Punkte, Kurven
+PDS.guiCurveColor(0, "#00ff88");
+PDS.guiColor("accentGreen", "#00ff88");        // Theme-Farbe (dunkel)
+```
+
+Statt im Sketch geht auch die Tabelle `GUI_SETTINGS[]` in
+`channel_config.h` — dieselbe Wirkung, nur an einer Stelle. Im Sketch
+gesetzte Werte gewinnen (sie laufen nach `begin()`).
+
+Die Werte reisen im Namens-Deskriptor mit, werden auf dem Raspberry Pi **je
+Node** gespeichert und gelten damit auch beim naechsten Start ohne
+eingeschalteten Roboter. Es gilt dieselbe Konfliktregel wie fuer Kanalnamen
+und Overlays: **unveraenderte Firmware ueberschreibt keine Handarbeit,
+geaenderte Firmware setzt sich durch.**
+
+Und dasselbe Fehlerprinzip wie fuer die Datei selbst — ein unsinniger Wert
+kostet hoechstens sein eigenes Feld:
+
+| Fall | Folge |
+|---|---|
+| Pfad gibt es nicht | verworfen, steht im Logbuch der GUI |
+| Typ passt nicht (`"ja"` an einem Schalter) | verworfen, der lokale Wert bleibt |
+| Pfad zeigt auf einen ganzen Abschnitt | verworfen |
+| Wert ausserhalb seines Bereichs | hineingelegt (`ranges` in settings.json) |
+| `network.*` | **grundsaetzlich** verworfen |
+
+`network.*` ist bewusst gesperrt: eine falsche IP in der Firmware wuerde
+genau die Leitung kappen, ueber die man sie korrigieren muesste. Der Roboter
+darf sein Aussehen bestimmen, nicht den Weg zu sich selbst.
+
+Im Diagnose-Tab steht dafuer ein eigener Schalter neben „Konfiguration vom
+Teensy uebernehmen": die Kanalnamen will man praktisch immer vom Roboter, das
+Aussehen des eigenen Tablets nicht unbedingt.
+
+Weitere Methoden: `PDS.removeSetting("ui.dark")`, `PDS.clearSettings()`,
+`PDS.settingCount()`. Nach einer Aenderung zur Laufzeit meldet
+`PDS.announceChannelNames()` den neuen Stand.
+
+---
+
+## Die Bibliothek zur Laufzeit einstellen
+
+Was frueher nur als Build-Flag ging, geht auch im Sketch. Alle Setter
+**begrenzen** ihren Wert, statt ihn zu verwerfen oder blind zu uebernehmen —
+ein Tippfehler kostet nie mehr als diese eine Einstellung.
+
+```cpp
+PDS.setTelemetryRate(50);        // 1..1000 Hz; 50 Hz halbiert die Leitungslast
+PDS.enableTelemetry(false);      // Kanaele weiter pflegen, nichts senden
+PDS.setParamAckInterval(1000);   // Rueckmeldung seltener (100..10000 ms)
+PDS.enableParamAck(false);
+PDS.setEventRateLimit(5);        // hoechstens 5 Meldungen/s (1..200)
+PDS.enableEvents(false);
+PDS.setDescriptorRepeat(10000);  // Namensmeldung ohne GUI alle 10 s (0 = aus)
+PDS.enableDescriptor(false);
+PDS.setFastTimeout(200);         // Schwellen fuer linkOk()
+PDS.setSlowTimeout(2000);
+PDS.setAutoChannelBase(50);      // ab hier vergibt plot()/track()
+PDS.setSerialDiagnostics(false); // keine Klartextmeldungen ueber USB
+PDS.enable(false);               // PDS ganz stilllegen (update() kostet dann nichts)
+```
+
+---
+
 ## Diagnose
 
 ```cpp
@@ -202,6 +334,10 @@ PDS.printStatus();             // eine Klartext-Zeile auf USB-Serial
 | `PDS.fastParamAgeMs()` | Alter des letzten Fast-Pakets in ms (normal 0…10) |
 | `PDS.txPacketCount()` / `txDropCount()` | gesendete / wegen vollem Puffer verworfene Pakete |
 | `PDS.paramSyncLosses()` | verlorene Bytes auf der RX-Leitung (Verkabelung/Baudrate) |
+| `PDS.rxResyncCount()` | wie oft ein abgebrochenes Paket den Parser zurueckgesetzt hat |
+| `PDS.lastUpdateMicros()` / `maxUpdateMicros()` | Dauer des letzten / laengsten `update()` |
+| `PDS.budgetOverruns()` / `panicCount()` | wie oft Zeitbudget bzw. Panik-Limit gerissen wurden |
+| `PDS.degraded()` / `enabled()` | hat die Notbremse zugeschlagen? |
 | `PDS.usedChannels()` | wie viele Kanaele die Auto-Vergabe schon belegt hat |
 | `PDS.eventSentCount()` / `eventDropCount()` | gesendete / verworfene Ereignisse |
 | `PDS.watchdogResetOccurred()` | kam der letzte Reset vom Watchdog? |
@@ -225,6 +361,14 @@ Roboter-Code nichts zu tun.
 | `PDS_MAX_UNITS` | 32 | Wie viele Kanaele eine Einheit tragen koennen. |
 | `PDS_EVENT_QUEUE_SIZE` | 8 | Wie viele Ereignisse zwischengepuffert werden. |
 | `PDS_FW_VERSION` | "" | Version der Roboter-Firmware, z. B. `-DPDS_FW_VERSION='"1.4.2"'`. |
+| `PDS_MAX_SETTINGS` | 32 | Wie viele Oberflaechen-Einstellungen der Teensy vorgeben kann. |
+| `PDS_UPDATE_BUDGET_US` | 400 | Zeitbudget je `update()` fuer alles ausser Telemetrie/Empfang. |
+| `PDS_UPDATE_PANIC_US` | 5000 | Ab dieser Dauer gilt ein `update()` als Fehlfunktion. |
+| `PDS_UPDATE_PANIC_STRIKES` | 5 | So oft, bevor die Notbremse greift (0 = aus). |
+| `PDS_RX_BYTE_BUDGET` | 1024 | Hoechstens so viele empfangene Bytes je `update()`. |
+| `PDS_RX_PACKET_TIMEOUT_MS` | 50 | Nach dieser Ruhe faengt der Parser von vorn an (0 = aus). |
+| `PDS_DESC_MIN_GAP_MS` | 1000 | Mindestabstand zwischen zwei Deskriptor-Versaenden. |
+| `PDS_DESC_BUILD_STEP` | 12 | Eintraege je `update()` beim Bauen des Deskriptors. |
 
 Ob die Konfiguration in den Puffer passt, muss man nicht raten:
 `python tools/desc_json_check.py` uebersetzt die Bibliothek fuer den PC,

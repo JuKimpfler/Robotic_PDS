@@ -152,6 +152,36 @@ class SettingsBridge(QObject):
             self._data["ui"]["autoApplyTeensyConfig"] = value
             self._touch()
 
+    # ── Aussehen vom Teensy übernehmen (PDS 2.2) ─────────────────────────
+    #  Getrennt von autoApplyTeensyConfig: die Kanalnamen will man praktisch
+    #  immer vom Roboter, das Aussehen des eigenen Geräts nicht unbedingt.
+    @pyqtProperty(bool, notify=settingsChanged)
+    def autoApplyTeensySettings(self):
+        return self._data["ui"]["autoApplyTeensySettings"]
+
+    @pyqtSlot(bool)
+    def setAutoApplyTeensySettings(self, value: bool) -> None:
+        value = bool(value)
+        if value != self._data["ui"]["autoApplyTeensySettings"]:
+            self._data["ui"]["autoApplyTeensySettings"] = value
+            self._touch()
+
+    def reloadExternal(self) -> None:
+        """Der aktive Stand wurde von aussen geändert (Teensy-Übernahme).
+
+        `self._data` IST `app_settings.SETTINGS` und wurde an Ort und Stelle
+        verändert — es ist also nichts zu kopieren, nur zu melden. Ohne diese
+        Signale stünde der neue Wert zwar in der Datei, die Oberfläche zeigte
+        aber weiter den alten (QML wertet nur bei einem Signal neu aus).
+
+        Geschrieben hat runtime_config.sync_gui_settings() schon selbst —
+        deshalb wird hier bewusst KEIN Speichertimer angestoßen.
+        """
+        self.themeChanged.emit()
+        self.kioskChanged.emit()
+        self.settingsChanged.emit()
+        self.settingsReplaced.emit()
+
     # ── Tab, mit dem die Oberfläche startet ───────────────────────────────
     @pyqtProperty(int, notify=settingsChanged)
     def startTab(self):
