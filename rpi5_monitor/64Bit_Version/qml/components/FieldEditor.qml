@@ -159,6 +159,31 @@ Item {
             }
         }
 
+        // ── choice ────────────────────────────────────────────────────────
+        //  Wenige feste Optionen (z. B. Verlaufsart) als Kippschalter-Reihe,
+        //  genau wie die Hintergrundbild-Auswahl der Gruppe — kein Dropdown,
+        //  das man mit dem Finger auf dem Touchscreen kaum trifft.
+        Loader {
+            width: parent.width
+            visible: active
+            active: root.fType === "choice"
+            sourceComponent: Flow {
+                width: parent.width
+                spacing: Theme.spacingXs
+                Repeater {
+                    model: root.field.options || []
+                    delegate: AppButton {
+                        required property var modelData
+                        height: Theme.touchTargetMin
+                        text: modelData.label
+                        checkable: true
+                        checked: String(root.field.value) === String(modelData.value)
+                        onClicked: root.commit(root.fKey, modelData.value)
+                    }
+                }
+            }
+        }
+
         // ── channel ───────────────────────────────────────────────────────
         //  Zahl UND Name: die Nummer allein sagt bei 200 Kanälen nichts.
         Loader {

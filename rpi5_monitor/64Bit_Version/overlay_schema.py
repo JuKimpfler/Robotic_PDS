@@ -75,12 +75,24 @@ KIND_HINTS = {
 
 # Touch-taugliche Farbauswahl: lieber acht gute Farben zum Antippen als ein
 # Farbrad, das man mit dem Finger nicht trifft.
+#
+# Die letzten drei (Rot, Gelb, Blau) sind eigens für die dynamische
+# Textbox-Farbe da (siehe COLOR_FIELDS weiter unten): Grün gab es mit
+# "a5dc6e" schon, aber ein kräftiges Rot/Gelb/Blau fehlte unter den acht
+# ursprünglichen Farben.
 COLOR_PRESETS = (
     "#4ec9b0", "#19f3ec", "#9cdcfe", "#f0c060",
     "#f48771", "#c586c0", "#a5dc6e", "#ffffff",
+    "#e0524d", "#f2d94e", "#4aa3e0",
 )
 
 _DEFAULT_COLOR = COLOR_PRESETS[0]
+
+# Vorgabefarben für die dynamische Textbox-Farbe: linear grün->rot,
+# Schwellenwert gelb/blau — wie gewünscht, aber über "color_low"/"color_high"
+# in jedem Eintrag frei änderbar.
+_COLOR_LINEAR_LOW,    _COLOR_LINEAR_HIGH    = "#a5dc6e", "#e0524d"
+_COLOR_THRESHOLD_LOW, _COLOR_THRESHOLD_HIGH = "#4aa3e0", "#f2d94e"
 
 
 def entry_kind(entry: dict) -> str:
@@ -124,10 +136,48 @@ def _pos_fields() -> List[dict]:
     ]
 
 
-def _channel_field(key: str, label: str, allow_none: bool = False) -> dict:
+def _channel_field(key: str, label: str, allow_none: bool = False, **kw) -> dict:
     return _f(key, label, "channel",
               min=-1 if allow_none else 0, max=MAX_FLOATS - 1, step=1,
-              allowNone=allow_none)
+              allowNone=allow_none, **kw)
+
+
+def _color_dynamic_fields() -> List[dict]:
+    """Felder für die dynamische Textbox-Farbe — gemeinsam für "text" und
+    "textgrid", weil beide dieselbe Anzeige (eine Textbox pro Kanalwert)
+    haben.
+
+    Immer ALLE Felder, auch wenn "linear" gerade gar keine Schwelle
+    benutzt: das Schema kennt (wie beim Rest des Editors, z. B. bei den
+    Zeiger-Grenzwerten) keine Bedingungen zwischen Feldern — ein neues
+    Feld ist so eine Zeile hier statt einer Fallunterscheidung in QML.
+    Ungenutzte Felder stören kaum, ein bedingtes Formular wäre die
+    kompliziertere Antwort auf ein selten wechselndes Detail.
+    """
+    return [
+        _f("color_dynamic", "Farbe nach Wert", "bool", default=False,
+           hint="Ändert die Farbe der Textbox laufend nach einem Kanalwert."),
+        _f("color_mode", "Verlaufsart", "choice", default="linear",
+           options=[
+               {"value": "linear", "label": "Linear (Grün → Rot)"},
+               {"value": "threshold", "label": "Schwelle (Gelb / Blau)"},
+           ],
+           hint="Linear: Farbe wandert stetig zwischen Minimum und Maximum. "
+                "Schwelle: Farbe springt beim Über-/Unterschreiten um."),
+        _channel_field("color_channel", "Kanal für die Farbe", True,
+                       hint="Kein Kanal gewählt = derselbe Kanal, der auch "
+                            "angezeigt wird."),
+        _f("color_min", "Minimum (linear)", "real",
+           min=-1e6, max=1e6, step=0.5, decimals=2, default=0.0),
+        _f("color_max", "Maximum (linear)", "real",
+           min=-1e6, max=1e6, step=0.5, decimals=2, default=1.0),
+        _f("color_threshold", "Schwellenwert", "real",
+           min=-1e6, max=1e6, step=0.5, decimals=2, default=0.5),
+        _f("color_low", "Farbe: niedrig / unter Schwelle", "color",
+           default=_COLOR_LINEAR_LOW),
+        _f("color_high", "Farbe: hoch / über Schwelle", "color",
+           default=_COLOR_LINEAR_HIGH),
+    ]
 
 
 def _body_fields(prefix: str, title: str) -> List[dict]:
@@ -150,6 +200,7 @@ _SCHEMAS: dict[str, Callable[[], List[dict]]] = {
         _channel_field("channel_idx", "Kanal"),
         *_pos_fields(),
         _f("color", "Farbe", "color"),
+        *_color_dynamic_fields(),
     ],
     "textgrid": lambda: [
         _f("label", "Name des Blocks", "text",
@@ -164,6 +215,7 @@ _SCHEMAS: dict[str, Callable[[], List[dict]]] = {
         *_pos_fields(),
         _f("labels", "Kanalnamen anzeigen", "bool"),
         _f("color", "Farbe", "color"),
+        *_color_dynamic_fields(),
     ],
     "gauge": lambda: [
         _f("label", "Beschriftung", "text"),
@@ -269,11 +321,20 @@ def _ensure(entry: dict, path: list[str]) -> dict:
 
 
 def _default_for(field: dict) -> Any:
+    # Ausdruecklicher Vorgabewert geht vor — z. B. "color_dynamic" soll
+    # (anders als sonst jeder Schalter im Editor) frisch angelegt AUS
+    # sein, und "color_low"/"color_high" sollen die Grün/Rot- bzw.
+    # Gelb/Blau-Vorgabe bekommen statt der allgemeinen Standardfarbe.
+    if "default" in field:
+        return field["default"]
     ftype = field["type"]
     if ftype == "bool":
         return True
     if ftype == "color":
         return _DEFAULT_COLOR
+    if ftype == "choice":
+        options = field.get("options") or []
+        return options[0]["value"] if options else ""
     if ftype in ("int", "channel"):
         return int(field.get("min", 0))
     if ftype == "real":
@@ -324,6 +385,14 @@ def coerce(field: dict, value: Any) -> Any:
         # Nicht auf die aufgeloeste Liste reduzieren: "0-11" soll "0-11"
         # bleiben und nicht als zwoelf Einzelzahlen in der Datei landen.
         return str(value).strip()
+
+    if ftype == "choice":
+        text = str(value).strip()
+        options = field.get("options") or []
+        valid = {o["value"] for o in options}
+        if text in valid:
+            return text
+        return options[0]["value"] if options else text
 
     return str(value)
 

@@ -120,12 +120,24 @@ def _overlay_to_entry(o: dict, raw_index: int) -> list[dict]:
     if o.get("type") == "textgrid":
         out = expand_textgrid(o)
     else:
+        channel = o.get("channel_idx", o.get("channel", 0))
+        # "color_channel" leer/-1 -> derselbe Kanal, der auch angezeigt wird
+        # (siehe overlay_schema._color_dynamic_fields, Feld "color_channel").
+        color_channel = int(o.get("color_channel", -1))
         out = [{
             "label": o.get("label", ""),
-            "channel": o.get("channel_idx", o.get("channel", 0)),
+            "channel": channel,
             "xPct": float(o.get("x_pct", 5.0)),
             "yPct": float(o.get("y_pct", 8.0)),
             "color": o.get("color", "#4ec9b0"),
+            "colorDynamic": bool(o.get("color_dynamic", False)),
+            "colorMode": o.get("color_mode", "linear"),
+            "colorChannel": color_channel if color_channel >= 0 else channel,
+            "colorMin": float(o.get("color_min", 0.0)),
+            "colorMax": float(o.get("color_max", 1.0)),
+            "colorThreshold": float(o.get("color_threshold", 0.5)),
+            "colorLow": o.get("color_low", "#a5dc6e"),
+            "colorHigh": o.get("color_high", "#e0524d"),
         }]
     for cell in out:
         cell["rawIndex"] = raw_index

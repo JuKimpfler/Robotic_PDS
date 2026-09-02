@@ -50,6 +50,65 @@ Item {
         return (idx >= 0 && idx < root.values.length) ? root.values[idx] : fallback
     }
 
+    // ── Dynamische Textbox-Farbe ──────────────────────────────────────────
+    //  Rechnet aus modelData (siehe visuals_bridge._overlay_to_entry /
+    //  bridge.utils.expand_textgrid) und dem aktuellen Kanalwert die Farbe
+    //  der Box aus. Reine JS-Rechnung statt Python, weil sie sich mit jedem
+    //  Telemetrie-Tick ändert — dieselbe Stelle, an der auch der Textwert
+    //  selbst (ovText) live aus root.values kommt.
+    function _clamp01(v) { return Math.max(0, Math.min(1, v)) }
+
+    function _hexToRgb(hex) {
+        var h = String(hex || "#808080").replace("#", "")
+        if (h.length === 3) h = h[0]+h[0] + h[1]+h[1] + h[2]+h[2]
+        var num = parseInt(h.substring(0, 6), 16)
+        if (isNaN(num)) num = 0x808080
+        return { r: (num >> 16) & 255, g: (num >> 8) & 255, b: num & 255 }
+    }
+
+    function _rgbToHex(r, g, b) {
+        function h(n) {
+            var s = Math.max(0, Math.min(255, Math.round(n))).toString(16)
+            return s.length < 2 ? "0" + s : s
+        }
+        return "#" + h(r) + h(g) + h(b)
+    }
+
+    function _lerpColor(hexA, hexB, t) {
+        var a = root._hexToRgb(hexA), b = root._hexToRgb(hexB)
+        t = root._clamp01(t)
+        return root._rgbToHex(a.r + (b.r - a.r) * t,
+                               a.g + (b.g - a.g) * t,
+                               a.b + (b.b - a.b) * t)
+    }
+
+    // Naeherung der relativen Helligkeit (WCAG-Gewichtung) — entscheidet,
+    // ob schwarzer oder weisser Text auf der (beliebig eingefaerbten) Box
+    // lesbar bleibt. Genau der Punkt aus der Anforderung: die Textfarbe darf
+    // sich NICHT einfach mit der Box mitfaerben, sonst verschwindet z.B.
+    // gelber Text auf gelbem Grund.
+    function _isDarkColor(hex) {
+        var c = root._hexToRgb(hex)
+        var lum = 0.299 * c.r + 0.587 * c.g + 0.114 * c.b
+        return lum < 140
+    }
+
+    // Aktuelle Box-Farbe eines Overlays. Ohne aktivierte dynamische Farbe
+    // (oder ohne gueltigen Kanal) bleibt es bei modelData.color, wie bisher.
+    function overlayBoxColor(modelData) {
+        if (!modelData.colorDynamic) return modelData.color
+        var chn = modelData.colorChannel
+        if (chn < 0 || chn >= root.values.length) return modelData.color
+        var val = root.values[chn]
+        if (modelData.colorMode === "threshold") {
+            return val >= modelData.colorThreshold ? modelData.colorHigh
+                                                     : modelData.colorLow
+        }
+        var lo = modelData.colorMin, hi = modelData.colorMax
+        var t = (hi > lo) ? (val - lo) / (hi - lo) : 0
+        return root._lerpColor(modelData.colorLow, modelData.colorHigh, t)
+    }
+
     function _bodyState(b) {
         return {
             label: b.label,
@@ -252,6 +311,19 @@ Item {
                                 root.editing &&
                                 root.visuals.selectedList === "overlays" &&
                                 root.visuals.selectedIndex === modelData.rawIndex
+
+                            // ── Dynamische Farbe (siehe root.overlayBoxColor) ──
+                            readonly property bool dynamicColor: modelData.colorDynamic === true
+                            readonly property string boxColor: root.overlayBoxColor(modelData)
+                            // Text nie einfach in der Boxfarbe: bei aktiver
+                            // dynamischer Farbe kann die Box jede Farbe
+                            // annehmen (auch helle wie Gelb) — schwarzer bzw.
+                            // weisser Text je nach Helligkeit der Box bleibt
+                            // dagegen in jedem Fall lesbar.
+                            readonly property string textColor:
+                                ovDelegate.dynamicColor
+                                ? (root._isDarkColor(ovDelegate.boxColor) ? "#ffffff" : "#0a0a0f")
+                                : modelData.color
                             // Während der Geste laufen ALLE Zellen desselben
                             // Roheintrags mit — sonst löst sich ein Textraster
                             // beim Ziehen in Einzelteile auf.
@@ -263,24 +335,31 @@ Item {
                             width: ovLabel.implicitWidth + 12
                             height: ovLabel.implicitHeight + 6
 
-                            // Schwarz hinterlegter Hintergrund, damit der Text
-                            // auf jedem Bild lesbar bleibt (statt reinem
-                            // Textumriss zuvor).
+                            // Hintergrund: normalerweise schwarz hinterlegt,
+                            // damit der Text auf jedem Bild lesbar bleibt.
+                            // Mit aktiver dynamischer Farbe wird STATTDESSEN
+                            // die Box selbst eingefärbt (das ist die
+                            // "Farbänderung der Textbox") — die Lesbarkeit
+                            // übernimmt dann ovDelegate.textColor.
                             Rectangle {
                                 anchors.fill: parent
-                                color: "#0a0a0f"
-                                opacity: 0.85
+                                color: ovDelegate.dynamicColor ? ovDelegate.boxColor : "#0a0a0f"
+                                opacity: ovDelegate.dynamicColor ? 0.92 : 0.85
                                 radius: 3
                                 border.color: ovDelegate.selected
                                               ? Theme.highlight
-                                              : Qt.darker(ovDelegate.modelData.color, 1.4)
+                                              : Qt.darker(ovDelegate.dynamicColor
+                                                          ? ovDelegate.boxColor
+                                                          : ovDelegate.modelData.color, 1.4)
                                 border.width: ovDelegate.selected ? 2 : 1
+                                Behavior on color { ColorAnimation { duration: 150 } }
                             }
                             Rectangle {
                                 anchors.left: parent.left
                                 anchors.top: parent.top
                                 anchors.bottom: parent.bottom
                                 width: 3
+                                visible: !ovDelegate.dynamicColor
                                 color: ovDelegate.modelData.color
                             }
 
@@ -288,7 +367,7 @@ Item {
                                 id: ovLabel
                                 anchors.centerIn: parent
                                 text: ovDelegate.ovText
-                                color: ovDelegate.modelData.color
+                                color: ovDelegate.textColor
                                 font.pixelSize: 13
                                 font.bold: true
                             }

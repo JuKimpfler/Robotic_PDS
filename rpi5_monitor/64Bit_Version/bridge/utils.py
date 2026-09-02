@@ -113,6 +113,19 @@ def expand_textgrid(entry: dict, name_for) -> List[dict]:
     color = entry.get("color", "#4ec9b0")
     with_labels = bool(entry.get("labels", True))
 
+    # Dynamische Farbe gilt fuer den GANZEN Block gleich — ein Eintrag, eine
+    # Einstellung. Fehlt "color_channel" (kein Kanal gewaehlt, -1), faerbt
+    # sich jede Zelle nach IHREM EIGENEN angezeigten Kanal; siehe
+    # visuals_bridge._overlay_to_entry() fuer denselben Rueckfall bei "text".
+    color_dynamic = bool(entry.get("color_dynamic", False))
+    color_mode = str(entry.get("color_mode", "linear"))
+    color_channel = int(entry.get("color_channel", -1))
+    color_min = float(entry.get("color_min", 0.0))
+    color_max = float(entry.get("color_max", 1.0))
+    color_threshold = float(entry.get("color_threshold", 0.5))
+    color_low = entry.get("color_low", "#a5dc6e")
+    color_high = entry.get("color_high", "#e0524d")
+
     out: List[dict] = []
     for i, ch in enumerate(channels):
         col, row = i % cols, i // cols
@@ -122,5 +135,13 @@ def expand_textgrid(entry: dict, name_for) -> List[dict]:
             "xPct": x0 + col * dx,
             "yPct": y0 + row * dy,
             "color": color,
+            "colorDynamic": color_dynamic,
+            "colorMode": color_mode,
+            "colorChannel": color_channel if color_channel >= 0 else ch,
+            "colorMin": color_min,
+            "colorMax": color_max,
+            "colorThreshold": color_threshold,
+            "colorLow": color_low,
+            "colorHigh": color_high,
         })
     return out
