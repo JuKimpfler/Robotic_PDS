@@ -176,6 +176,11 @@ def nice_y_range(mn: float, mx: float) -> tuple[float, float] | None:
     Nebenbei ist eine Achse mit 0 / 0,5 / 1 auch schlicht besser abzulesen
     als eine mit 0,0317 / 0,4913 / 0,9509.
 
+    Ehrlichkeitshalber: gemessen (tools/plotter_bench.py) faellt eindeutig
+    die ZAHL der Bereichswechsel (91 -> 7 je 200 Bilder), der Zeitgewinn
+    liegt im Offscreen-Rasterer unter der Streuung. Der belegte Nutzen ist
+    damit vorerst die ruhige Achse.
+
     None heisst: aus diesen Zahlen laesst sich kein Bereich bilden.
     """
     if not (math.isfinite(mn) and math.isfinite(mx)):
@@ -536,6 +541,11 @@ class PyQtGraphHost(QQuickPaintedItem):
         self._set_idle(True)
         # Beim naechsten Sichtbarwerden muss wieder ein volles Bild kommen.
         self._dirty = True
+        # ... und das erste Bild danach ist einmalig teuer (das Widget wird
+        # neu layoutet). Ohne diesen Rueckstellpunkt zoege genau dieses eine
+        # Bild den Tiefpass hoch und der Takt bliebe fuer ein bis zwei
+        # Sekunden nach jedem Tabwechsel unnoetig langsam.
+        self._adapt_calls = 0
 
     def _redraw(self) -> None:
         if self._plot is None or self._plotter is None:
