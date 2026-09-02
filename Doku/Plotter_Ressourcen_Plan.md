@@ -1,12 +1,15 @@
 # Plan — Ressourcenverbrauch des Live-Plotters weiter reduzieren
 
-**Stand:** 2026-09-01, Basis Version 2.6 (Commit `80e70e8`)
-**Status:** Plan, noch nichts umgesetzt. Dieser Text ändert keinen Code.
+**Stand:** 2026-09-02, Basis Version 2.6 (Commit `80e70e8`)
+**Status:** **Phase 0 und Phase 1 sind umgesetzt** (Version 2.7, siehe
+`CHANGELOG.md`). Phase 2 ist nach der Messung **gestrichen**. Phase 3 und 4
+sind offen; die Messungen aus Phase 0 haben ihre Reihenfolge geändert.
 
 ---
 
 ## Inhalt
 
+0. [Stand der Umsetzung](#0-stand-der-umsetzung)
 1. [Ausgangslage — was 2.6 schon gebracht hat](#1-ausgangslage)
 2. [Wo der verbleibende Verbrauch liegt](#2-wo-der-verbleibende-verbrauch-liegt)
 3. [Maßnahmen in Phasen](#3-maßnahmen-in-phasen)
@@ -14,6 +17,71 @@
 5. [Absicherung — wie nichts kaputtgeht](#5-absicherung)
 6. [Randbeobachtung aus der Analyse](#6-randbeobachtung)
 7. [Was bewusst nicht angefasst wird](#7-was-bewusst-nicht-angefasst-wird)
+
+---
+
+## 0. Stand der Umsetzung
+
+| # | Maßnahme | Stand | Was die Messung sagt |
+|---|---|---|---|
+| M0 | `tools/plotter_bench.py` | **umgesetzt** | 11 Wert-Vergleiche in der CI; Messreihen unten |
+| — | Messfenster von `note_render()` | **umgesetzt** | endete vor `_render_to_pixmap()` — der Wächter sah den größten Posten nie |
+| M1 | Adaptiver Bildtakt | **umgesetzt** | 12,0 → 4,2 fps je nach Bilddauer, mit Hysterese |
+| M2 | Y-Bereich quantisieren | **umgesetzt** | 91 → 7 Bereichswechsel je 200 Bilder; Zeitgewinn im Rauschen |
+| M3 | Normierungsgrenzen puffern | **umgesetzt** | wertgleich; Grenzen wachsen je Block mit, damit nichts aus dem Bild läuft |
+| M4 | Statistik/Wächter an Sichtbarkeit | **umgesetzt** | 4 → 0 `statsChanged`/s bei weggeschaltetem Tab; Wächter-Timer aus |
+| M5 | Idle-Timer ereignisgesteuert | **verworfen** | spart höchstens 4 Weckrufe/s eines fast kostenlosen `_on_screen()`; braucht dafür neue QML→Host-Verdrahtung samt eigener Fehlerquelle (Plotter bleibt dunkel, wenn die Meldung ausbleibt) |
+| M6 | Datenpfad-Restposten | **umgesetzt** | keine Zuteilung mehr im Poll-Takt; Puffer 100 → 60 kB |
+| M7 | Legende als `QAbstractListModel` | **gestrichen** | gemessen 0,056 ms je Neuaufbau bei 8 Kurven = 0,28 ms/s. Es gibt nichts zu sparen |
+| M8 | Statischer Hintergrund + Scroll-Blitt | **offen, jetzt klar der nächste Schritt** | 1 Kurve × 250 Punkte kostet 31,9 ms, 8 × 600 kosten 46,7 ms — der Grundbetrag dominiert |
+| M9 | Rasterskala | **offen** | erst nach M8 sinnvoll zu bewerten |
+| M10 | OpenGL | **offen** | unverändert Phase 4 |
+| M11 | xcb dokumentieren | **umgesetzt** | `README_QML.md`, Hinweis in `setup_rpi5.sh` |
+
+### Die Messreihen (offscreen, 800 × 400, `python tools/plotter_bench.py`)
+
+```
+Datenpfad (2000 Pakete a 5 Samples)      append_block   get_plot_arrays
+  1 Kurve,  normiert                        0,010 ms        0,008 ms
+  8 Kurven, normiert                        0,054 ms        0,039 ms
+
+Rastern (vollstaendiger _redraw im Bild-Modus)          ms/Bild
+  1 Kurve  x 250 Punkte                                   31,9
+  1 Kurve  x 600 Punkte                                   35,6
+  4 Kurven x 500 Punkte                                   36,3
+  8 Kurven x 250 Punkte                                   40,8
+  8 Kurven x 600 Punkte                                   46,7
+
+QML-Legende (Delegates komplett neu)                    ms/Aufbau
+  1 Kurve                                                 0,018
+  8 Kurven                                                0,056
+```
+
+**Was daraus folgt — und die Annahmen des Plans korrigiert:**
+
+1. **Die 95/5-Aufteilung aus 2.6 stimmt, ihre Deutung nicht.** Es sind nicht
+   „die Kurven", die 95 % kosten: acht Kurven über 600 Punkte kosten nur
+   47 % mehr als eine einzige über 250. Der Grundbetrag von rund 32 ms —
+   Hintergrund, Gitter, Achsen — ist der eigentliche Posten. Damit ist
+   **M8 Stufe A** (Hintergrund einmal rastern und blitten) der mit Abstand
+   wirksamste verbleibende Schritt, und **K4** (Downsampling) praktisch
+   bedeutungslos: die Punktezahl steht kaum in der Rechnung.
+2. **K5 war eine Fehleinschätzung.** Der Legenden-Neuaufbau kostet bei acht
+   Kurven 0,056 ms. Bei 5 Hz sind das 0,28 ms pro Sekunde. M7 ist damit vom
+   Tisch — auch die dort erwogene Anhebung von `statsIntervalMs` auf 500 ms
+   erübrigt sich. (Einschränkung: gemessen wurde das Erzeugen und Zerstören
+   der Delegates an einem Repeater ohne sichtbares Fenster.)
+3. **K3 lässt sich hier nicht in Zeit umrechnen.** Die Zahl der
+   Bereichswechsel fällt eindeutig (91 → 7 je 200 Bilder), der
+   Zeitunterschied (31,7 gegen 32,3 ms) liegt aber unter der Streuung von
+   2,7 ms innerhalb einer Variante. Der belegte Nutzen von M2 ist vorerst
+   die ruhige, ablesbare Achse; ob daraus auf dem Zielgerät Rechenzeit wird,
+   ist dort zu messen.
+4. **Der Messwert, den es vorher gar nicht gab.** Das Messfenster von
+   `note_render()` endete vor `_render_to_pixmap()`. Der Wächter hat ein
+   80-ms-Budget überwacht, ohne den teuersten Schritt zu sehen. Seit das
+   behoben ist, fallen einzelne teure Durchläufe auf — deshalb schaltet der
+   Wächter jetzt erst nach drei in Folge ab statt nach einem.
 
 ---
 
@@ -102,7 +170,12 @@ Erst wenn Phase 0 die Posten K1–K8 in ms auf dem Zielgerät beziffert, werden 
 - `_snap_buf`/`_live_buf` auf Fenstergröße (500) statt Ringgröße (1000) dimensionieren.
 - Risiko: null (Verhalten identisch); Kandidat für Wert-für-Wert-Vergleich wie in 2.6.
 
-### Phase 2 — Legende ohne Neuaufbau (M, ~1 Tag)
+### Phase 2 — Legende ohne Neuaufbau (M, ~1 Tag) — **GESTRICHEN**
+
+> Phase 0 hat den Posten gemessen: ein kompletter Delegate-Neuaufbau kostet
+> bei acht Kurven **0,056 ms**, bei 5 Hz also 0,28 ms pro Sekunde. Es gibt
+> hier nichts zu sparen. Der Abschnitt bleibt stehen, damit nachvollziehbar
+> ist, warum er nicht umgesetzt wurde.
 
 **M7: `curveInfo` als `QAbstractListModel` statt `QVariantList` (greift K5)**
 - Rollen: `name, unit, color, last, min, max, valid`. Im Statistik-Takt nur `dataChanged` für die passenden Rollen senden — QML aktualisiert dann **Textproperties**, statt 8 Delegates zu zerstören und neu zu erzeugen.
@@ -111,6 +184,12 @@ Erst wenn Phase 0 die Posten K1–K8 in ms auf dem Zielgerät beziffert, werden 
 - Risiko: mittel-klein (QML-Änderung). Absicherung über `check_qml_bindings.py` und `qml_smoketest.py`, die den Plotter-Pfad bereits ausführen.
 
 ### Phase 3 — Renderer-Arbeit im Bildmodus reduzieren (der große Hebel, L)
+
+> Nach Phase 0 der klar nächste Schritt, und zwar deutlicher als gedacht:
+> acht Kurven über 600 Punkte kosten nur 47 % mehr als eine einzige über 250.
+> Der Grundbetrag (Hintergrund, Gitter, Achsen) ist der Posten — also **Stufe
+> A zuerst**, und die Punktezahl-Optimierungen aus Stufe B (min/max-Dekimation)
+> haben viel weniger Gewicht, als der ursprüngliche Text annimmt.
 
 **M8: Statischer Hintergrund + Scroll-Blitt (greift K2, der stärkste Posten)**
 Kernidee: Pro Bild ändert sich praktisch nur ein schmaler Streifen am rechten
@@ -174,21 +253,43 @@ greift erst, wenn klar ist (Phase 0/1), wie groß K2 nach M1/M2 wirklich noch is
 
 ---
 
-## 6. Randbeobachtung
+## 6. Randbeobachtung — geklärt, und schlimmer als gedacht
 
-Bei der Analyse ist aufgefallen (bewusst **nicht** geändert):
+Die Vermutung im ursprünglichen Text war, der Dirty-Skip aus 2.6 habe die
+gestrichelte „Live“-Kurve stillgelegt. Nachgemessen stimmt das nicht — die
+Ursache ist älter und grundsätzlicher:
 
-> **Eingefroren:** `append_block()` kehrt bei `_frozen` früh zurück, ohne
-> `bufferChanged` zu senden. Der Host zeichnet deshalb im eingefrorenen Zustand
-> gar nicht mehr — die gestrichelte „Live“-Kurve (`_update_frozen_overlay`,
-> Banner: „Aufzeichnung läuft weiter“) friert damit ebenfalls im Moment des
-> Einfrierens ein und zeigt nicht, was inzwischen weiterläuft.
+> `append_block()` kehrt bei `_frozen` früh zurück, **bevor** überhaupt in den
+> Ringpuffer geschrieben wird. Im eingefrorenen Zustand wird also gar nichts
+> aufgezeichnet. `live_snapshot()` liest denselben Ring und liefert deshalb
+> exakt den Stand vom Moment des Einfrierens.
 
-Das ist wohl eine ungewollte Nebenwirkung des Dirty-Skip aus 2.6. Für **diesen**
-Plan heißt das: Soll die Live-Kurve wirklich aktualisiert werden, muss der
-dafür nötige Redraw **im Ruhezustand budgetiert** werden (z. B. nur die Overlay-
-Kurve, nur im `idleFps`-Takt) — sonst gibt man die „Eingefroren kostet nichts“-
-Eigenschaft wieder her. Klären, bevor Phase 1 beginnt.
+Nachgewiesen: 60 Samples einspeisen, einfrieren, weitere 40 einspeisen —
+`live_snapshot()` endet danach unverändert auf `[55 56 57 58 59]`, und
+`_total` steht weiter auf 60. Die gestrichelte Kurve liegt damit exakt auf der
+eingefrorenen und war noch nie etwas anderes. Der frühe Rücksprung steht seit
+Commit `8eb9743` im Code, also lange vor 2.6.
+
+Damit ist das Banner **„EINGEFROREN — Aufzeichnung läuft weiter
+(gestrichelt)“** (`PlotterView.qml`) schlicht falsch: es verspricht etwas, das
+die Anwendung nicht tut.
+
+Bewusst **nicht** in diesem Zug geändert, weil beide möglichen Auflösungen
+Produktentscheidungen sind:
+
+* **Banner und Overlay entfernen** — ehrlich, kostet nichts, nimmt aber eine
+  angekündigte Fähigkeit weg.
+* **Wirklich weiter aufzeichnen** — `append_block()` schreibt weiter, nur
+  `snapshot()` liefert den festgehaltenen Stand. Das ist mehr als ein
+  Einzeiler: `visible_markers()` rechnet gegen `_total` und `_filled`, also
+  gegen das **laufende** Fenster. Sobald der Ring im eingefrorenen Zustand
+  weiterläuft, wandern die Marken relativ zum stehenden Bild — heute fällt
+  das nur deshalb nicht auf, weil `_total` mit einfriert. Dazu kommt der
+  Redraw, den die Live-Kurve braucht: der muss im Ruhetakt budgetiert werden
+  (nur die Overlay-Kurve, nur mit `idleFps`), sonst gibt man die
+  „Eingefroren kostet nichts“-Eigenschaft aus 2.6 wieder her.
+
+Zu entscheiden, bevor jemand daran arbeitet — nicht nebenbei.
 
 ---
 

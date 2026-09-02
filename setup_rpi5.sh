@@ -267,6 +267,15 @@ cat > /usr/local/bin/power-debug-monitor << LAUNCHER_SCRIPT
 sleep 3
 
 # Display-Erkennung: X11 vs. Wayland
+#
+# Hinweis zum Plotter: nur auf der Plattform "xcb" bettet er sein
+# pyqtgraph-Widget nativ ein; unter Wayland rastert er stattdessen in ein
+# QPixmap und blittet es — das kostet die komplette Pixmap-Kette obendrauf.
+# Wer auf einem knappen Aufbau jede Millisekunde braucht, kann hier fest
+# "xcb" eintragen (laeuft dann ueber XWayland). Bewusst NICHT die Vorgabe:
+# Touch-Eingabe und DPI-Skalierung muessen dafuer erst abgenommen werden.
+# Siehe rpi5_monitor/64Bit_Version/README_QML.md, Abschnitt
+# "Der Plotter: nativ oder als Bild".
 if [[ -n "\${WAYLAND_DISPLAY:-}" ]]; then
     export QT_QPA_PLATFORM="wayland;xcb"
 else

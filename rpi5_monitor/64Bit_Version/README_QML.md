@@ -153,6 +153,39 @@ Beim ersten Start nach dem Update wird eine vorhandene
 Kiosk-Modus, Akku-Warnung) und danach in `ui_settings.json.uebernommen`
 umbenannt.
 
+## Der Plotter: nativ oder als Bild — und warum das die Rechenlast bestimmt
+
+pyqtgraph ist eine QWidget-Bibliothek, Qt Quick ist es nicht. Der Plotter
+bettet das Widget deshalb auf einem von zwei Wegen ein, und der Unterschied
+ist keine Kleinigkeit:
+
+| Betriebsart | Wann | Was der Plotter tut |
+|---|---|---|
+| **nativ** | nur auf der QPA-Plattform `xcb` (X11 bzw. XWayland) | Das Widget hängt als echtes Kindfenster im QML-Fenster und zeichnet selbst. |
+| **Bild** | überall sonst (Wayland, eglfs, offscreen) | pyqtgraph rastert in ein QPixmap, das per `QQuickPaintedItem` in die Szene geblittet wird — pro Bild einmal die ganze Fläche. |
+
+Die Bildbetriebsart ist auf jeder Plattform gleich robust, aber sie kostet
+die komplette Pixmap-Kette obendrauf. Wer auf einem Pi jede Millisekunde
+braucht — Kiosk-Aufbau am Spielfeldrand —, fährt mit **`QT_QPA_PLATFORM=xcb`
+am günstigsten**, weil dann der native Weg greift.
+
+```bash
+QT_QPA_PLATFORM=xcb python3 main_qml.py
+```
+
+Warum das trotzdem **nicht** die Vorgabe ist: der Launcher aus
+`setup_rpi5.sh` wählt in einer Wayland-Sitzung bewusst `wayland;xcb`. `xcb`
+läuft dort über XWayland, und Touch-Eingabe und DPI-Skalierung müssen darauf
+erst abgenommen werden. Die Umstellung ist also eine bewusste Entscheidung
+für einen konkreten Aufbau, kein Schalter, den man blind umlegt. In welcher
+Betriebsart der Plotter gerade läuft, steht im Log
+(`bridge.plot.host`) und in der Eigenschaft `mode` des Hosts.
+
+Was in beiden Betriebsarten hilft, wenn es knapp wird, steht in
+`settings.json` → `plotter`: `maxFps`/`minFps` (der Takt passt sich seit
+Version 2.7 von selbst an), `maxCurves`, `defaultPoints`. Gemessen wird das
+mit `python tools/plotter_bench.py`.
+
 ## Bewusste Abweichungen vom Original
 
 - **Keine virtuelle Bildschirmtastatur** — auf Wunsch, da eine externe
@@ -173,9 +206,13 @@ umbenannt.
    pyqtgraph-basierte Plotter ist deutlich günstiger als das alte
    `QPainter`-Verfahren, wird aber bei anhaltender Überlastung durch den
    **Performance-Watchdog** automatisch abgeschaltet (Hinweis + „Erneut
-   versuchen"). Empfehlung: bei Ausfall die Kurvenzahl reduzieren
-   (`settings.json` → `plotter.maxCurves`) oder `plotter.maxFps` /
-   `plotter.renderDisableMs` anpassen.
+   versuchen"). Seit Version 2.7 senkt der Plotter vorher von selbst den
+   Bildtakt (`plotter.adaptiveFps`, bis herunter auf `plotter.minFps`) —
+   der Watchdog ist damit wieder das letzte Netz statt der ersten Reaktion.
+   Empfehlung, wenn es trotzdem nicht reicht: Kurvenzahl reduzieren
+   (`settings.json` → `plotter.maxCurves`), `plotter.defaultPoints`
+   verkleinern, oder den Aufbau auf `QT_QPA_PLATFORM=xcb` umstellen (siehe
+   oben — das spart die ganze Pixmap-Kette).
 3. Tooling: Qt Design Studio zum visuellen Feintuning der Touch-Layouts
    nutzen (Migrationsplan Abschnitt 10).
 

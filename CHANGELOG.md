@@ -22,6 +22,118 @@ welchem Roboter läuft.
 
 ---
 
+## 2.7 — Der Plotter richtet sich nach der Hardware, statt umzukippen
+
+Version 2.6 hat die großen Posten beseitigt. Übrig blieb ein Verhalten, das
+auf schwacher Hardware nur zwei Zustände kannte: **volle 12 Bilder pro
+Sekunde — oder der Watchdog schaltet den Plotter komplett ab.** Genau das
+ist jetzt anders. Dazu kommt ein Messwerkzeug, denn zwei der Annahmen aus
+dem Plan haben die Messung nicht überlebt (siehe unten).
+
+### Zuerst: gemessen wird jetzt das Richtige
+
+`note_render()` bekam bisher nur die Dauer von `get_plot_arrays()` +
+`setData()` gemeldet. Der Aufruf stand **vor** `_render_to_pixmap()` — und
+genau dort rastert Qt das komplette Widget in das Pixmap. Der Wächter hat
+also ein Budget von 80 ms überwacht, von dem er den größten Posten nie
+gesehen hat. Das Messfenster umfasst jetzt den ganzen Durchlauf.
+
+### Geändert
+
+* **Der Bildtakt richtet sich nach der gemessenen Bilddauer.** `maxFps` ist
+  nur noch die Obergrenze; der Takt ergibt sich aus
+  `clamp(fpsBudgetFactor × Bilddauer, 1000/maxFps, 1000/minFps)`. Der Faktor
+  (Vorgabe 4,0) sagt, wie viel Luft bleiben soll: der Plotter darf höchstens
+  ein Viertel der Zeit des GUI-Threads verbrauchen — der hält auch den
+  100-Hz-Sendetakt der Fernsteuerung, und **das** ist die eigentliche
+  Anforderung.
+
+  | Bilddauer | 2 ms | 30 ms | 45 ms | 60 ms |
+  |---|---|---|---|---|
+  | Takt | 12,0 fps | 8,3 fps | 5,6 fps | 4,2 fps |
+
+  15 % Hysterese, damit der Takt bei kleinen Lastwechseln nicht springt; am
+  Anschlag ohne Hysterese, sonst bliebe er nach einer Lastspitze für immer
+  knapp unter `maxFps` stehen.
+* **Der Wächter schaltet nicht mehr wegen eines einzigen teuren Durchlaufs
+  ab**, sondern erst nach `renderDisableStreak` (3) in Folge. Ein einzelner
+  teurer Durchlauf kommt beim Tabwechsel oder beim Ändern der Fenstergröße —
+  und seit das Messfenster ehrlich ist, fällt er häufiger an. Anhaltende
+  Last fängt jetzt der adaptive Takt ab.
+* **Die Normierungsgrenzen kommen aus dem Statistik-Takt.**
+  `get_plot_arrays()` rechnete min/max je Kurve **und Bild** — bei acht
+  Kurven zwei volle Array-Durchläufe pro Bild, obwohl dieselben Zahlen alle
+  200 ms ohnehin anfallen. Damit ein Signal, das zwischendurch auf ein
+  Vielfaches seiner Spanne springt, nicht aus dem Bild geschoben wird,
+  **wachsen** die gepufferten Grenzen mit jedem eintreffenden Block mit;
+  geschrumpft wird nur im Statistik-Takt. Über 400 Blöcke mit Pegelsprüngen
+  um den Faktor 10 gemessen: die Kurvenwerte bleiben in 0,000 … 1,000.
+* **Bei gemeinsamer Skala steht die Y-Achse still.** Statt
+  `enableAutoRange(Y)` nach jedem `setData` wird der Bereich auf glatte
+  1-2-5-Schritte gerundet und nur bei echtem Bedarf geändert: wachsen
+  sofort, schrumpfen erst, wenn der aktuelle Bereich mehr als doppelt so
+  groß ist wie nötig. Gemessen: **91 → 7 Bereichswechsel je 200 Bilder.**
+* **Statistik und Wächter kosten nichts mehr, wenn niemand hinsieht.**
+  `_update_stats()` hing allein am Datenpfad — Legende und Statistikzeile
+  wurden also auch dann fünfmal pro Sekunde über das ganze Fenster
+  gerechnet, wenn man seit einer Stunde im Parameter-Tab arbeitet.
+  Gemessen: 4 `statsChanged`/s sichtbar, **0/s bei weggeschaltetem Tab**,
+  und genau eines sofort beim Zurückschalten. Der Wächter-Timer tickte
+  außerdem ab Programmstart dauerhaft mit 4 Hz, auch wenn der Plotter-Tab
+  nie geöffnet wurde; er läuft jetzt nur noch, solange der Plotter aktiv
+  ist. Bewusst an die **Sichtbarkeit** gekoppelt und nicht daran, ob der
+  Plotter eingeschaltet ist: bei Überlastung ist die Legende das Einzige,
+  was noch Zahlen zeigt.
+* **Die letzten Array-Zuteilungen im Datentakt sind weg.** `_stack()` legte
+  je Poll-Durchlauf ein neues Block-Array an, die Flanken-Trigger hängten
+  den Vorgängerwert per `np.concatenate` an jeden Block. Beides läuft jetzt
+  in vorab angelegten Puffern. Nebenbei: `_snap_buf`, `_live_buf`, `_y_buf`
+  und `_mask_buf` waren über die volle Ringgröße (1000 Spalten)
+  dimensioniert, angezeigt werden aber höchstens 600 — 100 kB → 60 kB.
+
+### Neu: `tools/plotter_bench.py`
+
+Misst die drei Ebenen getrennt (Datenpfad, Rastern, QML-Legende) und
+vergleicht Wert für Wert gegen unabhängige Referenzimplementierungen.
+`python tools/plotter_bench.py --verify` läuft in der CI mit: Ringpuffer,
+`_stack()`, Kurvenarrays und alle sechs Trigger-Bedingungen müssen dieselben
+Zahlen liefern wie vorher.
+
+### Zwei Annahmen, die die Messung nicht überlebt haben
+
+Beides in dieser Umgebung gemessen (offscreen, 800 × 400) und auf dem
+Zielgerät nachzumessen — aber deutlich genug, um den weiteren Plan zu
+ändern:
+
+1. **„Die Kurven zu rastern ist der teure Teil" stimmt so nicht.** Ein Bild
+   mit **einer** Kurve über 250 Punkte kostet 31,9 ms, eines mit **acht**
+   Kurven über 600 Punkte 46,7 ms. Der Grundbetrag — Hintergrund, Gitter,
+   Achsen — dominiert also alles andere. Das stützt den geplanten
+   statischen Hintergrund (M8 Stufe A) und entwertet die Idee, am
+   Downsampling zu drehen (K4).
+2. **Die QML-Legende ist kein Kostenpunkt.** Ein kompletter
+   Delegate-Neuaufbau kostet bei acht Kurven **0,056 ms**, bei 5 Hz also
+   0,28 ms pro Sekunde. Der geplante Umbau auf ein `QAbstractListModel`
+   (M7) würde nichts Messbares sparen und ist damit vom Tisch.
+
+**Korrektur zu einer Zahl in der Commit-Historie:** der Commit zum
+quantisierten Y-Bereich nennt „rund 5 % weniger Rasterarbeit". Der saubere
+A/B-Vergleich über sechs abwechselnde Durchläufe ergibt 31,7 ms
+(autoRange) gegen 32,3 ms (quantisiert) bei einer Streuung von 2,7 ms
+*innerhalb* einer Variante — der Zeitunterschied liegt damit im Rauschen.
+Belegt ist nur, was sich zählen lässt: 91 gegen 7 Bereichswechsel. Der
+Nutzen der Änderung ist vorerst die ruhige, ablesbare Achse.
+
+### Nicht geändert
+
+* **Darstellung und Bedienung.** Farben, Kurvenzahl, Trigger und Marken
+  sind exakt, wie sie waren.
+* **Alle neuen Kniffe haben einen Schalter** in `settings.json` →
+  `plotter`: `adaptiveFps`, `minFps`, `fpsBudgetFactor`, `quantizeYRange`,
+  `cacheNormBounds`, `renderDisableStreak`.
+
+---
+
 ## 2.6 — Der Plotter kostet deutlich weniger Rechenzeit und Speicher
 
 Der Live-Plotter lief zwar schon über NumPy und pyqtgraph, verhielt sich aber
