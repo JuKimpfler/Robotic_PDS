@@ -210,47 +210,7 @@ ok "Dateien nach ${INSTALL_DIR} installiert."
 # ════════════════════════════════════════════════════════════════════════════════
 #  SCHRITT 5 — WLAN Access Point
 # ════════════════════════════════════════════════════════════════════════════════
-step "5/8  WLAN Access Point konfigurieren (${AP_SSID})"
-
-# Sicherstellen dass NetworkManager läuft
-systemctl enable --now NetworkManager 2>/dev/null || true
-
-# Regulatory-Domain setzen — ohne gesetztes WLAN-Land verweigert der Kernel
-# auf dem pi 4 (Bookworm) häufig den AP-Modus (0 dBm / kein Broadcast).
-if command -v raspi-config &>/dev/null; then
-    raspi-config nonint do_wifi_country "$WIFI_COUNTRY" \
-        && ok "WLAN-Land gesetzt: ${WIFI_COUNTRY}" \
-        || warn "WLAN-Land konnte nicht per raspi-config gesetzt werden."
-else
-    rfkill unblock wifi 2>/dev/null || true
-fi
-
-# Bestehende/alte AP-Verbindungen bereinigen (inkl. altem Namen "PowerDebugAP")
-for CON in "PowerDebugAP" "RoboDebug" "Hotspot" "WiFi-AP"; do
-    nmcli connection delete "$CON" 2>/dev/null && info "  Alt-Verbindung '${CON}' entfernt." || true
-done
-
-# Neuen Hotspot anlegen — SSID/Passwort identisch zu setup_node.sh, damit
-# Zero-Nodes und PC-Testbetrieb ohne Anpassung zusammenpassen.
-nmcli connection add \
-    type            wifi \
-    ifname          wlan0 \
-    con-name        "$AP_SSID" \
-    autoconnect     yes \
-    ssid            "$AP_SSID" \
-    mode            ap \
-    ipv4.method     shared \
-    ipv4.addresses  "${AP_IP}/24" \
-    wifi-sec.key-mgmt wpa-psk \
-    wifi-sec.psk    "$AP_PASS" \
-    wifi.band       bg \
-    wifi.channel    6
-
-# Direkt starten (falls möglich)
-nmcli connection up "$AP_SSID" 2>/dev/null \
-    && ok "AP gestartet: SSID=${AP_SSID}  IP=${AP_IP}" \
-    || warn "AP wird nach Neustart aktiv."
-
+# verwendung eines externen wlan netzwerks mit dem selben namen...
 
 # ════════════════════════════════════════════════════════════════════════════════
 #  SCHRITT 6 — Launcher-Skript
