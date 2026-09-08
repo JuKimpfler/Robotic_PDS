@@ -216,11 +216,14 @@ DEFAULTS: dict[str, Any] = {
         #   disableStallMs Staulast ab der die Abschaltung gezählt wird
         #   perfStreak      wie oft disableStallMs hintereinander nötig ist
         #   renderDisableMs einzelner Plot-Durchlauf, der das Budget sprengt
+        #   renderDisableStreak wie viele langsame Plot-Durchläufe in Folge
+        #                      zur Abschaltung nötig sind
         "perfMeasureMs": 250,
         "perfWarnStallMs": 35.0,
         "perfDisableStallMs": 80.0,
         "perfStreak": 5,
         "renderDisableMs": 80.0,
+        "renderDisableStreak": 3,
     },
 
     # ── Parameter-Tab ─────────────────────────────────────────────────────
