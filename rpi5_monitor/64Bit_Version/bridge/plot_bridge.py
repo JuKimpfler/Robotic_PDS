@@ -87,6 +87,7 @@ _PERF = {
     "disableStallMs":  float(app_settings.get("plotter.perfDisableStallMs", 80.0)),
     "streak":          int(app_settings.get("plotter.perfStreak", 5)),
     "renderDisableMs": float(app_settings.get("plotter.renderDisableMs", 80.0)),
+    "renderDisableStreak": max(1, int(app_settings.get("plotter.renderDisableStreak", 3))),
 }
 
 
@@ -152,6 +153,7 @@ class PlotBridge(QObject):
         self._plot_active = False      # liefert der Host (sichtbar + ein)
         self._render_ms = 0.0         # gleitender Max. eines Plot-Durchlaufs
         self._render_calls = 0        # Warmup-Zähler für note_render
+        self._slow_render_streak = 0  # aufeinanderfolgende Frames > renderDisableMs
 
         # ── Performance-Wächter ────────────────────────────────────────────
         self._watchdog = PerfWatchdog(
@@ -187,8 +189,12 @@ class PlotBridge(QObject):
             self._perf_message = ""
             self._watchdog.reset()
             self._watchdog.set_active(self._plot_active)
+            self._render_ms = 0.0
+            self._render_calls = 0
+            self._slow_render_streak = 0
         else:
             self._watchdog.set_active(False)
+            self._slow_render_streak = 0
         self.enabledChanged.emit()
         self.overloadedChanged.emit()
         self.perfMessageChanged.emit()
@@ -242,6 +248,8 @@ class PlotBridge(QObject):
             return
         self._plot_active = active
         self._watchdog.set_active(active)
+        if not active:
+            self._slow_render_streak = 0
 
     def note_render(self, dt_ms: float) -> None:
         """Host meldet die Dauer eines Plot-Durchlaufs (setData + evtl. Grab).
@@ -258,11 +266,18 @@ class PlotBridge(QObject):
         self._render_calls += 1
         if self._render_calls <= 20:
             return
-        if (not self._overloaded and self._enabled
-                and dt_ms >= _PERF["renderDisableMs"]):
+        if self._overloaded or not self._enabled:
+            return
+        if dt_ms >= _PERF["renderDisableMs"]:
+            self._slow_render_streak += 1
+        else:
+            self._slow_render_streak = 0
+        if self._slow_render_streak >= _PERF["renderDisableStreak"]:
+            self._slow_render_streak = 0
             self._on_overload(
-                f"Ein Plot-Durchlauf dauerte {dt_ms:.0f} ms "
-                f"(Budget {_PERF['renderDisableMs']:.0f} ms).")
+                f"{_PERF['renderDisableStreak']} Plot-Durchläufe hintereinander "
+                f"dauerten mindestens {_PERF['renderDisableMs']:.0f} ms "
+                f"(zuletzt {dt_ms:.0f} ms).")
 
     # ══════════════════════════════════════════════════════════════════════
     #  Kanalauswahl
@@ -811,7 +826,7 @@ class PlotBridge(QObject):
                         ) -> list[tuple[np.ndarray, np.ndarray]]:
         """Bereitet die sichtbaren Kurven als (x, y)-NumPy-Paare auf.
 
-        x ist der Sample-Index (0..n-1); y sind die Werte als float64.
+        x ist der Sample-Index (0..n-1); y sind die Werte als float32.
 
         Bei EINZELSKALA (shared_scale=False) wird jede Kurve auf den eigenen
         Wertebereich normiert (0..1), damit Kanaele völlig verschiedener
@@ -825,14 +840,14 @@ class PlotBridge(QObject):
         n = data.shape[1]
         if n == 0:
             return []
-        xs = np.arange(n, dtype=np.float64)
+        xs = np.arange(n, dtype=np.float32)
         out: list[tuple[np.ndarray, np.ndarray]] = []
         if shared_scale:
             for row in range(data.shape[0]):
-                out.append((xs, data[row].astype(np.float64)))
+                out.append((xs, data[row]))
         else:
             for row in range(data.shape[0]):
-                series = data[row].astype(np.float64)
+                series = data[row]
                 finite = np.isfinite(series)
                 if finite.any():
                     mn = float(series[finite].min())
@@ -840,7 +855,7 @@ class PlotBridge(QObject):
                     span = (mx - mn) or 1.0
                     ys = (series - mn) / span
                 else:
-                    ys = np.zeros(n, dtype=np.float64)
+                    ys = np.zeros(n, dtype=np.float32)
                 out.append((xs, ys))
         return out
 

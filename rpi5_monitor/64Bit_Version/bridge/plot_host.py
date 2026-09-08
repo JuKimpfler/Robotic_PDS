@@ -119,6 +119,7 @@ class PyQtGraphHost(QQuickPaintedItem):
         self._mode = "init"            # init | native | image | error
         self._error_text = ""
         self._last_shared: Optional[bool] = None
+        self._last_x_max = -1
         self._built = False
         self._pixmap_fail = 0
 
@@ -376,7 +377,8 @@ class PyQtGraphHost(QQuickPaintedItem):
             else:
                 self._plot.enableAutoRange(axis=_Y_AXIS, enable=False)
                 self._plot.setYRange(-0.1, 1.1, padding=0.0)
-        if last > 0:
+        if last > 0 and last != self._last_x_max:
+            self._last_x_max = last
             self._plot.setXRange(0, last, padding=0.0)
 
     def _ensure_curves(self, n: int) -> None:
@@ -427,8 +429,8 @@ class PyQtGraphHost(QQuickPaintedItem):
                 self._live_curve.hide()
             return
         shared = self._plotter.sharedScale
-        xs = np.arange(live.shape[1], dtype=np.float64)
-        series = live[0].astype(np.float64)
+        xs = np.arange(live.shape[1], dtype=np.float32)
+        series = live[0]
         if shared:
             ys = series
         else:
@@ -495,6 +497,7 @@ class PyQtGraphHost(QQuickPaintedItem):
             except Exception:
                 pass
         self._last_shared = None
+        self._last_x_max = -1
         # Beim nächsten Redraw werden die Kurven neu erzeugt.
         if self._mode == "image":
             self.update()

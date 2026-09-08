@@ -175,7 +175,8 @@ umbenannt.
    **Performance-Watchdog** automatisch abgeschaltet (Hinweis + „Erneut
    versuchen"). Empfehlung: bei Ausfall die Kurvenzahl reduzieren
    (`settings.json` → `plotter.maxCurves`) oder `plotter.maxFps` /
-   `plotter.renderDisableMs` anpassen.
+   `plotter.renderDisableMs` (+ optional `plotter.renderDisableStreak`)
+   anpassen.
 3. Tooling: Qt Design Studio zum visuellen Feintuning der Touch-Layouts
    nutzen (Migrationsplan Abschnitt 10).
 
