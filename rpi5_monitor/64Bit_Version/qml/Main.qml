@@ -142,7 +142,7 @@ ApplicationWindow {
             interactive: !UiState.navigationLocked
 
             TelemetryView {}
-            PlotterView {}
+            PlotterView { isActive: swipeView.currentIndex === 1 }
             SystemView {}
             ParamsView {}
             DiagnosticsView {}

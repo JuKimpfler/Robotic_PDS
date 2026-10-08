@@ -11,6 +11,7 @@ import "components"
 Item {
     id: root
     property var plotter: appBridge.plotter
+    property bool isActive: true
 
     // Kanalauswahl als eigenes Fenster: bei 200 Kanälen ist eine Liste mit
     // Suchfeld deutlich brauchbarer als eine ComboBox, und der Plot bleibt
@@ -319,6 +320,7 @@ Item {
                 id: plotHost
                 anchors.fill: parent
                 plotter: root.plotter
+                visible: root.isActive
             }
 
             // Touch: Pinch verändert die sichtbare Punktezahl (= Zoom)

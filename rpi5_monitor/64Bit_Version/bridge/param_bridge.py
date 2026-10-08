@@ -775,14 +775,12 @@ class ParamBridge(QObject):
     # ── Fuer ControllerBridge ─────────────────────────────────────────────
     def fast_float_ranges(self) -> dict[int, tuple[float, float]]:
         """index -> (min, max) aus der Konfiguration, damit Controller und
-        Tastatur dieselben Grenzen respektieren wie die Touch-Slider.
-
-        Gecacht: die Methode wird 100x/s aus dem Sende-Thread gerufen, und
-        ein jedes Mal neu gebautes dict waere reine Arbeit fuer den
-        Garbage Collector."""
-        if self._fast_ranges is None:
-            self._fast_ranges = {e.index: (e.min, e.max) for e in self._config.fast_floats}
-        return self._fast_ranges
+        Tastatur dieselben Grenzen respektieren wie die Touch-Slider."""
+        fr = self._fast_ranges
+        if fr is None:
+            fr = {e.index: (e.min, e.max) for e in self._config.fast_floats}
+            self._fast_ranges = fr
+        return fr
 
     def apply_controller_values(self, values: list[float]) -> None:
         """Aus ControllerBridge.poll() heraus aufgerufen (im Sende-Thread),

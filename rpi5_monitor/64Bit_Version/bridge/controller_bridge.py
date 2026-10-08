@@ -282,33 +282,16 @@ class ControllerBridge(QObject):
         if not self._ensure_init():
             return
 
-        # SDL legt bei jeder Achsenbewegung Events in eine Warteschlange. Wir
-        # lesen den Zustand direkt über get_axis()/get_button() und brauchen
-        # die Events nicht — ohne dieses clear() läuft die Queue mit rund
-        # 1000 Events/s voll, die niemand abholt.
-        # clear() pumpt intern selbst; ein zusätzliches event.pump() davor
-        # wäre ein zweiter kompletter Durchlauf der Warteschlange pro Zyklus.
+        # SDL legt bei jeder Achsenbewegung Events in eine Warteschlange.
+        # pygame.event.pump() ist ZWINGEND noetig, damit SDL die internen USB-
+        # Zustaende und Achsenwerte vom Betriebssystem abholt.
         try:
+            pygame.event.pump()
             pygame.event.clear()
         except pygame.error as exc:
             log.warning("pygame-Event-Verarbeitung fehlgeschlagen: %s", exc)
             return
 
-        # Hot-Plug nur alle 500 ms prüfen (siehe __init__). Solange ein
-        # Controller verbunden ist, meldet ein Lesefehler das Abziehen
-        # ohnehin sofort.
-        #
-        # Die Bedingung hiess früher `self._joystick is None or <Zeit abgelaufen>`
-        # und hob damit ausgerechnet in dem Fall die Drosselung auf, für den
-        # sie gedacht war: OHNE angeschlossenen Controller ist `_joystick`
-        # immer None, get_count() lief also mit vollen 100 Hz statt 2 Hz.
-        # SDL geht dabei über die Geräteliste — im Sende-Thread, der 10 ms
-        # später schon das nächste Fast-Paket packen soll. Genau das ist der
-        # Grund, warum die Fernsteuerung ohne Controller ins Stocken kam.
-        # Die 500 ms gelten jetzt IMMER; ein frisch eingesteckter Controller
-        # wird dadurch höchstens eine halbe Sekunde später erkannt, und
-        # `_set_disconnected()` setzt `_last_count_check` auf 0, damit ein
-        # ABGEZOGENER sofort wieder geprüft wird.
         now = time.monotonic()
         if (now - self._last_count_check) >= 0.5:
             self._last_count_check = now
@@ -325,16 +308,42 @@ class ControllerBridge(QObject):
             return
 
         if self._joystick is None:
+            # PS4 Controller kann mehrere Geraete anmelden (Touchpad vs. Gamepad).
+            # Wir suchen das Geraet mit den meisten Achsen (>= 4).
+            best_idx = 0
+            best_axes = -1
+            for i in range(count):
+                try:
+                    js_test = pygame.joystick.Joystick(i)
+                    js_test.init()
+                    axes = js_test.get_numaxes()
+                    if axes > best_axes:
+                        best_axes = axes
+                        best_idx = i
+                    if i != best_idx:
+                        js_test.quit()
+                except Exception:
+                    pass
+
             try:
-                self._joystick = pygame.joystick.Joystick(0)
-                self._joystick.init()
+                self._joystick = pygame.joystick.Joystick(best_idx)
+                if not self._joystick.get_init():
+                    self._joystick.init()
                 self._name = self._joystick.get_name()
                 self._connected = True
                 self._warmup = self._WARMUP_POLLS
-                log.info("Controller verbunden: '%s' — Touch-Eingabe gesperrt.", self._name)
-                self.connectedChanged.emit()
+                log.info("Controller verbunden (Index %d): '%s' — Touch-Eingabe gesperrt.", best_idx, self._name)
+                # Thread-sichere Benachrichtigung der Qt-GUI-Ebene:
+                from PyQt6.QtCore import QMetaObject, Qt, Q_ARG
+                QMetaObject.invokeMethod(self, "connectedChanged", Qt.ConnectionType.QueuedConnection)
             except pygame.error as exc:
                 log.warning("Controller-Initialisierung fehlgeschlagen: %s", exc)
+                if self._joystick is not None:
+                    try:
+                        self._joystick.quit()
+                    except Exception:
+                        pass
+                    self._joystick = None
                 return
 
         try:
@@ -345,6 +354,11 @@ class ControllerBridge(QObject):
 
     def _set_disconnected(self) -> None:
         self._connected = False
+        if self._joystick is not None:
+            try:
+                self._joystick.quit()
+            except Exception:
+                pass
         self._joystick = None
         self._count_cache = 0
         self._last_count_check = 0.0   # beim naechsten poll() sofort neu pruefen
@@ -358,8 +372,9 @@ class ControllerBridge(QObject):
         self._stick_y = 0.0
         self._param_bridge.apply_controller_values(self._values)
         log.info("Controller getrennt — Touch-Eingabe wieder aktiv, Fast-Werte auf 0.")
-        self.connectedChanged.emit()
-        self.valuesChanged.emit()
+        from PyQt6.QtCore import QMetaObject, Qt
+        QMetaObject.invokeMethod(self, "connectedChanged", Qt.ConnectionType.QueuedConnection)
+        QMetaObject.invokeMethod(self, "valuesChanged", Qt.ConnectionType.QueuedConnection)
 
     def _read_and_apply(self) -> None:
         js = self._joystick
@@ -439,7 +454,8 @@ class ControllerBridge(QObject):
             now = time.monotonic()
             if now - self._last_ui_notify >= self._ui_notify_interval:
                 self._last_ui_notify = now
-                self.valuesChanged.emit()
+                from PyQt6.QtCore import QMetaObject, Qt
+                QMetaObject.invokeMethod(self, "valuesChanged", Qt.ConnectionType.QueuedConnection)
 
     def shutdown(self) -> None:
         if not self._available:

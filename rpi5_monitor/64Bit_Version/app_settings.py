@@ -104,10 +104,9 @@ DEFAULTS: dict[str, Any] = {
         "autoApplyTeensyConfig": True,
         # Der Teensy kann seit PDS 2.2 auch das AUSSEHEN vorgeben
         # (PDS.setting("ui.dark", ...) bzw. GUI_SETTINGS in channel_config.h).
-        # Eigener Schalter, weil das eine andere Entscheidung ist als die
-        # Kanalnamen: wer sein Tablet dauerhaft hell haben will, soll die
-        # Namen trotzdem bekommen. Siehe apply_teensy_settings().
-        "autoApplyTeensySettings": True,
+        # Standardmaessig deaktiviert, damit Teensy-Firmware-Updates die
+        # lokalen PDS-Profile und Oberflaechen-Einstellungen nicht ueberschreiben.
+        "autoApplyTeensySettings": False,
     },
 
     # ── Akku-Warnung (rein optisch, siehe bridge/diag_bridge.py) ──────────

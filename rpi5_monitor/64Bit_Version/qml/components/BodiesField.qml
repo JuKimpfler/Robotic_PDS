@@ -250,92 +250,89 @@ Item {
                 font.pixelSize: Theme.fontSizeSmall
             }
 
-            Repeater {
-                model: [root.body1, root.body2]
-                delegate: Item {
-                    required property var modelData
-                    readonly property real bx: fieldBox.xToPx(modelData.x)
-                    readonly property real by: fieldBox.yToPx(modelData.y)
-                    readonly property real rPx: Math.max(6, Math.abs(modelData.diameter) / 2
-                                                             * fieldBox._cmScale)
+            component BodyItem: Item {
+                id: bodyDelegate
+                property var bodyData
+                readonly property real bx: fieldBox.xToPx(bodyData ? bodyData.x : 0)
+                readonly property real by: fieldBox.yToPx(bodyData ? bodyData.y : 0)
+                readonly property real rPx: Math.max(6, Math.abs(bodyData ? bodyData.diameter : 0) / 2
+                                                         * fieldBox._cmScale)
+                visible: bodyData && bodyData.label !== ""
 
-                    x: bx - rPx; y: by - rPx
-                    width: rPx * 2; height: rPx * 2
+                x: bx - rPx; y: by - rPx
+                width: rPx * 2; height: rPx * 2
 
-                    Behavior on x { NumberAnimation { duration: 80 } }
-                    Behavior on y { NumberAnimation { duration: 80 } }
+                // Glow
+                Rectangle {
+                    anchors.centerIn: parent
+                    width: parent.width + 16; height: parent.height + 16
+                    radius: width / 2
+                    color: bodyDelegate.bodyData ? bodyDelegate.bodyData.color : "#ffffff"
+                    opacity: 0.18
+                }
 
-                    // Glow
+                // Körper
+                Rectangle {
+                    anchors.fill: parent
+                    radius: width / 2
+                    color: bodyDelegate.bodyData ? bodyDelegate.bodyData.color : "#ffffff"
+                    opacity: 0.72
+                    border.color: bodyDelegate.bodyData ? bodyDelegate.bodyData.color : "#ffffff"
+                    border.width: 2.5
+                }
+
+                // Richtungspfeil. 0 Grad = nach rechts, positiv im Uhrzeigersinn
+                Item {
+                    anchors.centerIn: parent
+                    width: parent.width; height: parent.height
+                    rotation: bodyDelegate.bodyData ? bodyDelegate.bodyData.angleDeg : 0
+
                     Rectangle {
-                        anchors.centerIn: parent
-                        width: parent.width + 16; height: parent.height + 16
-                        radius: width / 2
-                        color: modelData.color
-                        opacity: 0.18
+                        width: Math.max(14, parent.width * 0.9)
+                        height: 3
+                        radius: 1.5
+                        color: bodyDelegate.bodyData ? bodyDelegate.bodyData.color : "#ffffff"
+                        x: parent.width / 2
+                        y: parent.height / 2 - height / 2
                     }
-
-                    // Körper
                     Rectangle {
-                        anchors.fill: parent
-                        radius: width / 2
-                        color: modelData.color
-                        opacity: 0.72
-                        border.color: modelData.color
-                        border.width: 2.5
-                    }
-
-                    // Richtungspfeil. 0 Grad = nach rechts, positiv im
-                    // Uhrzeigersinn — QML dreht genauso, siehe Kopfkommentar.
-                    Item {
-                        anchors.centerIn: parent
-                        width: parent.width; height: parent.height
-                        rotation: modelData.angleDeg
-                        Behavior on rotation {
-                            RotationAnimation { duration: 100; direction: RotationAnimation.Shortest }
-                        }
-
-                        Rectangle {
-                            width: Math.max(14, parent.width * 0.9)
-                            height: 3
-                            radius: 1.5
-                            color: modelData.color
-                            x: parent.width / 2
-                            y: parent.height / 2 - height / 2
-                        }
-                        Rectangle {
-                            width: 10; height: 10
-                            rotation: 45
-                            color: modelData.color
-                            x: parent.width / 2 + Math.max(14, parent.width * 0.9) - 5
-                            y: parent.height / 2 - 5
-                        }
-                    }
-
-                    // Beschriftung über dem Körper (mit Hintergrund für Lesbarkeit)
-                    Rectangle {
-                        anchors.bottom: parent.top
-                        anchors.bottomMargin: 4
-                        anchors.horizontalCenter: parent.horizontalCenter
-                        width: lbl.implicitWidth + 10
-                        height: lbl.implicitHeight + 4
-                        radius: 2
-                        color: Theme.dark ? "#000000" : "#ffffff"
-                        opacity: 0.65
-                    }
-                    Text {
-                        id: lbl
-                        anchors.bottom: parent.top
-                        anchors.bottomMargin: 6
-                        anchors.horizontalCenter: parent.horizontalCenter
-                        text: modelData.label + "  " + modelData.x.toFixed(0) + "/"
-                              + modelData.y.toFixed(0) + " cm  "
-                              + modelData.angleDeg.toFixed(0) + "°"
-                        color: modelData.color
-                        font.bold: true
-                        font.pixelSize: Theme.fontSizeSmall
+                        width: 10; height: 10
+                        rotation: 45
+                        color: bodyDelegate.bodyData ? bodyDelegate.bodyData.color : "#ffffff"
+                        x: parent.width / 2 + Math.max(14, parent.width * 0.9) - 5
+                        y: parent.height / 2 - 5
                     }
                 }
+
+                // Beschriftung über dem Körper
+                Rectangle {
+                    anchors.bottom: parent.top
+                    anchors.bottomMargin: 4
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    width: bodyLbl.implicitWidth + 10
+                    height: bodyLbl.implicitHeight + 4
+                    radius: 2
+                    color: Theme.dark ? "#000000" : "#ffffff"
+                    opacity: 0.65
+                }
+                Text {
+                    id: bodyLbl
+                    anchors.bottom: parent.top
+                    anchors.bottomMargin: 6
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    text: bodyDelegate.bodyData
+                          ? (bodyDelegate.bodyData.label + "  " + bodyDelegate.bodyData.x.toFixed(0) + "/"
+                             + bodyDelegate.bodyData.y.toFixed(0) + " cm  "
+                             + bodyDelegate.bodyData.angleDeg.toFixed(0) + "°")
+                          : ""
+                    color: bodyDelegate.bodyData ? bodyDelegate.bodyData.color : "#ffffff"
+                    font.bold: true
+                    font.pixelSize: Theme.fontSizeSmall
+                }
             }
+
+            BodyItem { bodyData: root.body1 }
+            BodyItem { bodyData: root.body2 }
         }
     }
 }

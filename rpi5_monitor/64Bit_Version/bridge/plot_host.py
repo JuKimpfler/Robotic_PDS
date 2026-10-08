@@ -284,6 +284,15 @@ class PyQtGraphHost(QQuickPaintedItem):
         self.widthChanged.connect(self._on_size_changed)
         self.heightChanged.connect(self._on_size_changed)
         self.windowChanged.connect(self._on_window_changed)
+        self.visibleChanged.connect(self._on_visibility_changed)
+
+    def _on_visibility_changed(self) -> None:
+        self._dirty = True
+        if self.isVisible():
+            self._timer.setInterval(self._active_interval)
+            self._redraw()
+        else:
+            self._go_idle()
 
     # ── QML-Property: die Datenbrücke ───────────────────────────────────────
     def getPlotter(self) -> Optional[PlotBridge]:
@@ -445,8 +454,9 @@ class PyQtGraphHost(QQuickPaintedItem):
             log.info("Native-Einbettung nicht möglich, Image-Modus: %s", exc)
             return False
 
-    # ── Geometrie (nur native) ─────────────────────────────────────────────
     def _on_screen(self, win=None, x=None, y=None, w=None, h=None) -> bool:
+        if not self.isVisible():
+            return False
         win = win or self.window()
         if win is None:
             return True
@@ -672,7 +682,7 @@ class PyQtGraphHost(QQuickPaintedItem):
             i = len(self._curves)
             pen = pg.mkPen(CURVE_COLORS[i % len(CURVE_COLORS)], width=1.8)
             ci = self._plot.plot(pen=pen, connect="auto")
-            ci.setDownsampling(auto=self._downsample, method="peak")
+            ci.setDownsampling(auto=self._downsample, method="subsample")
             ci.setClipToView(True)
             # Achtung: PlotDataItem hat KEINE setAntialiasing()-Methode; die
             # Antialiasing-Einstellung wirkt ueber die globale pg-Option oben.

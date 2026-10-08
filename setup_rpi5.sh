@@ -1,8 +1,7 @@
-#!/usr/bin/env bash
 # ================================================================
-#  Power Debug System — Raspberry pi 4 Master Setup
+#  Power Debug System — Raspberry Pi 4 (2 GB) / Pi 5 Setup
 # ================================================================
-#  Richtet den Rpi 4 als zentralen Debug-Monitor ein:
+#  Richtet den Raspberry Pi (Pi 4 2GB / Pi 5) als zentralen Debug-Monitor ein:
 #    1. Hostname setzen
 #    2. Systempakete + Python-Abhängigkeiten
 #    3. Anwendungsdateien installieren
