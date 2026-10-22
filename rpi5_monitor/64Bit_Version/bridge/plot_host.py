@@ -117,6 +117,34 @@ _MARKER_COLORS = [
     )
 ]
 
+# ── Deckende Farben statt Transparenz ─────────────────────────────────────
+#  Qt rastert HALBTRANSPARENTE Linien in Software rund 30-mal langsamer als
+#  deckende (gemessen: 60 Linien auf 800x400 in 24 ms statt 0,75 ms). Das
+#  Gitter von pyqtgraph (showGrid(alpha=...)) besteht aus genau solchen
+#  Linien und kostete damit allein rund 33 ms JE BILD — drei Viertel der
+#  gesamten Bildzeit, auf dem Pi ein Vielfaches. Das war der Hauptgrund,
+#  warum der Plotter bei 100 Pkt/s nur mit 2 bis 10 Bildern pro Sekunde
+#  lief. Die Mischung mit dem (festen) Hintergrund wird deshalb einmal
+#  vorab gerechnet; das Ergebnis sieht gleich aus und ist deckend.
+_PLOT_BG = (0x1A, 0x1A, 0x1A)
+
+
+def _blend_over_bg(rgba: tuple[int, int, int, int]) -> tuple[int, int, int]:
+    """Farbe mit Deckkraft a auf den Plot-Hintergrund mischen -> deckend."""
+    r, g, b, a = rgba
+    f = a / 255.0
+    return tuple(int(round(bg + (c - bg) * f)) for c, bg in zip((r, g, b), _PLOT_BG))
+
+
+_GRID_ALPHA = min(1.0, max(0.0, float(app_settings.get("plotter.gridAlpha", 0.15))))
+_GRID_COLOR = _blend_over_bg((0xD4, 0xD4, 0xD4, int(round(_GRID_ALPHA * 255))))
+_MARKER_COLORS_OPAQUE = [_blend_over_bg(c) for c in _MARKER_COLORS]
+
+# Linienbreite der Kurven. 1 px ist der schnelle Weg: ab > 1 px zeichnet
+# pyqtgraph jede Kurve als Einzelsegmente mit Breitstift — gemessen doppelt
+# so teuer (4 Kurven x 500 Punkte: 13,5 ms statt 6,8 ms je Bild).
+_LINE_WIDTH = max(0.5, min(4.0, float(app_settings.get("plotter.lineWidth", 1.0))))
+
 
 def _nice_step(raw: float) -> float:
     """Naechstgroesserer „glatter“ Schritt aus der Reihe 1-2-5 x 10^k."""
@@ -381,7 +409,23 @@ class PyQtGraphHost(QQuickPaintedItem):
         self._plot.setAntialiasing(self._antialias)
         self._plot.setMouseEnabled(x=False, y=False)   # Bedienung läuft in QML
         self._plot.hideButtons()
-        self._plot.showGrid(x=True, y=True, alpha=0.15)
+        # Gitter deckend statt halbtransparent (siehe _GRID_COLOR): eigener
+        # Tick-Stift in der vorab gemischten Farbe, tickAlpha=255 schaltet
+        # die Transparenz-Abstufung von pyqtgraph ab.
+        if _GRID_ALPHA > 0.0:
+            self._plot.showGrid(x=True, y=True, alpha=1.0)
+            grid_pen = pg.mkPen(QColor(*_GRID_COLOR))
+            for name in ("left", "bottom"):
+                axis = self._plot.getAxis(name)
+                axis.setTickPen(grid_pen)
+                # Nur Haupt- und eine Zwischenstufe: ohne die Abstufung per
+                # Transparenz waeren drei gleich helle Stufen zu dicht.
+                axis.setStyle(tickAlpha=255, maxTickLevel=1)
+                # pyqtgraph zeichnet das Gitter mit den Achsen UEBER den
+                # Kurven. Halbtransparent fiel das kaum auf, deckend verdeckt
+                # es jedes Kurvenstueck, das genau auf einer Gitterlinie
+                # liegt. Achsen deshalb unter die Datenebene legen.
+                axis.setZValue(-1000)
         self._plot.setLabel("left", "")
         self._plot.setLabel("bottom", "Sample")
         # Immer manueller X-Bereich (0..n-1); Y je nach Skalierung.
@@ -693,7 +737,7 @@ class PyQtGraphHost(QQuickPaintedItem):
     def _ensure_curves(self, n: int) -> None:
         while len(self._curves) < n:
             i = len(self._curves)
-            pen = pg.mkPen(CURVE_COLORS[i % len(CURVE_COLORS)], width=1.8)
+            pen = pg.mkPen(CURVE_COLORS[i % len(CURVE_COLORS)], width=_LINE_WIDTH)
             ci = self._plot.plot(pen=pen, connect="auto")
             ci.setDownsampling(auto=self._downsample, method=self._ds_method)
             ci.setClipToView(True)
@@ -708,9 +752,12 @@ class PyQtGraphHost(QQuickPaintedItem):
         vorher passierte das für JEDE Marke in JEDEM Frame.
         """
         if not self._pen_cache:
+            # Deckend und 1 px (siehe _MARKER_COLORS_OPAQUE): bis zu 64
+            # halbtransparente Marken haetten das Bild wieder so teuer gemacht
+            # wie vorher das Gitter.
             self._pen_cache = [
-                pg.mkPen(c, width=1.2, style=Qt.PenStyle.DashLine)
-                for c in _MARKER_COLORS
+                pg.mkPen(QColor(*c), width=1, style=Qt.PenStyle.DashLine)
+                for c in _MARKER_COLORS_OPAQUE
             ]
         return self._pen_cache[min(level, len(self._pen_cache) - 1)]
 
@@ -787,7 +834,7 @@ class PyQtGraphHost(QQuickPaintedItem):
             else:
                 ys.fill(0.0)
         if self._live_curve is None:
-            pen = pg.mkPen(CURVE_COLORS[0], width=1.4)
+            pen = pg.mkPen(CURVE_COLORS[0], width=_LINE_WIDTH)
             pen.setStyle(Qt.PenStyle.DashLine)
             self._live_curve = self._plot.plot(pen=pen, connect="auto")
             self._live_curve.setDownsampling(auto=self._downsample, method=self._ds_method)

@@ -91,7 +91,7 @@ Version 2.6 hat die großen Posten bereits beseitigt (siehe `CHANGELOG.md`):
 
 | Bereits erledigt | Wirkung |
 |---|---|
-| Zeichnen nur bei `bufferChanged` (Dirty-Flag) | Eingefroren/kein Datenstrom = 0 Redraws statt 20/s |
+| Zeichnen nur bei `bufferChanged` (Dirty-Flag) | Kein Datenstrom = 0 Redraws; eingefroren nur noch im Ruhetakt (seit 2.10, Live-Kurve) |
 | `maxFps` 20 → 12, `idleFps` 4 | ~40 % weniger Zeichendurchläufe |
 | Statistik/Legende gedrosselt auf 200 ms, ein Durchlauf | 37,5 ms → 3,4 ms je 100 Pakete |
 | Keine Array-Allokation im Datentakt (vorab angelegte Puffer, float32) | ~1 MB/s kurzlebiger Speicher weniger |
@@ -290,6 +290,47 @@ Produktentscheidungen sind:
   „Eingefroren kostet nichts“-Eigenschaft aus 2.6 wieder her.
 
 Zu entscheiden, bevor jemand daran arbeitet — nicht nebenbei.
+
+**Entschieden (2.10): wirklich weiter aufzeichnen.** `append_block()`
+schreibt eingefroren weiter, `snapshot()` liefert den festgehaltenen Stand.
+Die beiden Haken von oben sind gelöst:
+
+* Marken: `setFrozen()` merkt sich `_total`/`_filled` im Moment des
+  Einfrierens, `visible_markers()` rechnet eingefroren gegen diesen Stand.
+  Marken nach dem Einfrieren erscheinen nicht im stehenden Bild, und das
+  Aufräumen der Markenliste schont das stehende Fenster.
+* Redraw: eingefroren meldet `append_block()` neue Daten nur im Ruhetakt
+  (`idleFps`, Vorgabe 4/s) — genug für die gestrichelte Live-Kurve.
+
+Nach dem Auftauen ist der eingefrorene Zeitraum lückenlos im Verlauf; vorher
+fehlte er und der Verlauf war an dieser Stelle unsichtbar verklebt.
+
+---
+
+## 8. Nachtrag 2.10 — der eigentliche Engpass war das Gitter
+
+Gemessen mit `tools/plotter_bench.py --render` (800 × 400, Bild-Modus):
+
+| | 1 Kurve | 4 Kurven | 8 Kurven |
+|---|---|---|---|
+| vorher | 38 ms | 45 ms | 54 ms |
+| deckendes Gitter | 12 ms | 14 ms | 20 ms |
+| + Kurven 1 px | **2–3 ms** | **3 ms** | **6 ms** |
+
+* **Halbtransparente Linien** rastert Qt in Software rund 30-mal langsamer als
+  deckende (60 Linien: 24 ms statt 0,75 ms). Das Gitter von pyqtgraph
+  (`showGrid(alpha=0.15)`) besteht aus genau solchen Linien und kostete allein
+  drei Viertel der Bildzeit. Jetzt wird die Farbe vorab mit dem Hintergrund
+  gemischt und deckend gezeichnet (`plotter.gridAlpha`), die Achsen liegen
+  dafür unter den Kurven (sonst verdeckt das deckende Gitter Kurvenstücke).
+  Dasselbe für die Marken.
+* **Kurven über 1 px** zeichnet pyqtgraph als Einzelsegmente mit Breitstift —
+  doppelt so teuer. Vorgabe jetzt 1 px (`plotter.lineWidth`).
+
+Ende-zu-Ende mit Simulator (100 Hz, Plotter-Tab offen): vorher 10,4 Bilder/s
+bei 23 ms je Bild, jetzt 23,6 Bilder/s bei 3,9 ms. Damit sind `maxFps` und der
+Datentakt `network.guiFps` auf 25 angehoben; bestehende `settings.json` mit
+den alten Standardwerten werden einmalig umgestellt (Version 2).
 
 ---
 

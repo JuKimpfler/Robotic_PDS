@@ -92,7 +92,7 @@ DEFAULTS: dict[str, Any] = {
         "startet also immer. Eine Kopie unter dem Namen settings.<Name>.json "
         "ist ein Profil und laesst sich im Tab Diagnose laden."
     ),
-    "version": 1,
+    "version": 2,
 
     # ── Was der Bediener umschaltet (frueher runtime_config/ui_settings.json)
     "ui": {
@@ -203,7 +203,8 @@ DEFAULTS: dict[str, Any] = {
             "#c586c0", "#9cdcfe", "#b5cea8", "#ffd700",
         ],
         # Senkrechte Marken (Ereignisse/Trigger) nach Stufe 0/1/2.
-        # Schreibweise #aarrggbb — die Marken sind bewusst halbdurchsichtig.
+        # Schreibweise #aarrggbb. Die Deckkraft wird vorab mit dem
+        # Hintergrund gemischt und deckend gezeichnet (siehe plot_host.py).
         "markerColors": ["#a078c8ff", "#c8ffbe3c", "#dcff5a46"],
 
         # ── Performance / Überlastung ──────────────────────────────────────
@@ -211,13 +212,14 @@ DEFAULTS: dict[str, Any] = {
         # Bei anhaltender Überlastung (Event-Loop-Staulast) schaltet der
         # Plotter ab und zeigt einen Hinweis, statt die GUI einzufrieren.
         #
-        # Das Rastern der Kurven (pyqtgraph zeichnet Gitter, Achsen und alle
-        # Polylinien neu) macht rund 95 % der Plotter-Last aus — nicht die
-        # Datenaufbereitung. Der Bildtakt ist damit der wirksamste Hebel
-        # ueberhaupt: 12 statt 20 fps sind gut 40 % weniger Rechenlast, und
-        # ein Trendverlauf laeuft damit immer noch fluessig. Wer die
-        # Leistung hat, stellt hier wieder 20 (oder mehr) ein.
-        "maxFps": 12,
+        # Das Rastern (Gitter, Achsen, Polylinien) macht rund 95 % der
+        # Plotter-Last aus. Seit Gitter und Marken deckend und die Kurven
+        # 1 px breit gezeichnet werden, kostet ein Bild 2 bis 7 ms statt
+        # 40 bis 55 ms (tools/plotter_bench.py --render) — vorher war der
+        # Plotter deshalb auf 12 fps gedeckelt und lief auf dem Pi real mit
+        # 2 bis 10. Mehr als guiFps (Datentakt) bringt nichts: dazwischen
+        # gibt es keine neuen Daten.
+        "maxFps": 25,
         # Der Bildtakt richtet sich nach der gemessenen Dauer EINES Bildes:
         # maxFps ist nur die Obergrenze, minFps die Untergrenze. Auf
         # schwacher Hardware sinkt der Takt damit sanft ab, statt dass der
@@ -259,6 +261,13 @@ DEFAULTS: dict[str, Any] = {
         # Wert (etwas billiger, kann Spitzen aber verschlucken), "mean"
         # mittelt.
         "downsampleMethod": "peak",
+        # Linienbreite der Kurven in Pixeln. 1 ist der schnelle Weg; ab mehr
+        # als 1 px braucht pyqtgraph pro Bild etwa doppelt so lange.
+        "lineWidth": 1.0,
+        # Deckkraft des Gitters (0 = kein Gitter). Wird vorab mit dem
+        # Hintergrund gemischt und deckend gezeichnet — halbtransparente
+        # Linien waren der teuerste Posten des ganzen Plotters.
+        "gridAlpha": 0.15,
         "antialias": False,
         # Wächter-Schwellen (siehe bridge/perf_watchdog.py):
         #   measureMs       Takt des Wächter-Timers
@@ -301,7 +310,7 @@ DEFAULTS: dict[str, Any] = {
         # Auf Windows (Entwicklungsrechner) statt der Node-Adressen
         # 127.0.0.1 benutzen, damit --simulate ohne Umkonfigurieren laeuft.
         "loopbackOnWindows": True,
-        "guiFps": 20,                   # Poll-Takt der Oberflaeche
+        "guiFps": 25,                   # Poll-Takt der Oberflaeche
         "nodeTimeoutSeconds": 1.5,      # danach gilt ein Node als getrennt
         "recvBufferBytes": 1048576,     # Kernel-Empfangspuffer je Socket
         "queueMaxSize": 300,            # dann wird das aelteste Paket verworfen
@@ -485,9 +494,48 @@ def read_file(path: Path) -> dict | None:
     return raw
 
 
+# ── Umstellungen zwischen Dateiversionen ──────────────────────────────────
+#  settings.json enthaelt nach dem ersten Start JEDEN Schluessel mit seinem
+#  damaligen Standardwert. Eine geaenderte Vorgabe kaeme auf einem
+#  eingerichteten Geraet deshalb nie an. Hier steht je Version, welche
+#  ALTEN Standardwerte durch die neuen ersetzt werden — aber nur, wenn noch
+#  genau der alte Standardwert drinsteht. Von Hand Geaendertes bleibt.
+#
+#  Version 2: Der Plotter war auf 12 Bilder/s gedeckelt, weil ein Bild mit
+#  halbtransparentem Gitter und 1,8-px-Linien 40 bis 55 ms kostete. Seit
+#  beides deckend bzw. 1 px ist, sind es 2 bis 7 ms (tools/plotter_bench.py)
+#  — 25 Bilder/s und ein 25-Hz-Datentakt sind damit bezahlbar.
+_MIGRATIONS: dict[int, list[tuple[str, Any, Any]]] = {
+    2: [("plotter.maxFps", 12, 25),
+        ("network.guiFps", 20, 25)],
+}
+
+
+def _migrate(raw: dict, data: dict) -> None:
+    try:
+        version = int(raw.get("version", 1))
+    except (TypeError, ValueError):
+        version = 1
+    for target in sorted(_MIGRATIONS):
+        if version >= target:
+            continue
+        for dotted, old, new in _MIGRATIONS[target]:
+            *parents, leaf = dotted.split(".")
+            node = data
+            for part in parents:
+                node = node.get(part) if isinstance(node, dict) else None
+            if isinstance(node, dict) and node.get(leaf) == old:
+                node[leaf] = new
+                log.info("settings: %s %r -> %r (neue Vorgabe, Version %d).",
+                         dotted, old, new, target)
+    data["version"] = DEFAULTS["version"]
+
+
 def normalize(raw: dict | None) -> dict:
     """Rohdaten mit den Standardwerten zusammenfuehren und pruefen."""
     data = _merge_dict(DEFAULTS, raw or {})
+    if raw is not None:
+        _migrate(raw, data)
     _fix_ranges(data)
     _clamp_into_ranges(data)
     return data
@@ -522,6 +570,12 @@ def ensure_file() -> None:
     # jedem bekannten Schluessel darin.
     if not SETTINGS_PATH.exists() and save(SETTINGS):
         log.info("%s neu angelegt (Standardwerte).", SETTINGS_PATH)
+    else:
+        # Aeltere Dateiversion: die Umstellung (_migrate) ist beim Laden
+        # schon im Speicher passiert, jetzt einmal festschreiben.
+        raw = read_file(SETTINGS_PATH)
+        if raw is not None and raw.get("version") != DEFAULTS["version"]:
+            save(SETTINGS)
     data = _take_over_legacy(SETTINGS)
     if data is not SETTINGS:
         replace(data)

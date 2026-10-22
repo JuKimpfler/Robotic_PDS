@@ -276,6 +276,12 @@ def main() -> None:
     exit_code = app.exec()
 
     bridge.shutdown()      # idempotent, siehe AppBridge.shutdown()
+    # Die QML-Engine VOR der Bruecke abbauen. Beim Verlassen von main()
+    # raeumt Python die lokalen Variablen in keiner festen Reihenfolge ab;
+    # verschwand appBridge zuerst, werteten die noch lebenden Bindings ihre
+    # Ausdruecke gegen null aus ("Cannot read property 'settings' of null"
+    # — dutzendfach bei jedem Beenden).
+    del engine
     if sim_proc and sim_proc.is_alive():
         sim_proc.terminate()
         sim_proc.join(timeout=2)
