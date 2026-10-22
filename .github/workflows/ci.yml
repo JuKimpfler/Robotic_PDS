@@ -1,167 +1,80 @@
 name: CI
 
-# Prueft bei jedem Push und jedem Pull Request alles, was sich ohne Hardware
-# pruefen laesst — genau die Faelle, die man sonst erst am Spielfeldrand
-# bemerkt: abweichendes Wire-Format zwischen Teensy/Node/GUI, eine QML-Datei
-# die nicht mehr laedt, ein Deskriptor der kein gueltiges JSON mehr ist, und
-# eine Firmware die gar nicht mehr uebersetzt.
+# Prueft bei jedem Push und Pull Request alles, was sich ohne Hardware pruefen
+# laesst. Jeder Job ruft genau eine Stufe von tools/check_all.sh auf — lokal
+# laeuft mit `bash tools/check_all.sh` also exakt dasselbe.
+#
+#   lint     ~30 s   Syntax, pyflakes, ShellCheck, Wire-Format, QML-Zugriffe,
+#                    Setup/Update/Deploy in einer Sandbox
+#   python           Selbsttest + Plotter-Vergleiche, auf den Python-Versionen
+#                    von Raspberry Pi OS (3.11 Bookworm, 3.13 Trixie)
+#   gui              ganze Oberflaeche offscreen + Zeitbudget fuer den Plotter
+#   teensy           Deskriptor auf dem Host ausgefuehrt, Firmware gebaut;
+#                    firmware.hex liegt danach als Artefakt am Lauf
+#
+# release.yml ruft diesen Workflow vor jedem Release auf (workflow_call).
 
 on:
   push:
     branches: ["**"]
+    tags-ignore: ["v*"]          # Tags laufen ueber release.yml
   pull_request:
   workflow_dispatch:
+  workflow_call:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
-  # ══════════════════════════════════════════════════════════════════════
-  #  1) Python: Selbsttest, Wire-Format, QML-Bindungen, Linting
-  # ══════════════════════════════════════════════════════════════════════
+  lint:
+    name: Lint & Skripte
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-pds
+        with: { qt: "false" }
+      - run: bash tools/check_all.sh lint
+
   python:
-    name: Python (${{ matrix.python }})
+    name: Python ${{ matrix.python }}
+    needs: lint
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        # 3.11 = Bookworm, 3.13 = Trixie (Raspberry Pi OS)
-        python: ["3.11", "3.12", "3.13"]
-
+        python: ["3.11", "3.13"]
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-pds
+        with: { python: "${{ matrix.python }}" }
+      - run: bash tools/check_all.sh python
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python }}
-          cache: pip
-
-      - name: Systembibliotheken fuer Qt
-        # Das pip-Paket PyQt6 bringt Qt selbst mit, aber nicht dessen
-        # Systemabhaengigkeiten. Ohne libEGL.so.1 wirft bereits
-        # `import PyQt6.QtGui` einen ImportError — Abschnitt 15 des
-        # Selbsttests (Plotter-Marken, Controller-Mapping) faellt dann aus.
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libgl1 libegl1 libglib2.0-0 libdbus-1-3 \
-            libxkbcommon0 libfontconfig1 libfreetype6
-
-      - name: Abhaengigkeiten installieren
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install pyflakes numpy PyQt6
-
-      - name: Selbsttest (ohne Hardware)
-        run: python tools/selftest.py
-
-      - name: Plotter — Wert-fuer-Wert-Vergleiche
-        # Belegt, dass die Sparmassnahmen am Plotter das ERGEBNIS nicht
-        # veraendert haben: Ringpuffer, Kurvenarrays und Trigger gegen
-        # unabhaengige Referenzimplementierungen. Braucht kein pyqtgraph,
-        # laeuft deshalb schon in dieser Stufe.
-        run: python tools/plotter_bench.py --verify
-
-      - name: Wire-Format Teensy/Node/GUI
-        run: python tools/check_wire_format.py
-
-      - name: QML-Zugriffe gegen die Python-Bruecken
-        run: python tools/check_qml_bindings.py
-
-      - name: pyflakes
-        run: |
-          # extra_script.py bekommt seine Namen von PlatformIO.
-          python -m pyflakes \
-            rpi5_monitor/64Bit_Version/*.py \
-            rpi5_monitor/64Bit_Version/bridge/*.py \
-            rpi_zero_node/*.py \
-            shared/*.py \
-            pc_flash_tool/*.py \
-            tools/*.py
-
-      - name: Shell-Skripte pruefen
-        # bash -n findet nur Syntaxfehler. shellcheck (auf ubuntu-latest
-        # vorinstalliert) findet auch, was erst auf dem Pi auffaellt:
-        # ungequotete Variablen, Fehler, die set -e nicht abfaengt, ...
-        run: |
-          for f in $(git ls-files '*.sh'); do
-            echo "-- $f"
-            bash -n "$f"
-          done
-          shellcheck -S warning $(git ls-files '*.sh')
-
-  # ══════════════════════════════════════════════════════════════════════
-  #  2) Oberflaeche wirklich starten (Offscreen)
-  # ══════════════════════════════════════════════════════════════════════
   gui:
-    name: QML-Oberflaeche laedt
+    name: Oberfläche
+    needs: lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-pds
+        with: { pyqtgraph: "true" }
+      - run: bash tools/check_all.sh gui
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: pip
-
-      - name: Systembibliotheken fuer Qt
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libgl1 libegl1 libglib2.0-0 libdbus-1-3 \
-            libxkbcommon0 libfontconfig1 libfreetype6 \
-            fonts-dejavu-core
-          # fonts-dejavu-core: libfontconfig bringt selbst keine Schrift mit.
-          # Ohne eine einzige installierte Schriftart meldet Qt beim Aufbau
-          # jedes Textelements eine Warnung — und der Smoketest wertet jede
-          # Qt-Warnung als Fehler.
-
-      - name: Abhaengigkeiten installieren
-        # pyqtgraph gehoert dazu: ohne das Paket faellt der Plotter-Host in
-        # den Fehler-Modus, Main.qml laedt trotzdem warnungsfrei und der
-        # Smoketest wird gruen, ohne dass der Plotter je ein Bild gezeichnet
-        # hat. Gemessen: 0 Zeichendurchlaeufe ohne, 59 mit pyqtgraph.
-        # qml_smoketest.py besteht seitdem auf 'native'/'image'.
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install numpy PyQt6 pyqtgraph
-
-      - name: Main.qml offscreen starten
-        run: python tools/qml_smoketest.py
-
-  # ══════════════════════════════════════════════════════════════════════
-  #  3) Teensy: Deskriptor wirklich ausfuehren + Firmware uebersetzen
-  # ══════════════════════════════════════════════════════════════════════
   teensy:
-    name: Teensy-Bibliothek
+    name: Teensy
+    needs: lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
+      - uses: ./.github/actions/setup-pds
+        with: { qt: "false", platformio: "true" }
+      - run: bash tools/check_all.sh teensy
+      - uses: actions/upload-artifact@v4
         with:
-          python-version: "3.12"
-          cache: pip
-
-      - name: Deskriptor auf dem Host ausfuehren und JSON pruefen
-        run: python tools/desc_json_check.py
-
-      - name: PlatformIO installieren
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install platformio
-
-      - name: PlatformIO-Pakete zwischenspeichern
-        uses: actions/cache@v4
-        with:
-          path: ~/.platformio
-          key: pio-${{ runner.os }}-${{ hashFiles('teensy_firmware/platformio.ini') }}
-          restore-keys: pio-${{ runner.os }}-
-
-      - name: Firmware uebersetzen
-        working-directory: teensy_firmware
-        run: pio run
-
-      - name: Bibliothek in mehreren Konfigurationen uebersetzen
-        run: bash tools/build_teensy_check.sh
+          name: firmware-${{ github.sha }}
+          path: teensy_firmware/.pio/build/teensy40/firmware.hex
+          if-no-files-found: error
+          retention-days: 30

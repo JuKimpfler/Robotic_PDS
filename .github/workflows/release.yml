@@ -1,0 +1,84 @@
+name: Release
+
+# Ein Tag wie `v2.10` (git tag v2.10 && git push origin v2.10) erzeugt nach
+# gruener CI ein GitHub-Release mit:
+#
+#   firmware.hex              die Beispiel-Firmware aus teensy_firmware/
+#   pds-<tag>.tar.gz          kompletter Stand inkl. VERSION — entpacken und
+#                             `sudo bash update.sh --no-pull` (oder Setup)
+#
+# Der Text des Releases ist der passende Abschnitt aus CHANGELOG.md
+# (Ueberschrift "## <Nummer ohne v> — ...").
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Vorhandener Tag, fuer den das Release (neu) gebaut wird"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  release:
+    name: Release bauen
+    needs: ci
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ github.event.inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+          fetch-depth: 0
+
+      - uses: ./.github/actions/setup-pds
+        with: { qt: "false", platformio: "true" }
+
+      - name: Firmware bauen
+        working-directory: teensy_firmware
+        run: pio run -s
+
+      - name: Paket bauen
+        run: |
+          mkdir -p dist stage
+          git archive --format=tar "$TAG" | tar -x -C stage
+          echo "$TAG ($(git log -1 --format=%cs "$TAG"))" > stage/VERSION
+          tar -C stage -czf "dist/pds-$TAG.tar.gz" .
+          cp teensy_firmware/.pio/build/teensy40/firmware.hex dist/firmware.hex
+          ls -l dist
+
+      - name: Release-Text aus CHANGELOG.md
+        run: |
+          ver="${TAG#v}"
+          awk -v v="$ver" '
+            /^## / { if (found) exit; if (index($0, "## " v " ") == 1) found = 1 }
+            found' CHANGELOG.md > notes.md
+          if [[ ! -s notes.md ]]; then
+            echo "Kein Abschnitt '## $ver' in CHANGELOG.md — Standardtext." >&2
+            echo "Stand $TAG. Änderungen siehe CHANGELOG.md." > notes.md
+          fi
+          cat >> notes.md << 'EOF2'
+
+          ---
+          **Aktualisieren:** `./deploy.sh all` vom PC aus, oder auf dem Gerät
+          `sudo bash update.sh`. Ohne git: Paket entpacken, darin
+          `sudo bash update.sh --no-pull`. Siehe `Doku/Setup_und_Update.md`.
+          EOF2
+
+      - name: Release anlegen bzw. aktualisieren
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber
+            gh release edit "$TAG" --notes-file notes.md
+          else
+            gh release create "$TAG" dist/* --title "PDS $TAG" --notes-file notes.md
+          fi

@@ -317,7 +317,8 @@ def bench_data(pakete: int = 2000) -> None:
 # ══════════════════════════════════════════════════════════════════════════
 #  2) Rastern — der echte Host im Bild-Modus
 # ══════════════════════════════════════════════════════════════════════════
-def bench_render(bilder: int = 200, breite: int = 800, hoehe: int = 400) -> None:
+def bench_render(bilder: int = 200, breite: int = 800, hoehe: int = 400,
+                 budget_ms: float | None = None) -> None:
     section(f"2) Rastern — {bilder} vollstaendige _redraw() im Bild-Modus "
             f"({breite}x{hoehe})")
     if not _need("numpy", "PyQt6.QtWidgets", "pyqtgraph"):
@@ -390,6 +391,11 @@ def bench_render(bilder: int = 200, breite: int = 800, hoehe: int = 400) -> None
             dt, _, _ = einen_lauf(n_kurven, punkte, False, True)
             print(f"  {n_kurven:>6}  {punkte:>6}  normiert                "
                   f"{dt:8.2f}")
+            if budget_ms is not None and (n_kurven, punkte) == (4, 500):
+                # Waechter fuer die CI: das halbtransparente Gitter kostete
+                # einmal 45 ms je Bild, ohne dass es ein Test bemerkt haette.
+                check(f"4 Kurven x 500 Punkte unter {budget_ms:.0f} ms je Bild",
+                      dt < budget_ms, f"{dt:.1f} ms")
     print("  Der Abstand zwischen 1x250 und 8x600 ist klein gegen den")
     print("  Grundbetrag: das meiste kostet nicht die Kurve, sondern das")
     print("  Rastern von Hintergrund, Gitter und Achsen (Plan: K2/M8).")
@@ -518,6 +524,9 @@ def main() -> int:
     ap.add_argument("--data", action="store_true", help="nur den Datenpfad")
     ap.add_argument("--render", action="store_true", help="nur das Rastern")
     ap.add_argument("--legend", action="store_true", help="nur die QML-Legende")
+    ap.add_argument("--budget-ms", type=float, default=None,
+                    help="mit --render: Fehler, wenn ein Bild (4 Kurven x 500 "
+                         "Punkte) laenger dauert")
     args = ap.parse_args()
 
     einzeln = args.verify or args.data or args.render or args.legend
@@ -529,7 +538,7 @@ def main() -> int:
     if args.data or not einzeln:
         bench_data()
     if args.render or not einzeln:
-        bench_render()
+        bench_render(budget_ms=args.budget_ms)
     if args.legend or not einzeln:
         bench_legend()
 
