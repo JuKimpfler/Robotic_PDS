@@ -28,3 +28,8 @@ rpi5_monitor/64Bit_Version/runtime_config/
 rpi5_monitor/64Bit_Version/settings.json
 # ... und die gespeicherten Einstellungssaetze (Profile).
 rpi5_monitor/64Bit_Version/settings.*.json
+
+# Persoenliche Ziel-Adressen fuer deploy.sh (siehe deploy.sh-Kopf)
+deploy.conf
+# Von deploy.sh mitgeschickte Versionsangabe (nur im Deploy-Paket)
+/VERSION

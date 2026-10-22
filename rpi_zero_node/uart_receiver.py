@@ -769,7 +769,18 @@ def _open_uart() -> "serial.Serial":
 #  Hauptfunktion — einthreadige Event-Loop
 # ══════════════════════════════════════════════════════════════════════════════
 
+def _installed_version() -> str:
+    """Von setup_node.sh/update.sh geschriebene VERSION neben diesem Skript."""
+    try:
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "VERSION"),
+                  "r", encoding="utf-8") as fh:
+            return fh.readline().strip() or "unbekannt"
+    except OSError:
+        return "Entwicklungsstand (nicht installiert)"
+
+
 def main() -> None:
+    log.info(f"Power Debug Node {NODE_ID} — Version {_installed_version()}")
     log.info(
         f"Starte | NODE_ID={NODE_ID} | UDP-Port {UDP_PORT} | erwarteter RPi5: {RPI5_IP} | "
         f"UART {UART_PORT} @ {UART_BAUD // 1_000_000} Mbps | "

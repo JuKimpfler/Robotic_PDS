@@ -203,6 +203,13 @@ def main() -> None:
     # herkommen, ist aber genau die Frage, die man sich stellt, wenn die
     # Oberflaeche anders aussieht als erwartet.
     log.info("Einstellungen: %s", app_settings.SETTINGS_PATH)
+    # Von setup_rpi5.sh/update.sh geschrieben: welcher Stand laeuft hier?
+    try:
+        version = (Path(__file__).resolve().parent / "VERSION").read_text(
+            encoding="utf-8").strip()
+    except OSError:
+        version = "Entwicklungsstand (nicht installiert)"
+    log.info("Power Debug Monitor — Version %s", version)
 
     QCoreApplication.setApplicationName("Power Debug Monitor")
     QCoreApplication.setOrganizationName("RoboCup Debug System")

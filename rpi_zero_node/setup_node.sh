@@ -115,15 +115,22 @@ else
 fi
 
 # ── Abgeleitete Werte ─────────────────────────────────────────────────────────
-# Nur noch Anzeige/Log: wohin die Telemetrie geht, lernt uart_receiver.py
-# aus den Paketen der GUI (siehe TelemetryTarget). Im AP-Modus des
-# Monitor-Pis (setup_rpi5.sh --ap) ist das genau diese Adresse.
-RPI5_IP="192.168.42.1"
+# Wohin die Telemetrie geht, lernt uart_receiver.py aus den Paketen der
+# GUI (siehe TelemetryTarget) — eine feste Adresse des Haupt-Pis gibt es nicht.
 AP_SSID="RoboDebug"                # WLAN-Name  (wie setup_rpi5.sh)
 AP_PASS="robodebug123"             # Passwort   (wie setup_rpi5.sh)
 INSTALL_DIR="/opt/power_debug_node"
 SERVICE_RECV="uart-receiver"
 PROJECT_SRC="$(dirname "$(realpath "$0")")"
+REPO_ROOT="$(dirname "$PROJECT_SRC")"
+
+# Gemeinsame Installationsschritte mit update.sh (Dateien, Dienste,
+# Rollen-Datei) — siehe scripts/pds_common.sh.
+if [[ ! -f "$REPO_ROOT/scripts/pds_common.sh" ]]; then
+    error "scripts/pds_common.sh fehlt — bitte das komplette Repository auf den Node kopieren (oder ./deploy.sh --setup-node benutzen)."
+fi
+# shellcheck source=../scripts/pds_common.sh
+source "$REPO_ROOT/scripts/pds_common.sh"
 
 # ── Root-Check ────────────────────────────────────────────────────────────────
 [[ $EUID -ne 0 ]] && error "Bitte mit sudo ausführen: sudo bash setup_node.sh $NODE_ID"
@@ -375,53 +382,13 @@ ok "Hostname gesetzt: $HOSTNAME"
 # ══════════════════════════════════════════════════════════════════════════════
 step "4 | Projektdateien installieren nach $INSTALL_DIR"
 # ══════════════════════════════════════════════════════════════════════════════
-
-mkdir -p "$INSTALL_DIR"
-mkdir -p "$INSTALL_DIR/rpi_zero_node"
-touch "$INSTALL_DIR/rpi_zero_node/__init__.py"
-
-# status_leds.py — GPIO-Status-LEDs (gpiozero)
-# WICHTIG: liegt NEBEN uart_receiver.py, nicht darunter — uart_receiver.py
-# importiert es direkt ("from status_leds import StatusLEDs"), und der
-# Dienst startet mit WorkingDirectory=$INSTALL_DIR. Frueher wurde es nur
-# nach $INSTALL_DIR/rpi_zero_node/ kopiert (zweimal sogar, identisches
-# Ziel) — der Import ist deshalb immer stillschweigend fehlgeschlagen und
-# die im README beschriebenen LEDs blieben dunkel.
-if [[ -f "$PROJECT_SRC/status_leds.py" ]]; then
-    cp "$PROJECT_SRC/status_leds.py" "$INSTALL_DIR/status_leds.py"
-    ok "status_leds.py installiert"
-else
-    warn "status_leds.py nicht gefunden — LEDs deaktiviert"
-fi
-
-# UART-Receiver (hiess vor dem Aufraeumen spi_receiver.py)
-if [[ -f "$PROJECT_SRC/uart_receiver.py" ]]; then
-    cp "$PROJECT_SRC/uart_receiver.py" "$INSTALL_DIR/uart_receiver.py"
-    ok "uart_receiver.py installiert"
-elif [[ -f "$PROJECT_SRC/spi_receiver.py" ]]; then
-    cp "$PROJECT_SRC/spi_receiver.py" "$INSTALL_DIR/uart_receiver.py"
-    ok "uart_receiver.py installiert (aus altem spi_receiver.py)"
-else
-    error "uart_receiver.py nicht gefunden — ohne sie hat der Node keine Funktion."
-fi
-
-
-# bt_flash_receiver.py + gemeinsames Protokoll (Wireless-Flash-Feature)
-SHARED_SRC="$(dirname "$PROJECT_SRC")/shared"
-mkdir -p "$INSTALL_DIR/shared"
-if [[ -f "$PROJECT_SRC/bt_flash_receiver.py" ]]; then
-    cp "$PROJECT_SRC/bt_flash_receiver.py" "$INSTALL_DIR/rpi_zero_node/"
-    ok "bt_flash_receiver.py installiert"
-else
-    warn "bt_flash_receiver.py nicht gefunden — Wireless-Flash-Feature nicht verfuegbar"
-fi
-if [[ -f "$SHARED_SRC/bt_flash_protocol.py" ]]; then
-    cp "$SHARED_SRC/bt_flash_protocol.py" "$INSTALL_DIR/shared/"
-    cp "$SHARED_SRC/bt_flash_protocol.py" "$INSTALL_DIR/rpi_zero_node/"
-    ok "bt_flash_protocol.py installiert"
-else
-    warn "bt_flash_protocol.py (shared/) nicht gefunden — Wireless-Flash-Feature nicht verfuegbar"
-fi
+#  uart_receiver.py + status_leds.py direkt in $INSTALL_DIR (der Dienst
+#  importiert status_leds von dort), bt_flash_receiver.py + Protokoll unter
+#  rpi_zero_node/ und shared/ — siehe pds_install_node_files.
+VERSION_STR="$(pds_version_of "$REPO_ROOT")"
+pds_install_node_files "$REPO_ROOT" "$INSTALL_DIR" "$VERSION_STR" \
+    || error "Projektdateien konnten nicht installiert werden."
+ok "Projektdateien installiert (${VERSION_STR})"
 
 # Auth-Token fuer den Bluetooth-Flash-Kanal generieren (einmalig, bleibt ueber
 # spaetere Setup-Laeufe hinweg erhalten, damit bt_targets.json auf dem PC nicht
@@ -435,97 +402,29 @@ else
     ok "Auth-Token bereits vorhanden: $SECRET_FILE"
 fi
 
-chmod +x "$INSTALL_DIR/"*.py "$INSTALL_DIR/rpi_zero_node/"*.py 2>/dev/null || true
-ok "Projektdateien installiert"
 
 # ══════════════════════════════════════════════════════════════════════════════
-step "5 | Systemdienst: uart-receiver"
+step "5 | Systemdienste: uart-receiver, bt-flash-receiver"
 # ══════════════════════════════════════════════════════════════════════════════
-
-# Hinweise zu den Optionen:
-#   * Restart=always statt on-failure — der Dienst soll auch nach einem
-#     sauberen Beenden (SIGTERM durch ein Update, Exit 0) wieder anlaufen.
-#   * StartLimitIntervalSec/StartLimitBurst gehoeren in den [Unit]-Abschnitt.
-#     Im [Service]-Abschnitt (so stand es vorher hier) ignoriert systemd sie
-#     und schreibt bei jedem Start eine Warnung ins Journal.
-#   * RestartSec=2s: der Node ist der einzige Weg zur Telemetrie, eine
-#     kurze Wiederanlaufzeit ist wichtiger als Log-Ruhe.
-cat > /etc/systemd/system/${SERVICE_RECV}.service << SVCEOF
-[Unit]
-Description=Power Debug UART Receiver (Node ${NODE_ID}) — RPi Zero 2 W
-After=network-online.target
-Wants=network-online.target
-StartLimitIntervalSec=60s
-StartLimitBurst=10
-
-[Service]
-Type=simple
-User=root
-WorkingDirectory=${INSTALL_DIR}
-Environment="NODE_ID=${NODE_ID}"
-Environment="RPI5_IP=${RPI5_IP}"
-Environment="PYTHONUNBUFFERED=1"
-ExecStart=/usr/bin/python3 ${INSTALL_DIR}/uart_receiver.py
-Restart=always
-RestartSec=2s
-StandardOutput=journal
-StandardError=journal
-SyslogIdentifier=uart-receiver
-
-[Install]
-WantedBy=multi-user.target
-SVCEOF
-
-ok "uart-receiver.service erstellt"
-
-# ══════════════════════════════════════════════════════════════════════════════
-step "5b | Systemdienst: bt-flash-receiver (Wireless-Flash-Feature)"
-# ══════════════════════════════════════════════════════════════════════════════
+#  Beide laufen als root: der Bluetooth-Flash braucht ohne udev-Regeln
+#  Zugriff auf /dev/ttyACM* (Bootloader-Trigger) und den HalfKay-Bootloader.
+#  Die Unit-Dateien schreibt pds_write_node_services — dieselbe Funktion,
+#  mit der update.sh sie bei jedem Update aktuell haelt.
 SERVICE_BT="bt-flash-receiver"
 BT_CHANNEL="${BT_FLASH_CHANNEL:-4}"
-
-# Hinweis Software-Bootloader-Trigger (trigger_bootloader_mode() in
-# bt_flash_receiver.py): Der Dienst läuft unten bewusst als User=root, damit
-# er ohne zusätzliche udev-Regeln/Gruppenmitgliedschaft sowohl auf den
-# Teensy-CDC-Serial-Port (/dev/ttyACM*, für das Setzen der Baudrate 134) als
-# auch auf den HalfKay-Bootloader (raw USB, für teensy_loader_cli) zugreifen
-# kann. Bei einem spaeteren Wechsel auf einen unprivilegierten Service-User
-# muesste dieser zusaetzlich der Gruppe `dialout` hinzugefuegt werden
-# (sudo usermod -aG dialout <user>) und ggf. eine udev-Regel fuer den
-# HalfKay-Bootloader (16c0:0478) angelegt werden.
-if [[ -f "$INSTALL_DIR/rpi_zero_node/bt_flash_receiver.py" ]]; then
-cat > /etc/systemd/system/${SERVICE_BT}.service << SVCEOF
-[Unit]
-Description=Power Debug Bluetooth Flash Receiver (Node ${NODE_ID}) — RPi Zero 2 W
-After=bluetooth.target bluetooth.service dbus.service
-Wants=bluetooth.target
-Requires=dbus.service
-StartLimitIntervalSec=60s
-StartLimitBurst=5
-
-[Service]
-Type=simple
-User=root
-WorkingDirectory=${INSTALL_DIR}/rpi_zero_node
-Environment="NODE_ID=${NODE_ID}"
-Environment="INSTALL_DIR=${INSTALL_DIR}"
-Environment="BT_FLASH_CHANNEL=${BT_CHANNEL}"
-Environment="PYTHONUNBUFFERED=1"
-ExecStart=/usr/bin/python3 ${INSTALL_DIR}/rpi_zero_node/bt_flash_receiver.py
-Restart=always
-RestartSec=5s
-StandardOutput=journal
-StandardError=journal
-SyslogIdentifier=bt-flash-receiver
-
-[Install]
-WantedBy=multi-user.target
-SVCEOF
+pds_write_node_services "$NODE_ID" "$INSTALL_DIR" "$BT_CHANNEL" || true
+ok "${SERVICE_RECV}.service erstellt"
+if [[ -f "$PDS_SYSTEMD_DIR/${SERVICE_BT}.service" ]]; then
     ok "${SERVICE_BT}.service erstellt (Kanal ${BT_CHANNEL})"
 else
     warn "bt_flash_receiver.py nicht installiert — ${SERVICE_BT}.service wird uebersprungen"
     SERVICE_BT=""
 fi
+
+# Rollen-Datei: update.sh weiss damit ohne jede Angabe, was hier liegt.
+pds_conf_write ROLE=node NODE_ID="$NODE_ID" INSTALL_DIR="$INSTALL_DIR" \
+               BT_CHANNEL="$BT_CHANNEL" REPO_DIR="$REPO_ROOT"
+ok "Rollen-Datei: ${PDS_CONF}"
 
 # ══════════════════════════════════════════════════════════════════════════════
 step "6 | Dienste aktivieren"
@@ -625,6 +524,8 @@ echo "╠═══════════════════════�
 echo "║                                                          ║"
 echo "║   Nächste Schritte:                                      ║"
 echo "║     1. sudo reboot                                       ║"
+echo "║     Updates später: sudo bash ../update.sh               ║"
+echo "║     oder vom PC aus: ./deploy.sh node${NODE_ID}                   ║"
 echo "║                                                          ║"
 echo "║   LEDs nach Reboot:                                      ║"
 echo "║     🔵 Blau AN      → WLAN verbunden                     ║"

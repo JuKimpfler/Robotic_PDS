@@ -90,6 +90,10 @@ fi
 
 # ── Variablen ─────────────────────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Gemeinsame Installationsschritte mit update.sh (Code kopieren, Launcher,
+# Autostart, Rollen-Datei) — siehe scripts/pds_common.sh.
+# shellcheck source=scripts/pds_common.sh
+source "${SCRIPT_DIR}/scripts/pds_common.sh"
 SERVICE_USER="${SUDO_USER:-pi}"
 if ! HOME_DIR="$(getent passwd "$SERVICE_USER" | cut -d: -f6)" || [[ -z "$HOME_DIR" ]]; then
     err "Benutzer '${SERVICE_USER}' existiert nicht — bitte per 'sudo' aus dem"
@@ -184,9 +188,10 @@ PIP_FLAGS=()
 pip3 install --help 2>/dev/null | grep -q -- "--break-system-packages" \
     && PIP_FLAGS+=(--break-system-packages)
 if [[ -f "$REQ_FILE" ]]; then
-    pip3 install "${PIP_FLAGS[@]}" -r "$REQ_FILE" \
-        && ok "Pakete aus requirements.txt installiert." \
-        || warn "pip-Installation aus requirements.txt teilweise fehlgeschlagen — siehe oben."
+    # Merkt sich den Stand von requirements.txt: update.sh ruft pip danach
+    # nur noch auf, wenn sich die Datei geaendert hat.
+    rm -f "$(dirname "$PDS_CONF")/requirements.sha256"
+    pds_monitor_requirements "$REQ_FILE"
 else
     warn "requirements.txt nicht gefunden — Pakete direkt installieren."
     pip3 install "${PIP_FLAGS[@]}" "PyQt6>=6.4.0" "numpy>=1.24.0" "pyqtgraph>=0.13.0" \
@@ -236,20 +241,12 @@ if [[ ! -d "$QML_SRC" ]]; then
 fi
 mkdir -p "$INSTALL_DIR"
 
-# Geraetespezifisches NIE ueberschreiben: settings.json/Profile,
-# runtime_config/ und controller_config.json entstehen zur Laufzeit (und
-# sind git-ignoriert); param_defaults.h schreibt die GUI ("Als Default
-# speichern"). Ein erneuter Setup-Lauf nach `git pull` hat sonst die
-# gespeicherten Parameter-Defaults kommentarlos durch die Vorlage aus dem
-# Repository ersetzt. Liegt param_defaults.h noch nicht im Ziel, kommt die
-# Vorlage mit.
-EXCLUDES=(--exclude=__pycache__ --exclude=starter.bat
-          --exclude=runtime_config --exclude=settings.json
-          --exclude='settings.*.json' --exclude=controller_config.json
-          --exclude='*.json.tmp')
-[[ -f "${INSTALL_DIR}/param_defaults.h" ]] && EXCLUDES+=(--exclude=./param_defaults.h)
-tar -C "$QML_SRC" "${EXCLUDES[@]}" -cf - . | tar -C "$INSTALL_DIR" -xf -
-ok "qml/, qml/components/, bridge/ und alle Kerndateien nach ${INSTALL_DIR} kopiert."
+# Geraetespezifisches bleibt dabei IMMER stehen (settings.json, Profile,
+# runtime_config/, controller_config.json, gespeicherte param_defaults.h) —
+# siehe pds_install_monitor_files in scripts/pds_common.sh.
+VERSION_STR="$(pds_version_of "$SCRIPT_DIR")"
+pds_install_monitor_files "$QML_SRC" "$INSTALL_DIR" "$SERVICE_USER" "$VERSION_STR"
+ok "qml/, bridge/ und alle Kerndateien nach ${INSTALL_DIR} kopiert (${VERSION_STR})."
 
 # main_qml.py auf Vorhandensein prüfen — ohne diese Datei läuft der
 # Launcher (Schritt 6) später ins Leere.
@@ -258,8 +255,6 @@ if [[ ! -f "${INSTALL_DIR}/main_qml.py" ]]; then
     exit 1
 fi
 
-# Berechtigungen setzen
-chown -R "${SERVICE_USER}:${SERVICE_USER}" "${INSTALL_DIR}"
 ok "Dateien nach ${INSTALL_DIR} installiert."
 
 
@@ -340,43 +335,7 @@ fi
 # ════════════════════════════════════════════════════════════════════════════════
 step "6/8  Launcher-Skript erstellen"
 
-cat > /usr/local/bin/power-debug-monitor << LAUNCHER_SCRIPT
-#!/usr/bin/env bash
-# Power Debug Monitor — Launcher-Wrapper
-# Startet die PyQt6 + Qt Quick/QML-GUI (main_qml.py) mit korrekten
-# Umgebungsvariablen.
-
-# Warte kurz auf Display-Server (wichtig beim Autostart)
-sleep 3
-
-# Display-Erkennung: X11 vs. Wayland
-#
-# Hinweis zum Plotter: nur auf der Plattform "xcb" bettet er sein
-# pyqtgraph-Widget nativ ein; unter Wayland rastert er stattdessen in ein
-# QPixmap und blittet es — das kostet die komplette Pixmap-Kette obendrauf.
-# Wer auf einem knappen Aufbau jede Millisekunde braucht, kann hier fest
-# "xcb" eintragen (laeuft dann ueber XWayland). Bewusst NICHT die Vorgabe:
-# Touch-Eingabe und DPI-Skalierung muessen dafuer erst abgenommen werden.
-# Siehe rpi5_monitor/64Bit_Version/README_QML.md, Abschnitt
-# "Der Plotter: nativ oder als Bild".
-if [[ -n "\${WAYLAND_DISPLAY:-}" ]]; then
-    export QT_QPA_PLATFORM="wayland;xcb"
-else
-    export DISPLAY="\${DISPLAY:-:0}"
-    export QT_QPA_PLATFORM="xcb"
-fi
-
-# Qt-Logging reduzieren (unterdrückt egl/xcb-Warnungen auf RPi)
-export QT_LOGGING_RULES="qt.qpa.*=false;qt.network.*=false"
-
-# Anwendungsverzeichnis
-INSTALL_DIR="${INSTALL_DIR}"
-
-cd "\$INSTALL_DIR" || exit 1
-exec python3 main_qml.py "\$@"
-LAUNCHER_SCRIPT
-
-chmod +x /usr/local/bin/power-debug-monitor
+pds_write_monitor_launcher "$INSTALL_DIR"
 ok "Launcher: /usr/local/bin/power-debug-monitor"
 
 
@@ -394,21 +353,7 @@ step "7/8  Autostart für Desktop konfigurieren"
 # Desktop-Session i.d.R. aber BEIDES (das XDG-Verzeichnis UND ihre eigene
 # autostart-Datei), wodurch power-debug-monitor zweimal gestartet wurde
 # ("Doppel-Start"). Jetzt gibt es nur noch diesen einen Eintrag.
-mkdir -p /etc/xdg/autostart
-cat > /etc/xdg/autostart/power-debug-monitor.desktop << DESKTOP_FILE
-[Desktop Entry]
-Type=Application
-Version=1.0
-Name=Power Debug Monitor
-GenericName=RoboCup Power Debugger
-Comment=Wireless Telemetry & Firmware Flash System
-Exec=/usr/local/bin/power-debug-monitor
-Terminal=false
-Categories=Utility;Science;
-Keywords=debug;telemetry;robocup;
-X-GNOME-Autostart-enabled=true
-X-LXSession-Autostart-enabled=true
-DESKTOP_FILE
+pds_write_monitor_autostart
 ok "XDG-Autostart: /etc/xdg/autostart/power-debug-monitor.desktop"
 
 # ── Aufräumen: Einträge früherer Skript-Läufe entfernen ───────────────────
@@ -492,6 +437,12 @@ fi
 $AUTOLOGIN_SET || warn "Autologin nicht automatisch konfiguriert → manuell via 'sudo raspi-config'."
 
 
+# Rollen-Datei: update.sh weiss damit ohne jede Angabe, was hier liegt.
+pds_conf_write ROLE=monitor INSTALL_DIR="$INSTALL_DIR" \
+               SERVICE_USER="$SERVICE_USER" REPO_DIR="$SCRIPT_DIR"
+ok "Rollen-Datei: ${PDS_CONF}"
+
+
 # ════════════════════════════════════════════════════════════════════════════════
 #  Abschlussmeldung
 # ════════════════════════════════════════════════════════════════════════════════
@@ -503,6 +454,7 @@ printf "${GREEN}║  %-62s║${NC}\n" "WLAN          : ${WLAN_MODE}"
 printf "${GREEN}║  %-62s║${NC}\n" "Anwendung     : ${INSTALL_DIR}"
 printf "${GREEN}║  %-62s║${NC}\n" "Manuell Start : power-debug-monitor"
 printf "${GREEN}║  %-62s║${NC}\n" "Simulate-Mode : power-debug-monitor --simulate"
+printf "${GREEN}║  %-62s║${NC}\n" "Update        : sudo bash update.sh"
 echo -e "${GREEN}╠══════════════════════════════════════════════════════════════╣${NC}"
 echo -e "${GREEN}║  ⚠  NEUSTART ERFORDERLICH für:                               ║${NC}"
 echo -e "${GREEN}║     • Hostname-Änderung, WLAN-Land, Autologin                ║${NC}"
