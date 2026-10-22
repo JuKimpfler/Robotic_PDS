@@ -2,12 +2,15 @@
 # ==============================================================================
 #  setup_node.sh — Einrichtungsskript für Raspberry Pi Zero 2 W
 #  Power Debug System | RoboCup Junior Soccer
-#  Zielplattform: RPi Zero 2 W | Pi OS Lite 64-bit (Bookworm / Debian 12)
+#  Zielplattform: RPi Zero 2 W | Pi OS Lite 64-bit (Bookworm / Trixie)
 # ==============================================================================
 #
 #  AUFRUF:
-#    sudo bash setup_node.sh 1    → Node 1 einrichten (DHCP via RPi 5 AP)
-#    sudo bash setup_node.sh 2    → Node 2 einrichten (DHCP via RPi 5 AP)
+#    sudo bash setup_node.sh 1    → Node 1 einrichten
+#    sudo bash setup_node.sh 2    → Node 2 einrichten
+#  Beide holen sich ihre IP per DHCP aus dem WLAN "RoboDebug" — egal ob das
+#  ein Router am Spielfeld stellt oder der Monitor-Pi selbst
+#  (setup_rpi5.sh --ap).
 #
 #  WICHTIGER UNTERSCHIED ZUM PI ZERO W:
 #    • 64-bit OS (arm64/aarch64) statt 32-bit (armhf/armv6)
@@ -22,7 +25,7 @@
 #       (dtoverlay=miniuart-bt) — Bluetooth bleibt AKTIV fuer das Wireless-
 #       Flash-Feature (Windows-PC -> Bluetooth -> USB -> Teensy 4.0)
 #    3. SPI deaktivieren (nicht genutzt)
-#    4. WLAN zum RPi 5 konfigurieren (DHCP — IP kommt vom RPi-5-Hotspot)
+#    4. WLAN "RoboDebug" konfigurieren (DHCP)
 #    5. Projektdateien installieren (/opt/power_debug_node/), Auth-Token fuer
 #       den Bluetooth-Flash-Kanal generieren
 #    6. Systemdienste anlegen (uart-receiver, bt-flash-receiver)
@@ -45,20 +48,22 @@
 #    von bt_flash_receiver.py / check_teensy_connected()).
 #
 #  WLAN-Zugang:
-#    SSID:     RoboDebug          ← muss mit RPi 5 AP übereinstimmen
-#    Passwort: robodebug123       ← muss mit RPi 5 AP übereinstimmen
-#    IP:       per DHCP (vergeben vom RPi 5 Hotspot)
+#    SSID:     RoboDebug          ← muss mit setup_rpi5.sh übereinstimmen
+#    Passwort: robodebug123       ← muss mit setup_rpi5.sh übereinstimmen
+#    IP:       per DHCP (Router bzw. Monitor-Pi im AP-Modus)
 #
 #
 #  NACH DEM SKRIPT:
 #    → sudo reboot
-#    → Blaue LED leuchtet wenn WLAN-Verbindung zu RPi 5 steht
+#    → Blaue LED leuchtet wenn die WLAN-Verbindung steht
 #    → Gelbe LED blinkt wenn Teensy Daten sendet
 #
 #  VORAUSSETZUNG:
-#    • Raspberry Pi OS Lite 64-bit (Bookworm, Debian 12)
+#    • Raspberry Pi OS Lite 64-bit (Bookworm/Debian 12 oder Trixie/Debian 13)
 #    • Internetverbindung für apt/pip (Ersteinrichtung)
-#    • Projektordner liegt in ~/power_debug_system/ auf dem RPi Zero 2 W
+#    • das komplette Repository liegt auf dem Node (das Skript braucht
+#      ../shared/ neben diesem Ordner) und wird von dort aus gestartet:
+#        cd Robotic_PDS/rpi_zero_node && sudo bash setup_node.sh 1
 #
 # ==============================================================================
 
@@ -110,9 +115,12 @@ else
 fi
 
 # ── Abgeleitete Werte ─────────────────────────────────────────────────────────
-RPI5_IP="192.168.42.1"             # IP des RPi 5 WLAN-Hotspots
-AP_SSID="RoboDebug"                # SSID des RPi 5 Access Points
-AP_PASS="robodebug123"             # Passwort des RPi 5 Access Points
+# Nur noch Anzeige/Log: wohin die Telemetrie geht, lernt uart_receiver.py
+# aus den Paketen der GUI (siehe TelemetryTarget). Im AP-Modus des
+# Monitor-Pis (setup_rpi5.sh --ap) ist das genau diese Adresse.
+RPI5_IP="192.168.42.1"
+AP_SSID="RoboDebug"                # WLAN-Name  (wie setup_rpi5.sh)
+AP_PASS="robodebug123"             # Passwort   (wie setup_rpi5.sh)
 INSTALL_DIR="/opt/power_debug_node"
 SERVICE_RECV="uart-receiver"
 PROJECT_SRC="$(dirname "$(realpath "$0")")"
@@ -124,7 +132,7 @@ echo -e "${BOLD}"
 echo "╔══════════════════════════════════════════════════════════╗"
 echo "║   Power Debug System — Node ${NODE_ID} Setup                       ║"
 echo "║   Zielplattform: Raspberry Pi Zero 2 W (64-bit OS)       ║"
-echo "║   WLAN-SSID: ${AP_SSID}  |  RPi5: ${RPI5_IP}           ║"
+echo "║   WLAN-SSID: ${AP_SSID}                                   ║"
 echo "╚══════════════════════════════════════════════════════════╝"
 echo -e "${NC}"
 info "Projektverzeichnis: $PROJECT_SRC"
@@ -139,23 +147,31 @@ info "apt-get update..."
 apt-get update -qq
 
 info "Installiere Pakete (arm64)..."
+# Pflicht: ohne diese Pakete laeuft der Node nicht.
 apt-get install -y --no-install-recommends \
     python3 \
     python3-pip \
     python3-serial \
-    python3-gpiozero \
-    python3-lgpio \
-    wireless-tools \
     network-manager \
     iproute2 \
     usbutils \
-    avrdude \
-    teensy-loader-cli \
     git \
     curl \
     bluez \
     python3-dbus \
     python3-gi
+
+# Optional und einzeln: ein Paket, das es auf einem Image nicht (mehr) gibt,
+# soll nicht das ganze Setup abbrechen (set -e). Fehlt teensy-loader-cli,
+# geht nur das Flashen per Bluetooth nicht; fehlen gpiozero/lgpio, bleiben
+# nur die Status-LEDs dunkel.
+for PKG in python3-gpiozero python3-lgpio teensy-loader-cli; do
+    apt-get install -y --no-install-recommends "$PKG" >/dev/null 2>&1 \
+        && ok "  ${PKG}" \
+        || warn "  ${PKG} nicht installierbar — zugehörige Funktion fehlt (siehe unten)."
+done
+command -v teensy_loader_cli &>/dev/null \
+    || warn "teensy_loader_cli fehlt — Wireless-Flash nicht möglich (apt install teensy-loader-cli)."
 
 # Hinweis Bluetooth-Flash-Feature (siehe Flash_Implementierung.md, Abweichung):
 #   Es wird bewusst NICHT auf `bluez-tools`/`bt-agent` bzw. `sdptool` gesetzt,
@@ -175,13 +191,18 @@ else
     warn "  Nachinstallieren: sudo apt install python3-gpiozero python3-lgpio"
 fi
 
-# pip-Pakete die nicht als apt-Paket verfügbar sind.
-# Ein Fehlschlag darf das Setup NICHT abbrechen (set -e): python3-serial ist
-# oben bereits per apt installiert, der pip-Aufruf ist nur die Absicherung
-# fuer den Fall einer sehr alten apt-Version.
-info "Installiere Python-Pakete via pip..."
-pip3 install --break-system-packages pyserial \
-    || warn "pip-Installation von pyserial fehlgeschlagen — apt-Version (python3-serial) wird verwendet."
+# pyserial kommt normalerweise per apt (python3-serial). pip nur als
+# Absicherung — und nur, wenn es wirklich fehlt: ein zweites pyserial in
+# /usr/local ueberdeckt sonst still die Version aus dem apt-Repo.
+if python3 -c "import serial" 2>/dev/null; then
+    ok "pyserial bereits vorhanden (python3-serial)"
+else
+    PIP_FLAGS=()
+    pip3 install --help 2>/dev/null | grep -q -- "--break-system-packages" \
+        && PIP_FLAGS+=(--break-system-packages)
+    pip3 install "${PIP_FLAGS[@]}" pyserial \
+        || warn "pip-Installation von pyserial fehlgeschlagen."
+fi
 
 ok "Pakete installiert"
 
@@ -303,17 +324,22 @@ ok "Bluetooth-Dienste aktiviert (hciuart, bluetooth)"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-step "3 | WLAN zum RPi 5 konfigurieren (DHCP)"
+step "3 | WLAN '${AP_SSID}' konfigurieren (DHCP)"
 # ══════════════════════════════════════════════════════════════════════════════
 #
-#  Der Node verbindet sich mit dem WLAN-Hotspot des RPi 5.
-#  Die IP-Adresse wird per DHCP vom RPi 5 vergeben (NICHT statisch konfiguriert).
-#  Der RPi 5 dhcp-Server vergibt typischerweise 192.168.42.11 / .12,
-#  aber das hängt von der RPi-5-Konfiguration ab.
+#  Der Node verbindet sich mit dem WLAN "${AP_SSID}" — gestellt von einem
+#  Router am Spielfeld oder vom Monitor-Pi selbst (setup_rpi5.sh --ap).
+#  Die IP-Adresse kommt per DHCP; die GUI lernt sie aus dem Absender der
+#  Telemetrie, eine feste Adresse ist nicht noetig.
 #
-#  WICHTIG: SSID und Passwort müssen exakt mit dem RPi 5 AP übereinstimmen.
-#           Prüfe auf RPi 5: nmcli connection show PowerDebugAP (oder RoboDebug)
+#  WICHTIG: SSID und Passwort müssen exakt mit setup_rpi5.sh übereinstimmen.
 #
+#  Hier wird bewusst nur das Profil angelegt, nicht aktiviert: laeuft das
+#  Setup gerade ueber ein anderes WLAN (Internet fuer apt), wuerde ein
+#  sofortiger Wechsel die eigene ssh-Verbindung kappen.
+systemctl enable --now NetworkManager 2>/dev/null || true
+rfkill unblock wifi 2>/dev/null || true
+
 info "WLAN-Verbindung '$AP_SSID' anlegen..."
 nmcli connection delete "$AP_SSID" 2>/dev/null && \
     info "Alte '$AP_SSID'-Verbindung gelöscht" || true
@@ -336,8 +362,14 @@ ok "WLAN-Profil '$AP_SSID' erstellt (IP per DHCP vom RPi 5)"
 HOSTNAME="debug-node-${NODE_ID}"
 info "Hostname: $HOSTNAME"
 echo "$HOSTNAME" > /etc/hostname
-sed -i "s/127\.0\.1\.1.*/127.0.1.1\t$HOSTNAME/" /etc/hosts 2>/dev/null || \
-    echo "127.0.1.1   $HOSTNAME" >> /etc/hosts
+# sed gelingt auch ohne Treffer — der frühere "sed || echo" hat einen
+# fehlenden 127.0.1.1-Eintrag deshalb nie ergänzt (sudo meldet dann bei
+# jedem Aufruf "unable to resolve host").
+if grep -q "^127\.0\.1\.1" /etc/hosts; then
+    sed -i "s/^127\.0\.1\.1.*/127.0.1.1\t$HOSTNAME/" /etc/hosts
+else
+    echo -e "127.0.1.1\t$HOSTNAME" >> /etc/hosts
+fi
 ok "Hostname gesetzt: $HOSTNAME"
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -595,7 +627,7 @@ echo "║   Nächste Schritte:                                      ║"
 echo "║     1. sudo reboot                                       ║"
 echo "║                                                          ║"
 echo "║   LEDs nach Reboot:                                      ║"
-echo "║     🔵 Blau AN      → WLAN zu RPi 5 verbunden           ║"
+echo "║     🔵 Blau AN      → WLAN verbunden                     ║"
 echo "║     🟡 Gelb blinkt  → Teensy sendet UART-Daten          ║"
 echo "║     🟢 Grün blinkt  → Dienste laufen normal             ║"
 echo "║                                                          ║"

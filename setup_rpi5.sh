@@ -1,26 +1,38 @@
+#!/usr/bin/env bash
 # ================================================================
 #  Power Debug System — Raspberry Pi 4 (2 GB) / Pi 5 Setup
 # ================================================================
 #  Richtet den Raspberry Pi (Pi 4 2GB / Pi 5) als zentralen Debug-Monitor ein:
 #    1. Hostname setzen
-#    2. Systempakete + Python-Abhängigkeiten
-#    3. Anwendungsdateien installieren
-#    4. WLAN Access Point konfigurieren (PowerDebugAP)
-#    5. Launcher-Skript erstellen
-#    6. Autostart für Desktop (XDG / LXDE / labwc)
-#    7. Autologin konfigurieren
-#    8. Zusammenfassung
+#    2. Systempakete
+#    3. Python-Abhängigkeiten
+#    4. Anwendungsdateien installieren
+#    5. WLAN: externes Netz (Standard) ODER eigener Access Point (--ap)
+#    6. Launcher-Skript erstellen
+#    7. Autostart für Desktop (XDG / LXDE / labwc)
+#    8. Autologin konfigurieren
 #
-#  Installiert/startet die neue PyQt6 + Qt Quick/QML-Oberfläche
+#  Installiert/startet die PyQt6 + Qt Quick/QML-Oberfläche
 #  (rpi5_monitor/64Bit_Version/main_qml.py). Der Live-Plotter nutzt
-#  pyqtgraph (siehe bridge/plot_host.py) — das ist seit dem Umbau wieder
-#  eine PFLICHT-Abhängigkeit (requirements.txt) und braucht zwingend
-#  QApplication (nicht QGuiApplication).
+#  pyqtgraph (siehe bridge/plot_host.py) — eine PFLICHT-Abhängigkeit
+#  (requirements.txt), die zwingend QApplication braucht.
 #
-#  Aufruf:  sudo bash setup_rpi5.sh [INSTALL_DIR]
+#  Aufruf:  sudo bash setup_rpi5.sh [--ap] [--yes] [INSTALL_DIR]
+#           --ap    den Pi selbst als WLAN-Access-Point betreiben
+#                   (SSID/Passwort wie in rpi_zero_node/setup_node.sh,
+#                   Pi unter 192.168.42.1). Ohne --ap wird nur ein
+#                   Client-Profil für ein EXTERNES WLAN gleichen Namens
+#                   angelegt (Router am Spielfeld) — so wie es seit der
+#                   Umstellung auf ein externes Netz Standard ist.
+#           --yes   keine Rückfragen (für unbeaufsichtigte Installation)
 #           Standard-Installationsverzeichnis: /opt/power_debug_monitor
 #
-#  Voraussetzung: Raspberry Pi OS Bookworm (64-bit, mit Desktop)
+#  Voraussetzung: Raspberry Pi OS Bookworm oder Trixie (64-bit, mit Desktop)
+#
+#  Das Skript ist wiederholbar: ein erneuter Lauf (z. B. nach `git pull`)
+#  aktualisiert den Code, lässt aber settings.json, die Profile,
+#  runtime_config/, controller_config.json und param_defaults.h im
+#  Installationsverzeichnis unangetastet.
 # ================================================================
 set -euo pipefail
 
@@ -35,6 +47,31 @@ err()     { echo -e "${RED}[ERR]${NC}   $*" >&2; }
 step()    { echo -e "\n${BOLD}${BLUE}━━━  $*  ━━━${NC}"; }
 
 
+# ── Argumente ────────────────────────────────────────────────────────────────
+SETUP_AP=false
+ASSUME_YES=false
+INSTALL_DIR="/opt/power_debug_monitor"
+for arg in "$@"; do
+    case "$arg" in
+        --ap)       SETUP_AP=true ;;
+        -y|--yes)   ASSUME_YES=true ;;
+        -h|--help)  sed -n '2,32p' "$0"; exit 0 ;;
+        -*)         err "Unbekannte Option: $arg"; exit 1 ;;
+        *)          INSTALL_DIR="$arg" ;;
+    esac
+done
+# Ohne Terminal (z. B. per ssh-Befehl oder Pipe) gibt es niemanden, der
+# antworten koennte — `read` liefe dann ins Dateiende und `set -e` braeche
+# das Skript an genau dieser Stelle kommentarlos ab.
+[[ -t 0 ]] || ASSUME_YES=true
+
+confirm() {   # confirm "Frage" -> 0 = ja
+    $ASSUME_YES && return 0
+    local answer=""
+    read -rp "  $1 [j/N] " answer || return 1
+    [[ "$answer" =~ ^[jJyY]$ ]]
+}
+
 # ── Root-Prüfung ─────────────────────────────────────────────────────────────
 if [[ $EUID -ne 0 ]]; then
     err "Bitte als root ausführen:"
@@ -46,23 +83,19 @@ fi
 MODEL=""
 [[ -f /proc/device-tree/model ]] && MODEL=$(tr -d '\0' < /proc/device-tree/model)
 info "Gerät: ${MODEL:-Unbekannt}"
-if [[ -n "$MODEL" && ! "$MODEL" =~ "Raspberry Pi 4" ]]; then
-    warn "Dieses Skript ist für den Rpi 4 optimiert (erkannt: ${MODEL})."
-    read -rp "  Trotzdem fortfahren? [j/N] " CONT
-    [[ "$CONT" =~ ^[jJ]$ ]] || exit 0
+if [[ -n "$MODEL" && ! "$MODEL" =~ Raspberry\ Pi\ [45] ]]; then
+    warn "Dieses Skript ist für Raspberry Pi 4 / Pi 5 gedacht (erkannt: ${MODEL})."
+    confirm "Trotzdem fortfahren?" || exit 0
 fi
 
 # ── Variablen ─────────────────────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-INSTALL_DIR="${1:-/opt/power_debug_monitor}"
 SERVICE_USER="${SUDO_USER:-pi}"
-HOME_DIR="$(getent passwd "$SERVICE_USER" | cut -d: -f6)"
-
-# Boot-Partition (Bookworm: /boot/firmware, ältere: /boot)
-BOOT_DIR="/boot/firmware"
-[[ -d "$BOOT_DIR" ]] || BOOT_DIR="/boot"
-BOOT_CONFIG="${BOOT_DIR}/config.txt"
-BOOT_CMDLINE="${BOOT_DIR}/cmdline.txt"
+if ! HOME_DIR="$(getent passwd "$SERVICE_USER" | cut -d: -f6)" || [[ -z "$HOME_DIR" ]]; then
+    err "Benutzer '${SERVICE_USER}' existiert nicht — bitte per 'sudo' aus dem"
+    err "Desktop-Benutzerkonto starten (SUDO_USER bestimmt, wer die GUI startet)."
+    exit 1
+fi
 
 # Netzwerk-Konfiguration
 # WICHTIG: SSID/Passwort MÜSSEN mit rpi_zero_node/setup_node.sh (AP_SSID/
@@ -72,21 +105,22 @@ BOOT_CMDLINE="${BOOT_DIR}/cmdline.txt"
 AP_SSID="RoboDebug"
 AP_PASS="robodebug123"
 AP_IP="192.168.42.1"
-AP_SUBNET="192.168.42.0/24"
 WIFI_COUNTRY="DE"   # Regulatory-Domain — ohne diese startet der AP oft nicht
+
+if $SETUP_AP; then WLAN_MODE="Access Point ${AP_SSID} (${AP_IP})"
+else WLAN_MODE="externes WLAN ${AP_SSID} (Client)"; fi
 
 echo ""
 echo -e "${CYAN}╔══════════════════════════════════════════════════════════╗${NC}"
-echo -e "${CYAN}║     Power Debug Monitor — Rpi 4 Setup                   ║${NC}"
+echo -e "${CYAN}║     Power Debug Monitor — Raspberry Pi 4/5 Setup         ║${NC}"
 echo -e "${CYAN}╠══════════════════════════════════════════════════════════╣${NC}"
 printf  "${CYAN}║  %-56s║${NC}\n" "Install-Dir : ${INSTALL_DIR}"
 printf  "${CYAN}║  %-56s║${NC}\n" "Service-User: ${SERVICE_USER}"
 printf  "${CYAN}║  %-56s║${NC}\n" "Home-Dir    : ${HOME_DIR}"
-printf  "${CYAN}║  %-56s║${NC}\n" "Boot-Config : ${BOOT_CONFIG}"
+printf  "${CYAN}║  %-56s║${NC}\n" "WLAN        : ${WLAN_MODE}"
 echo -e "${CYAN}╚══════════════════════════════════════════════════════════╝${NC}"
 echo ""
-echo -e "  ${YELLOW}Weiter mit ENTER, STRG+C zum Abbrechen...${NC}"
-read -r
+confirm "Installation starten?" || exit 0
 
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -109,8 +143,8 @@ ok "Hostname: ${TARGET_HOSTNAME}"
 step "2/8  Systempakete installieren"
 apt-get update -y -q 2>&1 | tail -1
 # libxcb-cursor0: von der Qt6-XCB-Plattform (PyQt6/Qt Quick) benötigt —
-# ohne dieses Paket startet main_qml.py auf schlanken Bookworm-Images
-# gar nicht ("could not load the Qt platform plugin xcb").
+# ohne dieses Paket startet main_qml.py auf schlanken Images gar nicht
+# ("could not load the Qt platform plugin xcb").
 apt-get install -y -q \
     python3 python3-pip python3-venv git curl \
     network-manager \
@@ -127,38 +161,52 @@ ok "Systempakete installiert."
 step "3/8  Python-Pakete installieren"
 REQ_FILE="${SCRIPT_DIR}/requirements.txt"
 
-# PyQt6 und numpy zuerst aus dem apt-Repo: die Bookworm-Pakete sind fuer
+# PyQt6, numpy und pyqtgraph zuerst aus dem apt-Repo: die Pakete sind fuer
 # den Pi vorkompiliert, waehrend pip auf arm64 im schlechtesten Fall
-# stundenlang aus dem Quelltext baut.
-info "PyQt6/numpy bevorzugt aus dem apt-Repo..."
-apt-get install -y -q python3-pyqt6 python3-pyqt6.qtquick python3-numpy 2>/dev/null \
-    && ok "python3-pyqt6 + python3-numpy via apt installiert." \
-    || warn "apt-Pakete nicht verfügbar — es wird auf pip zurückgegriffen."
+# stundenlang aus dem Quelltext baut. Einzeln, damit ein fehlendes Paket
+# (z. B. pyqtgraph auf einem aelteren Image) die anderen nicht mitreisst —
+# pip ergaenzt danach, was noch fehlt oder zu alt ist.
+info "PyQt6/numpy/pyqtgraph bevorzugt aus dem apt-Repo..."
+for PKG in python3-pyqt6 python3-pyqt6.qtquick python3-numpy python3-pyqtgraph; do
+    apt-get install -y -q "$PKG" >/dev/null 2>&1 \
+        && ok "  ${PKG} (apt)" \
+        || warn "  ${PKG} nicht im apt-Repo — pip übernimmt."
+done
 
-# Fehlendes/zu altes PyQt6 ergaenzen. Ein Fehlschlag darf das Setup NICHT
+# Fehlendes/zu altes ergaenzen. Ein Fehlschlag darf das Setup NICHT
 # abbrechen (set -e): pygame ist optional, und selbst ein fehlgeschlagenes
-# PyQt6 soll die restliche Einrichtung (AP, Autostart) nicht verhindern —
+# PyQt6 soll die restliche Einrichtung (WLAN, Autostart) nicht verhindern —
 # die Fehlermeldung steht dann klar im Log.
+# --break-system-packages: seit Bookworm (PEP 668) verweigert pip sonst die
+# Installation ins System-Python. Aeltere pip-Versionen kennen die Option
+# nicht — dann ohne.
+PIP_FLAGS=()
+pip3 install --help 2>/dev/null | grep -q -- "--break-system-packages" \
+    && PIP_FLAGS+=(--break-system-packages)
 if [[ -f "$REQ_FILE" ]]; then
-    pip3 install --break-system-packages -r "$REQ_FILE" \
+    pip3 install "${PIP_FLAGS[@]}" -r "$REQ_FILE" \
         && ok "Pakete aus requirements.txt installiert." \
         || warn "pip-Installation aus requirements.txt teilweise fehlgeschlagen — siehe oben."
 else
     warn "requirements.txt nicht gefunden — Pakete direkt installieren."
-    pip3 install --break-system-packages "PyQt6>=6.4.0" "numpy>=1.24.0" \
-        || warn "PyQt6/numpy konnten nicht per pip installiert werden."
+    pip3 install "${PIP_FLAGS[@]}" "PyQt6>=6.4.0" "numpy>=1.24.0" "pyqtgraph>=0.13.0" \
+        || warn "PyQt6/numpy/pyqtgraph konnten nicht per pip installiert werden."
     # pygame ist OPTIONAL (nur PS4-Controller) — nie ein Abbruchgrund.
-    pip3 install --break-system-packages "pygame>=2.5.0" \
+    pip3 install "${PIP_FLAGS[@]}" "pygame>=2.5.0" \
         || warn "pygame nicht installierbar — GUI läuft ohne Controller-Unterstützung."
 fi
 
-# Endkontrolle: ohne PyQt6 startet die GUI gar nicht, das muss auffallen.
+# Endkontrolle: ohne PyQt6/pyqtgraph startet die GUI nicht bzw. ohne
+# Plotter, das muss auffallen.
 if python3 -c "import PyQt6.QtQuick" 2>/dev/null; then
     ok "PyQt6 (inkl. QtQuick) verfügbar."
 else
     err "PyQt6/QtQuick fehlt — main_qml.py wird nicht starten."
     err "  Nachinstallieren: sudo apt install python3-pyqt6 python3-pyqt6.qtquick"
 fi
+python3 -c "import pyqtgraph" 2>/dev/null \
+    && ok "pyqtgraph verfügbar (Live-Plotter)." \
+    || err "pyqtgraph fehlt — der Plotter-Tab bleibt leer (pip3 install pyqtgraph)."
 python3 -c "import pygame" 2>/dev/null \
     && ok "pygame verfügbar (PS4-Controller einsatzbereit)." \
     || warn "pygame fehlt — Fast-Params bleiben per Touch bedienbar."
@@ -182,17 +230,26 @@ step "4/8  Anwendungsdateien → ${INSTALL_DIR}"
 QML_SRC="${SCRIPT_DIR}/rpi5_monitor/64Bit_Version"
 [[ -d "$QML_SRC" ]] || QML_SRC="${SCRIPT_DIR}/64Bit_Version"   # Fallback: flache Struktur
 
-if [[ -d "$QML_SRC" ]]; then
-    mkdir -p "$INSTALL_DIR"
-    cp -r "${QML_SRC}/." "$INSTALL_DIR/"
-    # Unnötigen/Windows-/Cache-Ballast wieder entfernen
-    find "$INSTALL_DIR" -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
-    rm -f "${INSTALL_DIR}/starter.bat"
-    ok "qml/, qml/components/, bridge/ und alle Kerndateien nach ${INSTALL_DIR} kopiert."
-else
+if [[ ! -d "$QML_SRC" ]]; then
     err "Quellverzeichnis nicht gefunden: erwartet rpi5_monitor/64Bit_Version/ neben diesem Skript."
     exit 1
 fi
+mkdir -p "$INSTALL_DIR"
+
+# Geraetespezifisches NIE ueberschreiben: settings.json/Profile,
+# runtime_config/ und controller_config.json entstehen zur Laufzeit (und
+# sind git-ignoriert); param_defaults.h schreibt die GUI ("Als Default
+# speichern"). Ein erneuter Setup-Lauf nach `git pull` hat sonst die
+# gespeicherten Parameter-Defaults kommentarlos durch die Vorlage aus dem
+# Repository ersetzt. Liegt param_defaults.h noch nicht im Ziel, kommt die
+# Vorlage mit.
+EXCLUDES=(--exclude=__pycache__ --exclude=starter.bat
+          --exclude=runtime_config --exclude=settings.json
+          --exclude='settings.*.json' --exclude=controller_config.json
+          --exclude='*.json.tmp')
+[[ -f "${INSTALL_DIR}/param_defaults.h" ]] && EXCLUDES+=(--exclude=./param_defaults.h)
+tar -C "$QML_SRC" "${EXCLUDES[@]}" -cf - . | tar -C "$INSTALL_DIR" -xf -
+ok "qml/, qml/components/, bridge/ und alle Kerndateien nach ${INSTALL_DIR} kopiert."
 
 # main_qml.py auf Vorhandensein prüfen — ohne diese Datei läuft der
 # Launcher (Schritt 6) später ins Leere.
@@ -207,9 +264,76 @@ ok "Dateien nach ${INSTALL_DIR} installiert."
 
 
 # ════════════════════════════════════════════════════════════════════════════════
-#  SCHRITT 5 — WLAN Access Point
+#  SCHRITT 5 — WLAN: externes Netz (Standard) oder eigener Access Point (--ap)
 # ════════════════════════════════════════════════════════════════════════════════
-# verwendung eines externen wlan netzwerks mit dem selben namen...
+#  Die Nodes verbinden sich mit der SSID ${AP_SSID} (rpi_zero_node/setup_node.sh)
+#  und bekommen ihre Adresse per DHCP. Wer die SSID stellt, ist egal:
+#    * Standard: ein Router am Spielfeld. Der Pi bekommt hier nur ein
+#      Client-Profil für dieses Netz. Die Nodes lernen die Adresse der GUI
+#      aus den Paketen (Discovery), eine feste IP ist nicht noetig.
+#    * --ap: der Pi spannt das Netz selbst auf (NetworkManager "shared",
+#      DHCP inklusive, Pi unter ${AP_IP}).
+step "5/8  WLAN konfigurieren (${WLAN_MODE})"
+
+systemctl enable --now NetworkManager 2>/dev/null || true
+
+# Regulatory-Domain setzen — ohne gesetztes WLAN-Land verweigert der Kernel
+# den AP-Modus haeufig (0 dBm / kein Broadcast) und blockiert auf frischen
+# Images das WLAN ganz (rfkill).
+if command -v raspi-config &>/dev/null; then
+    raspi-config nonint do_wifi_country "$WIFI_COUNTRY" \
+        && ok "WLAN-Land gesetzt: ${WIFI_COUNTRY}" \
+        || warn "WLAN-Land konnte nicht per raspi-config gesetzt werden."
+fi
+rfkill unblock wifi 2>/dev/null || true
+
+# Bestehende Profile frueherer Laeufe bereinigen (inkl. altem Namen
+# "PowerDebugAP"), damit nie AP- und Client-Profil gleichzeitig existieren.
+for CON in "PowerDebugAP" "$AP_SSID" "${AP_SSID}-AP" "Hotspot" "WiFi-AP"; do
+    nmcli connection delete "$CON" &>/dev/null && info "  Alt-Verbindung '${CON}' entfernt." || true
+done
+
+if $SETUP_AP; then
+    if nmcli connection add \
+            type              wifi \
+            ifname            wlan0 \
+            con-name          "${AP_SSID}-AP" \
+            autoconnect       yes \
+            ssid              "$AP_SSID" \
+            mode              ap \
+            ipv4.method       shared \
+            ipv4.addresses    "${AP_IP}/24" \
+            wifi-sec.key-mgmt wpa-psk \
+            wifi-sec.psk      "$AP_PASS" \
+            wifi.band         bg \
+            wifi.channel      6 >/dev/null; then
+        nmcli connection up "${AP_SSID}-AP" &>/dev/null \
+            && ok "AP gestartet: SSID=${AP_SSID}  IP=${AP_IP}" \
+            || warn "AP-Profil angelegt, wird nach dem Neustart aktiv."
+    else
+        err "AP-Profil konnte nicht angelegt werden (nmcli) — WLAN bitte von Hand einrichten."
+    fi
+else
+    # Nur anlegen, NICHT aktivieren: laeuft das Setup selbst gerade ueber
+    # ein anderes WLAN (Internet fuer apt/pip), wuerde ein sofortiger
+    # Wechsel die eigene Verbindung kappen. NetworkManager verbindet sich
+    # automatisch, sobald das Netz in Reichweite ist.
+    if nmcli connection add \
+            type              wifi \
+            ifname            wlan0 \
+            con-name          "$AP_SSID" \
+            ssid              "$AP_SSID" \
+            wifi-sec.key-mgmt wpa-psk \
+            wifi-sec.psk      "$AP_PASS" \
+            ipv4.method       auto \
+            connection.autoconnect yes \
+            connection.autoconnect-priority 100 >/dev/null; then
+        ok "Client-Profil '${AP_SSID}' angelegt (verbindet automatisch, sobald in Reichweite)."
+    else
+        warn "Client-Profil konnte nicht angelegt werden — mit '${AP_SSID}' bitte von Hand verbinden."
+    fi
+fi
+
 
 # ════════════════════════════════════════════════════════════════════════════════
 #  SCHRITT 6 — Launcher-Skript
@@ -373,15 +497,15 @@ $AUTOLOGIN_SET || warn "Autologin nicht automatisch konfiguriert → manuell via
 # ════════════════════════════════════════════════════════════════════════════════
 echo ""
 echo -e "${GREEN}╔══════════════════════════════════════════════════════════════╗${NC}"
-echo -e "${GREEN}║  ✅  Raspberry pi 4 Setup ERFOLGREICH ABGESCHLOSSEN!         ║${NC}"
+echo -e "${GREEN}║  ✅  Raspberry Pi Setup ERFOLGREICH ABGESCHLOSSEN!           ║${NC}"
 echo -e "${GREEN}╠══════════════════════════════════════════════════════════════╣${NC}"
-printf "${GREEN}║  %-62s║${NC}\n" "WLAN-Hotspot  : ${AP_SSID} → ${AP_IP}"
+printf "${GREEN}║  %-62s║${NC}\n" "WLAN          : ${WLAN_MODE}"
 printf "${GREEN}║  %-62s║${NC}\n" "Anwendung     : ${INSTALL_DIR}"
 printf "${GREEN}║  %-62s║${NC}\n" "Manuell Start : power-debug-monitor"
 printf "${GREEN}║  %-62s║${NC}\n" "Simulate-Mode : power-debug-monitor --simulate"
 echo -e "${GREEN}╠══════════════════════════════════════════════════════════════╣${NC}"
 echo -e "${GREEN}║  ⚠  NEUSTART ERFORDERLICH für:                               ║${NC}"
-echo -e "${GREEN}║     • Hostname-Änderung                                      ║${NC}"
+echo -e "${GREEN}║     • Hostname-Änderung, WLAN-Land, Autologin                ║${NC}"
 echo -e "${GREEN}║  → sudo reboot                                               ║${NC}"
 echo -e "${GREEN}╚══════════════════════════════════════════════════════════════╝${NC}"
 echo ""

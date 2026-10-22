@@ -230,13 +230,18 @@ Full API, build flags and integration options:
 
 ## ── Setup Instructions ──
 
-### 1. Central Monitor (Raspberry Pi 5)
-1. Copy the project files to the RPi 5.
-2. Run the master setup script:
+### 1. Central Monitor (Raspberry Pi 4 / Pi 5)
+1. Clone the repository onto the Pi (Raspberry Pi OS Bookworm or Trixie, 64-bit, with desktop).
+2. Run the setup script from the repository root, as the desktop user via `sudo`:
    ```bash
-   sudo bash setup_rpi5.sh
+   sudo bash setup_rpi5.sh            # Wi-Fi from an external router (default)
+   sudo bash setup_rpi5.sh --ap       # the Pi spans the Wi-Fi itself
+   sudo bash setup_rpi5.sh --yes      # no questions (unattended)
    ```
-3. This configures the hostname, installs the required APT and Python packages (`requirements.txt`, preferring the prebuilt `python3-pyqt6`/`python3-numpy` packages over pip), brings up the Wi-Fi Access Point (SSID `RoboDebug`, key `robodebug123`, RPi 5 at `192.168.42.1`), and sets up `main_qml.py` to start on desktop login. An optional package that fails to install (e.g. `pygame`) no longer aborts the setup.
+3. This configures the hostname, installs the APT and Python packages (`requirements.txt`, preferring the prebuilt `python3-pyqt6`/`python3-numpy`/`python3-pyqtgraph` packages over pip), sets up the Wi-Fi and makes `main_qml.py` start on desktop login. An optional package that fails to install (e.g. `pygame`) does not abort the setup.
+   - **Default — external network:** a router at the field provides the Wi-Fi `RoboDebug` / `robodebug123`. The Pi only gets a client profile for it (not activated during setup, so an SSH session over another Wi-Fi survives). The nodes learn the GUI's address from its packets; no fixed IPs are needed.
+   - **`--ap`:** the Pi runs the access point itself (same SSID/key, Pi at `192.168.42.1`, DHCP via NetworkManager).
+4. Re-running the script (e.g. after `git pull`) updates the code but keeps `settings.json`, the profiles, `runtime_config/`, `controller_config.json` and the saved `param_defaults.h` in the install directory.
 
 ### 2. PC Setup (Windows 11 Alternative)
 If you prefer running the monitor GUI on a Windows laptop instead of an RPi 5:
@@ -255,13 +260,14 @@ If you prefer running the monitor GUI on a Windows laptop instead of an RPi 5:
 > exist. The manual steps above replace it.
 
 ### 3. Debug Nodes (Raspberry Pi Zero 2 W)
-1. Install a clean Raspberry Pi OS Lite (64-bit).
+1. Install a clean Raspberry Pi OS Lite (64-bit, Bookworm or Trixie) and clone the repository onto it (the script needs `../shared/` next to `rpi_zero_node/`).
 2. Run the node setup script:
    ```bash
+   cd Robotic_PDS/rpi_zero_node
    sudo bash setup_node.sh <NODE_ID>
    ```
    *(where `<NODE_ID>` is `1` or `2` depending on the robot)*
-3. The script disables the serial console, configures the Wi-Fi client connection, installs `uart_receiver.py` and `status_leds.py` as systemd services, and registers them to auto-start.
+3. The script disables the serial console, configures the Wi-Fi client connection (`RoboDebug`), installs `uart_receiver.py` (with `status_leds.py`) and `bt_flash_receiver.py` as systemd services, and registers them to auto-start. Reboot afterwards (`sudo reboot`) — the UART/Bluetooth changes only take effect then.
 4. Check that it is running:
    ```bash
    journalctl -u uart-receiver -f
@@ -373,6 +379,6 @@ python rpi5_monitor/64Bit_Version/main_qml.py --simulate
 | Joystick/controller feels jerky | Check "Verlust" and "Ping" per node in the Diagnostics tab, and whether the node log still says `Telemetrie -> 255.255.255.255`. |
 | Robot restarted for no apparent reason | Look in the Diagnostics log book: with `PDS.enableWatchdog(...)` active, a watchdog reset is reported there as an error on the next boot. |
 | Robot's control loop stutters, or the Teensy seems to stall | `PDS.printStatus()` now prints `update <last>/<max> us` — a maximum far above ~100 µs means something is holding `update()` up. `PDS.degraded()` / `PDS.enabled()` tell you whether the emergency brake already stepped in. See [`Doku/Blockierfreiheit.md`](Doku/Blockierfreiheit.md). |
-| A setting from `channel_config.h` never arrives in the GUI | The Diagnostics log book names every rejected key, and `runtime_config/node<N>/gui_settings.json` keeps the full list. Check that both "Konfiguration vom Teensy übernehmen" and "Aussehen vom Teensy übernehmen" are on. See [`Doku/Teensy_Einstellungen.md`](Doku/Teensy_Einstellungen.md). |
+| A setting from `channel_config.h` never arrives in the GUI | The Diagnostics log book names every rejected key, and `runtime_config/node<N>/gui_settings.json` keeps the full list. Check that both "Konfiguration vom Teensy übernehmen" and "Aussehen vom Teensy übernehmen" are on — the latter is **off by default**. See [`Doku/Teensy_Einstellungen.md`](Doku/Teensy_Einstellungen.md). |
 | Node log says `Sync-Verluste` keeps rising | Bytes are being lost on the Teensy → node UART: check wiring/ground and that the baud rates match. |
 | Node log says `Telemetrie -> 255.255.255.255` | The node has not seen a parameter packet from the GUI yet — is "Übertragung aktiv" enabled? This also costs a lot of Wi-Fi airtime; see the latency doc. |
