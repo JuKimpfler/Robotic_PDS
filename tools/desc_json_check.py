@@ -148,7 +148,7 @@ def main() -> int:
     for key in ("CHUNKS", "DESCRIPTORS", "JSONLEN", "OVERFLOW", "EVENTS",
                 "ACKS", "TELEMETRY", "USED", "SIMMS", "BUILDUPDATES",
                 "FASTVALUE", "FASTOK", "RESYNC", "DEGRADED", "PDSOFF",
-                "REVIVED", "JSON"):
+                "REVIVED", "BUFNAMES", "JSON"):
         if key not in fields:
             check(f"Ausgabefeld {key} vorhanden", False, out[:300])
             return 1
@@ -197,6 +197,8 @@ def main() -> int:
     check("Notbremse schaltet die Nebenwege ab", fields["DEGRADED"] == "1")
     check("Notbremse schaltet PDS danach ganz ab", fields["PDSOFF"] == "1")
     check("PDS.enable(true) hebt die Notbremse wieder auf", fields["REVIVED"] == "1")
+    check("plot() mit Namen aus einem Puffer: je Name ein eigener Kanal",
+          fields["BUFNAMES"] == "1")
 
     # ── Der eigentliche Punkt: ist es gueltiges JSON? ─────────────────────
     try:

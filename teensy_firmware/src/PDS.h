@@ -300,8 +300,9 @@ class PowerDebugger {
         /// Gibt den benutzten Kanal zurueck (meist ignorierbar).
         ///   PDS.plot("Ball_X", ballX);
         ///   PDS.plot("Akku", volt, "V");    // mit Einheit
-        /// `name` sollte ein String-Literal sein (dann ist der Aufruf durch
-        /// den internen Cache praktisch kostenlos).
+        /// `name` darf auch ein Puffer sein, dessen Inhalt wechselt
+        /// (snprintf); am billigsten ist ein String-Literal, dann trifft der
+        /// interne Cache auf Anhieb.
         uint8_t plot(const char* name, float value);
         uint8_t plot(const char* name, float value, const char* unit);
 

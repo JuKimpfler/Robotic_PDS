@@ -40,6 +40,8 @@
  *   DEGRADED 0|1      Notbremse: Nebenwege abgeschaltet
  *   PDSOFF 0|1        Notbremse: PDS ganz abgeschaltet
  *   REVIVED 0|1       enable(true) hebt beides wieder auf
+ *   BUFNAMES 0|1      plot() mit wechselndem Namen im SELBEN Puffer
+ *                     vergibt je Name einen eigenen Kanal
  *   JSON <die komplette JSON-Zeile>
  */
 #include "PDS.h"
@@ -84,6 +86,19 @@ int main() {
     PDS.track("Heading_Live", &heading, "°");
     PDS.bind("Ball_X_Live", &ballX, 30, "cm");
     PDS.plot("Direkt", 1.0f, "%");
+
+    // Namen aus einem Puffer: dieselbe Adresse, wechselnder Inhalt. Der
+    // Namens-Cache in channelFor() arbeitete nur mit der Adresse und gab
+    // fuer "Puffer_1" den Kanal von "Puffer_0" zurueck.
+    char nameBuf[24];
+    snprintf(nameBuf, sizeof(nameBuf), "Puffer_%d", 0);
+    const uint8_t bufC0 = PDS.plot(nameBuf, 1.0f);
+    snprintf(nameBuf, sizeof(nameBuf), "Puffer_%d", 1);
+    const uint8_t bufC1 = PDS.plot(nameBuf, 2.0f);
+    snprintf(nameBuf, sizeof(nameBuf), "Puffer_%d", 0);
+    const uint8_t bufC0b = PDS.plot(nameBuf, 3.0f);
+    const bool bufNamesOk = bufC0 != 0xFF && bufC1 != 0xFF
+                            && bufC0 != bufC1 && bufC0 == bufC0b;
     PDS.enableSelfDiagnostics();
 
     // Einstellungen der Oberfläche: die Tabelle aus channel_config.h ist
@@ -252,6 +267,7 @@ int main() {
     printf("DEGRADED %d\n", degraded ? 1 : 0);
     printf("PDSOFF %d\n", pdsOff ? 1 : 0);
     printf("REVIVED %d\n", revived ? 1 : 0);
+    printf("BUFNAMES %d\n", bufNamesOk ? 1 : 0);
     printf("JSON %s\n", first_json.c_str());
     return 0;
 }

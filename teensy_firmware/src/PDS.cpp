@@ -251,7 +251,17 @@ uint8_t PowerDebugger::channelFor(const char* name) {
     if (!name || !name[0]) return 0xFF;
 
     const size_t slot = ((uintptr_t)name >> 2) & (PDS_NAME_CACHE_SIZE - 1);
-    if (_nameCache[slot].key == name) return _nameCache[slot].chn;
+    if (_nameCache[slot].key == name) {
+        // Gleiche Adresse heisst nicht gleicher Text: wird der Name in einem
+        // Puffer zusammengebaut (snprintf(buf, ..., "Motor%d", i)), hat jeder
+        // Aufruf dieselbe Adresse. Ohne diesen Vergleich landeten alle
+        // Motoren auf dem Kanal des ersten. Kostet einen kurzen strncmp.
+        const uint8_t chn = _nameCache[slot].chn;
+        if (chn < ACTIVE_CHANNELS
+                && strncmp(_names[chn], name, CHANNEL_NAME_MAXLEN - 1) == 0) {
+            return chn;
+        }
+    }
 
     // Bereits vergeben?
     for (int i = 0; i < ACTIVE_CHANNELS; i++) {
