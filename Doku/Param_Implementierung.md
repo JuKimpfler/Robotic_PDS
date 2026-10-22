@@ -1,5 +1,11 @@
 # Implementierungsplan v2: Param-Funktionalität (RPi 5 → RPi Zero 2 W → Teensy 4.0)
 
+> **Planungsdokument.** Es beschreibt den Entwurf zum Zeitpunkt der Umsetzung;
+> Einzelheiten haben sich seither geändert. Aktueller Stand:
+> [Architektur.md](Architektur.md), [Setup_und_Update.md](Setup_und_Update.md),
+> [../FEATURES.md](../FEATURES.md).
+
+
 **Projekt:** Robotic_PDS (RoboCup Junior Soccer 2vs2)
 **Basis:** `PDS.h` / `PDS.cpp` (PowerDebugger-Klasse), `params.h`, aktueller Stand `Robotic_PDS-julius.zip`
 **Entscheidungen aus Rückfrage (unverändert gültig):** RAM-only auf dem Teensy · Senden nur an den in der GUI aktuell gewählten Node · Fire-and-Forget ohne ACK

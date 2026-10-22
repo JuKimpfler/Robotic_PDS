@@ -105,7 +105,7 @@ fi
 # WICHTIG: SSID/Passwort MÜSSEN mit rpi_zero_node/setup_node.sh (AP_SSID/
 # AP_PASS) übereinstimmen. Wird die GUI stattdessen auf einem Windows-PC
 # betrieben, muss dessen Mobile Hotspot dieselbe SSID/dasselbe Passwort
-# verwenden (siehe README, Abschnitt "PC Setup").
+# verwenden (siehe Doku/Setup_und_Update.md, Abschnitt 10).
 AP_SSID="RoboDebug"
 AP_PASS="robodebug123"
 AP_IP="192.168.42.1"

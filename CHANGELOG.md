@@ -22,11 +22,81 @@ welchem Roboter läuft.
 
 ---
 
+## 2.11 — Ein Befehl für Updates, Spielfeld, CI/CD, neue Doku
+
+Kein neues Wire-Format (`PDS_WIRE_VERSION` bleibt 2). Teensy-Firmware muss
+nicht neu geflasht werden.
+
+`PDS_VERSION` (Teensy-Bibliothek, `library.json`) stand seit Längerem auf
+„2.2" und ist jetzt an die Nummern dieses Änderungsverlaufs angeglichen:
+**2.11**. Rein informativ — sie erscheint in `printStatus()` und, mit der nächsten
+geflashten Firmware, in der Fußzeile der GUI.
+
+### Aktualisieren in einem Befehl
+Bisher hieß ein Update: auf jedem Gerät `git pull` und das komplette Setup
+erneut — mit apt, Rückfragen und Eingriffen in die Bootkonfiguration. Die
+Nodes haben am Spielfeld meist gar kein Internet.
+* **`./deploy.sh all`** (vom PC oder Haupt-Pi): schickt den aktuellen Stand
+  per SSH an beide Nodes und den Haupt-Pi und installiert ihn dort — ohne
+  Internet und git auf den Geräten. Kurznamen `node1`, `node2`, `monitor`,
+  `nodes`, `all`; abweichende Adressen in `deploy.conf`. Frische Geräte mit
+  `--setup-node N <ziel>` bzw. `--setup-monitor <ziel>` komplett einrichten.
+* **`sudo bash update.sh`** (auf dem Gerät): erkennt selbst, ob es Node oder
+  Haupt-Pi ist (`/etc/pds/pds.conf`, ältere Installationen an ihren
+  Diensten), holt per `git pull` den neuen Stand, installiert nur den Code,
+  startet die Dienste bzw. die laufende GUI in ihrer Desktop-Sitzung neu.
+* **Sicherheitsnetz**: der alte Stand wird gesichert; ein Syntaxfehler oder
+  ein Node-Dienst, der nicht hochkommt, führt automatisch zurück.
+  `--rollback` holt den vorherigen Stand von Hand zurück, `--status` zeigt,
+  was installiert ist.
+* Ein Update fasst Einstellungen, Profile, `runtime_config/`,
+  `controller_config.json`, gespeicherte `param_defaults.h` und den
+  Bluetooth-Token nie an; `pip` läuft nur, wenn sich `requirements.txt`
+  geändert hat.
+* GUI und Node schreiben ihre installierte Version beim Start ins Log.
+* Setup und Update teilen sich `scripts/pds_common.sh` — eine Änderung an
+  Diensten oder Starter greift damit auch beim nächsten Update.
+
+### Spielfeld
+* Ungültige Werte (NaN, Füllwert 9898) blenden einen Körper aus, statt ihn
+  irgendwohin zu zeichnen; ein ungültiger Winkel blendet nur den Pfeil aus.
+* Werte außerhalb des Feldes (typisch „Ball nicht gesehen" = -1) stehen
+  blass am Rand mit „(außerhalb)".
+* Beschriftungen bleiben im Feld (am oberen Rand unter dem Körper, links und
+  rechts an den Rand geschoben).
+* **Bewegungsspur** der letzten gut zwei Sekunden, Schalter „Spur" im Feld.
+
+### CI/CD
+* **`bash tools/check_all.sh`** führt alle Prüfungen aus — lokal genau wie
+  die CI, in vier Stufen (`lint`, `python`, `gui`, `teensy`).
+* CI: schneller Lint-Job zuerst (inklusive ShellCheck und Setup/Update/Deploy
+  in einer Sandbox), dann parallel Python 3.11/3.13, Oberfläche und Teensy;
+  `firmware.hex` als Artefakt; gemeinsame Einrichtung als eigene Action.
+* **Zeitbudget für den Plotter**: ein Bild über 25 ms lässt die CI
+  fehlschlagen — der Rückfall vom halbtransparenten Gitter wäre damit
+  aufgefallen.
+* **Releases**: ein Tag `v*` baut nach grüner CI ein GitHub-Release mit
+  `firmware.hex` und `pds-<tag>.tar.gz`; der Text kommt aus diesem
+  CHANGELOG.
+
+### Dokumentation
+* Neu: [`Doku/Setup_und_Update.md`](Doku/Setup_und_Update.md) — Einrichten,
+  Aktualisieren, Rückweg, Fehlersuche an einem Ort.
+* Neu: [`FEATURES.md`](FEATURES.md) — vollständige Funktionsübersicht.
+* Neu: [`Doku/Architektur.md`](Doku/Architektur.md) — Ports, Pakete,
+  Wire-Format (vorher in der README).
+* `README.md` neu und auf Deutsch, kurz, mit Verweisen;
+  `README_QML.md` mit Dateiübersicht statt Migrationsstand;
+  [`Doku/README.md`](Doku/README.md) als Inhaltsverzeichnis, Planungsdokumente
+  als solche gekennzeichnet.
+
+---
+
 ## 2.10 — Plotter flüssig, keine Müllpakete mehr
 
 Kein neues Wire-Format (`PDS_WIRE_VERSION` bleibt 2).
 
-### Darstellung: 2–10 statt 25 Bilder/s
+### Darstellung: 25 statt 2–10 Bilder/s
 Bei 80–100 Pkt/s lief der Plotter auf dem Pi nur mit 2 bis 10 Bildern pro
 Sekunde. Ursache war nicht der Datenpfad, sondern das Rastern:
 * Das **halbtransparente Gitter** kostete drei Viertel der Bildzeit (Qt

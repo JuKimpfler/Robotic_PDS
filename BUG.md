@@ -1,5 +1,15 @@
 # Gemeldete Fehler — Stand: alle behoben
 
+## Runde 7 (Spielfeld, Update-Weg)
+
+- [x] **Spielfeld:** ungültige Werte (NaN/9898) zeichneten Körper an
+  beliebige Stellen; Werte außerhalb des Feldes verschwanden abgeschnitten;
+  Beschriftungen am Rand wurden vom Rahmen abgeschnitten.
+- [x] **Update-Weg** (gefunden vom neuen `tools/update_test.sh`, vor der
+  ersten Auslieferung): die Rollen-Datei überschrieb den Quellordner von
+  `update.sh`; `compileall` übersah einen Syntaxfehler, wenn alter und neuer
+  Stand in derselben Sekunde lagen.
+
 ## Runde 6 (Darstellung und Datenverlust)
 
 - [x] **Plotter mit 2–10 Bildern/s bei 80–100 Pkt/s.** Halbtransparentes

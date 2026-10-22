@@ -1,5 +1,11 @@
 # Implementierungsplan: Wireless Bluetooth Upload/Flash für Teensy 4.0 über RPi Zero 2 W
 
+> **Planungsdokument.** Es beschreibt den Entwurf zum Zeitpunkt der Umsetzung;
+> Einzelheiten haben sich seither geändert. Aktueller Stand:
+> [Architektur.md](Architektur.md), [Setup_und_Update.md](Setup_und_Update.md),
+> [../FEATURES.md](../FEATURES.md).
+
+
 **Projekt:** Robotic PDS (Power Debug System)
 **Feature:** Windows-PC → Bluetooth → RPi Zero 2 W → USB → Teensy 4.0 (`teensy_loader_cli`)
 **Stand der Analyse:** basierend auf `Robotic_PDS-julius` (README.md, `setup_node.sh`, `uart_receiver.py`, `status_leds.py`, `teensy_firmware/platformio.ini`)

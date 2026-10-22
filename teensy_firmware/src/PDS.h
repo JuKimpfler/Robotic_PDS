@@ -93,7 +93,7 @@
 #endif
 
 // Versionsnummer der Bibliothek (fuer Doku/Diagnose, siehe printStatus()).
-#define PDS_VERSION "2.2"
+#define PDS_VERSION "2.11"
 
 // Version der ROBOTER-Firmware. Wird im Deskriptor an die GUI gemeldet, damit
 // dort sichtbar ist, welcher Stand auf welchem Roboter laeuft. Per Build-Flag

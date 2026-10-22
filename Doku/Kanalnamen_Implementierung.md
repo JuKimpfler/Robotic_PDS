@@ -1,5 +1,11 @@
 # Implementierung: Kanal-/Param-Namen + Overlay-Mapping (Teensy → GUI)
 
+> **Planungsdokument.** Es beschreibt den Entwurf zum Zeitpunkt der Umsetzung;
+> Einzelheiten haben sich seither geändert. Aktueller Stand:
+> [Architektur.md](Architektur.md), [Setup_und_Update.md](Setup_und_Update.md),
+> [../FEATURES.md](../FEATURES.md).
+
+
 **Projekt:** Robotic_PDS (RoboCup Junior Soccer 2vs2)
 **Betrifft:** `teensy_firmware/` (Firmware), `rpi_zero_node/uart_receiver.py` (Relay),
 `rpi5_monitor/64Bit_Version` (PyQt6: QML-GUI `main_qml.py` sowie die ältere Widgets-GUI `main.py`/`gui/`)

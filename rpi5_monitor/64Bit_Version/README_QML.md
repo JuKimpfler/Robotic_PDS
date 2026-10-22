@@ -1,23 +1,38 @@
-# Power Debug Monitor — QML-Migration (Umsetzungsstand)
+# Power Debug Monitor — die Oberfläche
 
-Diese Umsetzung folgt `QML_Migrationsplan_RPi5_Monitor.md` und ist
-abgeschlossen: die Oberfläche besteht nur noch aus QML. Die frühere
-PyQt6-**Widgets**-GUI (`main.py` + `gui/`, rund 3700 Zeilen) ist entfernt —
-sie kannte weder PS4-Controller noch automatische Kanalnamen noch die
-Überwachung der Empfängerprozesse.
+Qt Quick/QML-Oberfläche auf PyQt6, für den Haupt-Pi (Raspberry Pi 4/5) oder
+einen PC. Die frühere Widgets-GUI (`main.py` + `gui/`) ist entfernt.
 
-**Der Live-Plotter (Tab 2) nutzt seit dem Umbau wieder `pyqtgraph`**, diesmal
-allerdings eingebettet in die QML-Szene (siehe `bridge/plot_host.py`):
-pyqtgraph zeichnet die Kurven als C++-Polylinien direkt aus NumPy-Arrays —
-deutlich günstiger als das alte `QPainter`-Verfahren, das den Raspberry Pi 4
-(2 GB) bei mehreren Kurven überlastet hat. Bei anhaltender Überlastung
-schaltet ein Performance-Watchdog den Plotter ab und zeigt einen Hinweis,
-statt die GUI einzufrieren (siehe unten, „Performance-Watchdog").
+Der Live-Plotter (Tab 2) zeichnet mit `pyqtgraph`, eingebettet in die
+QML-Szene (`bridge/plot_host.py`). Ein Bild kostet 2–7 ms; der Bildtakt
+(höchstens 25 fps) passt sich der gemessenen Bilddauer an, ein
+Performance-Wächter schaltet den Plotter bei anhaltender Überlastung ab,
+statt die GUI einzufrieren.
 
-**Getestet:** headless (`QT_QPA_PLATFORM=offscreen`) mit `--simulate`,
-mehrere Minuten Dauerlauf ohne QML-/Python-Fehler, 30 Hz Poll-Takt,
-alle Bindings (Tabelle, Plot, Gauges/Rotation/Vektor/Tabelle, Parameter)
-laufen sauber durch.
+Installation und Updates: [`Doku/Setup_und_Update.md`](../../Doku/Setup_und_Update.md).
+
+## Dateien
+
+| Datei | Aufgabe |
+|---|---|
+| `main_qml.py` | Einstieg. `--simulate` erzeugt Testdaten für beide Nodes; `PDS_LOGLEVEL=DEBUG` für mehr Log. |
+| `starter.bat` | Starter unter Windows. |
+| `network_worker.py` | Empfängerprozesse (je Port einer) und ihre Überwachung. |
+| `udp_socket.py` | Öffnet die Empfangsports — bewusst ohne `SO_REUSEADDR`: eine zweite Instanz meldet „Port belegt", statt der ersten die Daten wegzunehmen. |
+| `aux_receiver.py` | Ereignisse, Parameter-Rückmeldung, Node-Status (Auswertung als Funktion, ohne Socket testbar). |
+| `channel_registry.py` | Setzt den Deskriptor des Teensy zusammen (Namen, Einheiten, Konfiguration). |
+| `runtime_config.py` | Speichert die Teensy-Konfiguration je Node unter `runtime_config/`, inklusive Fingerabdruck für die Konfliktregel. |
+| `config.py` | Was zur Firmware passen muss: Ports, Magic-Zahlen, Paketgrößen (geprüft von `tools/check_wire_format.py`). |
+| `app_settings.py` | Alles Einstellbare, Standardwerte, Prüfung, Profile — siehe unten. |
+| `overlay_schema.py` | Felder der Overlay-Arten als Daten (daraus baut der Editor seine Formulare). |
+| `param_io.py` | Liest/schreibt `param_config.json` und `param_defaults.h`. |
+| `bridge/` | Eine Python-Brücke je Tab (`telemetry_`, `plot_`, `visuals_`, `param_`, `diag_bridge.py`), dazu `app_bridge.py` (verteilt die Daten), `controller_bridge.py` (PS4), `settings_bridge.py`, `plot_host.py` (pyqtgraph in QML), `perf_watchdog.py`. |
+| `qml/` | Die Ansichten; `qml/components/` die wiederverwendbaren Bausteine. |
+| `param_config.json`, `visuals_overlays.json` | **Vorlagen**. Hat ein Teensy seine Konfiguration gemeldet, gelten die Kopien unter `runtime_config/nodeN/`. |
+| `settings.json`, `settings.<Name>.json` | *(zur Laufzeit angelegt, nicht im Repository)* Einstellungen und Profile. |
+| `controller_config.json` | *(optional, nicht im Repository)* abweichende Controller-Belegung. |
+| `runtime_config/` | *(zur Laufzeit angelegt)* vom Teensy übernommene Konfiguration je Node. |
+| `VERSION` | *(nur in der Installation)* installierter Stand, steht beim Start im Log. |
 
 ## Starten
 
@@ -32,21 +47,20 @@ python3 main_qml.py --simulate
 python3 main_qml.py
 ```
 
-## Was wurde umgesetzt
+## Die Tabs
 
-| Bereich | Datei(en) | Stand |
-|---|---|---|
-| Bootstrap / Engine | `main_qml.py` | ✅ vollständig, inkl. Simulator-Modus |
-| Theme/Design-Tokens | `qml/Theme.qml` | ✅ vollständig |
-| Hauptshell (SwipeView+TabBar+NodeSelector+StatusBar) | `qml/Main.qml`, `qml/components/{NodeSelector,StatusBar}.qml` | ✅ vollständig |
-| Tab 1 — Live-Tabelle | `qml/TelemetryView.qml`, `bridge/telemetry_bridge.py` | ✅ vollständig, inkl. Filterfeld (neu ggü. Original) |
-| Tab 2 — Live-Plotter | `qml/PlotterView.qml`, `bridge/plot_bridge.py` (Daten/Trigger/Marken), `bridge/plot_host.py` (PyQtGraphHost, pyqtgraph) | ✅ funktional; Pinch-to-Zoom für Punktezahl; pyqtgraph statt QPainter; **Performance-Watchdog** schaltet bei Überlastung ab |
-| Tab 3 — Systemansicht | `qml/SystemView.qml`, `bridge/visuals_bridge.py`, `overlay_schema.py`, `qml/components/{Gauge,RotationIndicator,VectorIndicator,MiniTable,OverlayEditor,FieldEditor,ChannelPicker}.qml` | ✅ vollständig, inkl. **Editor** (Ziehen im Bild, Formular je Element, Gruppen, Rückgängig, dauerhaft je Node gespeichert) — siehe unten |
-| Tab 4 — Parameter | `qml/ParamsView.qml`, `bridge/param_bridge.py`, `qml/components/{Joystick,TouchSlider}.qml` | ✅ vollständig (Slider/Zahl/Text/Toggle/Button/Joystick, Fast+Slow-Downlink, Save-Default) |
-| Tab 5 — Diagnose | `qml/DiagnosticsView.qml`, `bridge/diag_bridge.py` | ✅ vollständig — Verbindungsqualität, Round-Trip-Zeit, Node-Systemstatus, Akku-Warnung, Logbuch, Einstellungen (siehe Architektur-Übersicht in der Haupt-`README.md`, Abschnitt 3b) |
-| PS4-Controller | `bridge/controller_bridge.py` | ✅ vollständig — übernimmt den Fast-Channel automatisch, sobald ein DualShock 4 verbunden ist; siehe `Doku/PS4_Controller_Implementierung.md` |
-| Einstellungen (alles: Theme, Schriftgröße, Reglergrenzen, Fenster, Akku, Controller) | `app_settings.py`, `settings.json`, `bridge/settings_bridge.py` | ✅ vollständig — eine Datei neben `main_qml.py`, mehrere Einstellungssätze speicher-/ladbar (siehe unten) |
-| Kanal-/Param-Namen + Overlay-Defaults vom Teensy | `channel_registry.py` (Modulwurzel), `bridge/app_bridge.py::_poll_descriptor`/`requestChannelNames` | ✅ vollständig — siehe `Doku/Kanalnamen_Implementierung.md`; Namens-Refresh baut `params.groups` neu auf, gibt dabei aber die aktuellen Live-Werte statt der JSON-Defaults mit, damit kein Regler zurückspringt |
+| Tab | Ansicht | Brücke | Inhalt |
+|---|---|---|---|
+| 1 Tabelle | `qml/TelemetryView.qml` | `bridge/telemetry_bridge.py` | alle Kanäle mit Name, Wert, Einheit, Min/Max/Δ, Filter |
+| 2 Plotter | `qml/PlotterView.qml` | `bridge/plot_bridge.py` (Daten, Trigger, Marken), `bridge/plot_host.py` (pyqtgraph) | bis 8 Kurven, Trigger, Einfrieren mit Live-Kurve, Pinch-Zoom |
+| 3 System | `qml/SystemView.qml` | `bridge/visuals_bridge.py`, `overlay_schema.py` | Roboterbild mit Overlays, Grafiken, Spielfeld mit Spur, **Editor** (siehe unten) |
+| 4 Parameter | `qml/ParamsView.qml` | `bridge/param_bridge.py`, `bridge/controller_bridge.py` | Regler/Zahl/Text/Schalter/Taster/Joystick, Fast- und Slow-Kanal, PS4-Controller, Tastatur |
+| 5 Diagnose | `qml/DiagnosticsView.qml` | `bridge/diag_bridge.py`, `bridge/settings_bridge.py` | Verbindungsqualität, Ping, Node-Status, Akku-Warnung, Logbuch, Einstellungen und Profile |
+
+Kanalnamen, Einheiten und Konfiguration kommen vom Teensy
+(`channel_registry.py`, `bridge/app_bridge.py`) — siehe
+[`Doku/Kanalnamen_Implementierung.md`](../../Doku/Kanalnamen_Implementierung.md)
+und [`Doku/Architektur.md`](../../Doku/Architektur.md).
 
 ## Der Editor der Systemansicht
 
@@ -183,8 +197,9 @@ Betriebsart der Plotter gerade läuft, steht im Log
 
 Was in beiden Betriebsarten hilft, wenn es knapp wird, steht in
 `settings.json` → `plotter`: `maxFps`/`minFps` (der Takt passt sich seit
-Version 2.7 von selbst an), `maxCurves`, `defaultPoints`. Gemessen wird das
-mit `python tools/plotter_bench.py`.
+Version 2.7 von selbst an), `maxCurves`, `defaultPoints`, `lineWidth`
+(1 px ist der schnelle Weg), `gridAlpha`. Gemessen wird das mit
+`python tools/plotter_bench.py`.
 
 ## Bewusste Abweichungen vom Original
 
@@ -201,75 +216,13 @@ mit `python tools/plotter_bench.py`.
 ## Offene Punkte
 
 1. **Test auf echter RPi5-Hardware**: `QT_QPA_PLATFORM=eglfs` prüfen,
-   `QSG_RENDER_LOOP=basic` bei Flackern testen (Migrationsplan Abschnitt 7).
-2. **Plotter-Performance auf schwacher Hardware** (RPi 4, 2 GB): der
-   pyqtgraph-basierte Plotter ist deutlich günstiger als das alte
-   `QPainter`-Verfahren, wird aber bei anhaltender Überlastung durch den
-   **Performance-Watchdog** automatisch abgeschaltet (Hinweis + „Erneut
-   versuchen"). Seit Version 2.7 senkt der Plotter vorher von selbst den
-   Bildtakt (`plotter.adaptiveFps`, bis herunter auf `plotter.minFps`) —
-   der Watchdog ist damit wieder das letzte Netz statt der ersten Reaktion.
-   Empfehlung, wenn es trotzdem nicht reicht: Kurvenzahl reduzieren
-   (`settings.json` → `plotter.maxCurves`), `plotter.defaultPoints`
-   verkleinern, oder den Aufbau auf `QT_QPA_PLATFORM=xcb` umstellen (siehe
-   oben — das spart die ganze Pixmap-Kette).
+   `QSG_RENDER_LOOP=basic` bei Flackern testen.
+2. **Plotter auf schwacher Hardware** (RPi 4, 2 GB): seit 2.10 kostet ein
+   Bild 2–7 ms statt 40–55 ms (deckendes Gitter, 1-px-Kurven). Reicht es
+   trotzdem nicht, senkt der Plotter von selbst den Bildtakt
+   (`plotter.adaptiveFps`, bis `plotter.minFps`); der Performance-Wächter
+   bleibt das letzte Netz. Weitere Stellschrauben: `plotter.maxCurves`,
+   `plotter.defaultPoints`, oder `QT_QPA_PLATFORM=xcb` (siehe oben — spart
+   die Pixmap-Kette).
 3. Tooling: Qt Design Studio zum visuellen Feintuning der Touch-Layouts
-   nutzen (Migrationsplan Abschnitt 10).
-
-## Projektstruktur (neu)
-
-```
-rpi5_monitor/64Bit_Version/
-├── main_qml.py               # QML-Einstiegspunkt (--simulate, PDS_LOGLEVEL)
-├── app_settings.py            # settings.json: laden, prüfen, speichern, Profile
-├── settings.json              # git-ignored: ALLE Einstellungen (wird beim 1. Start angelegt)
-├── settings.<Name>.json       # git-ignored: gespeicherte Einstellungssätze (Profile)
-├── starter.bat                # Windows-Starter für main_qml.py
-├── overlay_schema.py          # Felder der Anzeige-Elemente als Daten (ohne PyQt)
-├── runtime_config.py          # vom Teensy uebernommene Konfiguration, je Node
-├── channel_registry.py        # Deskriptor-Empfang/-Parsing vom Teensy
-├── aux_receiver.py            # Ereignisse, Parameter-Rückmeldung, Node-Status
-├── param_defaults.h           # von der GUI generiert: Parameter-Defaults als C-Header zum Rückkopieren in channel_config.h
-├── runtime_config/            # git-ignored: gespeicherte Node-Konfiguration + UI-Settings
-├── bridge/                    # Python↔QML-Brücke (kein QtWidgets-Import)
-│   ├── app_bridge.py          # Fassade, Poll-Loop, Node-Umschaltung
-│   ├── telemetry_bridge.py    # Tab 1
-│   ├── plot_bridge.py         # Tab 2: Daten/Trigger/Marken + Watchdog-Logik
-│   ├── plot_host.py           # Tab 2: PyQtGraphHost (pyqtgraph in QML einbetten)
-│   ├── perf_watchdog.py       # Tab 2: Überlast-Erkennung (Event-Loop-Stall)
-│   ├── visuals_bridge.py      # Tab 3 samt Editor
-│   ├── param_bridge.py        # Tab 4 (ParamStore, Fast-Channel-Thread)
-│   ├── diag_bridge.py         # Tab 5: Link-Qualität, Node-Status, Akku-Alarm, Logbuch
-│   ├── controller_bridge.py   # PS4-Controller (übernimmt Fast-Channel automatisch)
-│   ├── settings_bridge.py     # Fenster nach QML auf settings.json (inkl. Profile)
-│   └── utils.py                # parse_channels, expand_textgrid
-└── qml/
-    ├── Theme.qml               # als App-1.0-Singleton registriert (main_qml.py)
-    ├── Main.qml
-    ├── UiState.qml
-    ├── TelemetryView.qml
-    ├── PlotterView.qml
-    ├── SystemView.qml
-    ├── ParamsView.qml
-    ├── DiagnosticsView.qml      # Tab 5
-    └── components/
-        ├── NodeSelector.qml
-        ├── StatusBar.qml
-        ├── AppButton.qml
-        ├── AppSwitch.qml
-        ├── Joystick.qml
-        ├── TouchSlider.qml
-        ├── Gauge.qml
-        ├── RotationIndicator.qml
-        ├── VectorIndicator.qml
-        ├── BodiesField.qml         # Feldansicht (Spielfeld, Zentimeter)
-        ├── MiniTable.qml
-        ├── OverlayEditor.qml       # Bedienfeld des Editors
-        ├── FieldEditor.qml         # ein Feld, datengetrieben aus overlay_schema
-        └── ChannelPicker.qml       # Kanalauswahl mit Suche
-```
-
-Unverändert wiederverwendet: `network_worker.py`, `param_io.py`,
-`param_config.json`, `visuals_overlays.json`, `bild/`. `config.py` hält
-weiterhin alles, was zur Firmware passen muss; die einstellbaren Werte holt es
-aus `settings.json`.
+   nutzen.

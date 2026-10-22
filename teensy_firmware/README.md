@@ -64,6 +64,11 @@ Fehlermeldung in Klartext, keine seitenlange Kandidatenliste.
 Fuer sehr heisse Schleifen (mehrere kHz) gibt es `PDS_PLOT("Name", wert)` —
 identisch zu `plot()`, loest die Kanalnummer aber nur einmalig auf.
 
+Namen duerfen auch in einem Puffer entstehen
+(`snprintf(buf, sizeof buf, "Motor%d", i); PDS.plot(buf, strom[i]);`) — jeder
+Name bekommt seinen eigenen Kanal. Ausnahme ist `PDS_PLOT`: es haelt den Kanal
+beim ersten Aufruf fest und ist deshalb nur fuer feste Namen gedacht.
+
 ### Einheiten
 
 ```cpp
@@ -323,6 +328,11 @@ PDS.enable(false);               // PDS ganz stilllegen (update() kostet dann ni
 ---
 
 ## Diagnose
+
+Gesendet wird hoechstens ein Telemetriepaket je `update()`. Dauert `loop()`
+laenger als die Sendeperiode (10 ms bei 100 Hz), ist die Paketrate in der GUI
+die Loop-Rate. `printStatus()` zaehlt die gesendeten Pakete (`TX=`) — einmal
+pro Sekunde aufgerufen, ist die Differenz genau diese Rate.
 
 ```cpp
 PDS.enableSelfDiagnostics();   // in setup(): 6 Zaehler auf die letzten Kanaele
