@@ -1248,6 +1248,90 @@ def test_teensy_settings() -> None:
             aps.SETTINGS_PATH = orig_path
             aps.replace(original)
 
+# ══════════════════════════════════════════════════════════════════════════
+#  18) Empfangsports, Verlustquote, Controller-Auswahl
+# ══════════════════════════════════════════════════════════════════════════
+def test_review_fixes() -> None:
+    section("18) Empfangsports, Verlustquote, Controller-Auswahl")
+    from udp_socket import open_udp_receiver
+
+    # Ein zweiter Empfaenger auf demselben Port muss SCHEITERN. Mit
+    # SO_REUSEADDR gelang das unter Linux, und eine doppelt gestartete GUI
+    # nahm der ersten still die Telemetrie weg.
+    first = open_udp_receiver(0)
+    port = first.getsockname()[1]
+    try:
+        try:
+            second = open_udp_receiver(port)
+        except OSError:
+            check("zweiter Bind auf denselben Port scheitert", True)
+        else:
+            second.close()
+            check("zweiter Bind auf denselben Port scheitert", False,
+                  "Port liess sich doppelt binden")
+        check("Empfangssocket hat einen Timeout (stop_event-Pruefung)",
+              first.gettimeout() == 0.5, str(first.gettimeout()))
+    finally:
+        first.close()
+
+    try:
+        importlib.import_module("PyQt6.QtCore")
+    except ImportError as exc:
+        print(f"  [ -- ] Rest uebersprungen: PyQt6 fehlt ({exc})")
+        return
+
+    from bridge.diag_bridge import NodeLink
+
+    def loss(period_us: int, drop_every: int = 0) -> float:
+        link, t = NodeLink(), 0
+        for i in range(3000):
+            t += period_us
+            if drop_every and i % drop_every == 0:
+                continue
+            link.note_packet(t & 0xFFFF_FFFF)
+        return link.loss_percent()
+
+    check("100 Hz ohne Verlust -> 0 %", loss(10_000) < 0.5, f"{loss(10_000):.1f}")
+    check("50 Hz (setTelemetryRate) ohne Verlust -> 0 %, nicht 50 %",
+          loss(20_000) < 0.5, f"{loss(20_000):.1f}")
+    check("50 Hz mit jedem 10. Paket verloren -> ~10 %",
+          9.0 < loss(20_000, 10) < 11.0, f"{loss(20_000, 10):.1f}")
+
+    # Controller: das Geraet mit den meisten Achsen, alle anderen wieder frei.
+    try:
+        import bridge.controller_bridge as cb
+    except Exception as exc:                # noqa: BLE001
+        print(f"  [ -- ] Controller uebersprungen ({exc})")
+        return
+    if cb.pygame is None:
+        print("  [ -- ] Controller uebersprungen: pygame fehlt")
+        return
+
+    opened: list[int] = []
+
+    class FakeJoystick:
+        def __init__(self, i): self.i = i
+        def init(self): opened.append(self.i)
+        def quit(self): opened.remove(self.i)
+        def get_numaxes(self): return (2, 6, 0)[self.i]
+        def get_name(self): return f"js{self.i}"
+
+    class FakeParams:
+        def fast_float_ranges(self): return {}
+        def apply_controller_values(self, values): pass
+
+    orig = cb.pygame.joystick.Joystick
+    cb.pygame.joystick.Joystick = FakeJoystick
+    try:
+        ctl = cb.ControllerBridge(FakeParams())
+        ok = ctl._connect(3)
+        check("Controller mit den meisten Achsen gewaehlt",
+              ok and ctl._joystick.i == 1, str(getattr(ctl._joystick, "i", None)))
+        check("nicht gewaehlte Geraete wieder freigegeben", opened == [1], str(opened))
+    finally:
+        cb.pygame.joystick.Joystick = orig
+
+
 def main() -> int:
     print("Power Debug System — Selbsttest")
     for fn in (test_wire_format, test_frame_assemblers, test_descriptor,
@@ -1255,7 +1339,7 @@ def main() -> int:
                test_aux_uplink, test_runtime_config, test_textgrid,
                test_overlay_editor, test_thread_attribute_clash,
                test_plot_markers_and_controller, test_app_settings,
-               test_teensy_settings):
+               test_teensy_settings, test_review_fixes):
         try:
             fn()
         except Exception as exc:            # noqa: BLE001

@@ -465,7 +465,7 @@ class AppBridge(QObject):
                 f"Parameter-Konfiguration von Node {node_id} übernommen und gespeichert.")
             self._diag.add_local(f"Node {node_id}: Parameter-Konfiguration übernommen", 0)
             if node_id == self._active_node:
-                self._params.reload_for_node(node_id)
+                self._params.reload_for_node(node_id, force=True)
 
     def _apply_teensy_settings(self, node_id: int, registry: ChannelRegistry) -> None:
         """Oberflächen-Einstellungen aus dem Deskriptor übernehmen (PDS 2.2).
@@ -512,7 +512,14 @@ class AppBridge(QObject):
             registry.param_slow_bool_names,
             registry.param_fast_float_names,
         )
-        self._visuals.apply_overlay_defaults_from_registry(registry, self._active_node)
+        # Overlays nur mit eingeschaltetem "Konfiguration vom Teensy
+        # übernehmen" — wie Parameter-Tab und Einstellungen (siehe
+        # _persist_registry). Vorher wurde die Anordnung des Teensy auch bei
+        # ausgeschaltetem Schalter übernommen und gespeichert.
+        if self._settings.autoApplyTeensyConfig:
+            self._visuals.apply_overlay_defaults_from_registry(registry, self._active_node)
+        else:
+            self._visuals.refresh()   # nur neue Kanalnamen durchreichen
 
     @safe_slot
     def _poll_aux(self) -> None:

@@ -22,6 +22,7 @@ from config import (
     UDP_CHANNEL_DESC_PORT_NODE1, UDP_CHANNEL_DESC_PORT_NODE2,
     UDP_AUX_PORT_NODE1, UDP_AUX_PORT_NODE2,
 )
+from udp_socket import open_udp_receiver
 from channel_registry import descriptor_receiver_process
 from aux_receiver import aux_receiver_process
 
@@ -68,11 +69,7 @@ def udp_receiver_process(
     #  sterben lassen — dann stünde die GUI dauerhaft ohne Daten da, ohne
     #  dass irgendwo eine Ursache steht.
     try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, UDP_RECV_BUFFER)
-        sock.bind(("0.0.0.0", port))
-        sock.settimeout(0.5)       # Damit stop_event regelmäßig geprüft wird
+        sock = open_udp_receiver(port, rcvbuf=UDP_RECV_BUFFER)
     except OSError as exc:
         proc_log.error(
             f"UDP-Port {port} konnte nicht geöffnet werden: {exc} — "

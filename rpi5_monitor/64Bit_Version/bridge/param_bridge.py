@@ -496,11 +496,17 @@ class ParamBridge(QObject):
             self._error = str(exc)
             self._config = ParamConfig(floats=[], bools=[], fast_floats=[], joysticks=[])
 
-    def reload_for_node(self, node_id: int) -> bool:
+    def reload_for_node(self, node_id: int, force: bool = False) -> bool:
         """Auf die (ggf. vom Teensy gelieferte) Konfiguration dieses Nodes
-        umschalten. Gibt True zurueck, wenn tatsaechlich neu geladen wurde."""
+        umschalten. Gibt True zurueck, wenn tatsaechlich neu geladen wurde.
+
+        force: auch dann neu laden, wenn der Pfad gleich bleibt. Noetig, wenn
+        die gespeicherte Datei gerade NEU GESCHRIEBEN wurde (neue Firmware mit
+        geaenderten Parametern): ohne force wurde nur beim ersten Mal
+        umgeschaltet, jede spaetere Aenderung blieb bis zum Neustart der GUI
+        unsichtbar — mit alten Bereichen und Gruppen an den Reglern."""
         path = runtime_config.param_config_path_for(node_id, PARAM_CONFIG_PATH)
-        if path == self._config_path:
+        if path == self._config_path and not force:
             return False
         old_values = self._store.snapshot() if self._error is None else None
         self._load_config(path)

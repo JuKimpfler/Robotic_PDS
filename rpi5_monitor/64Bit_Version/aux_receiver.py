@@ -31,6 +31,7 @@ from config import (
     NODE_STATUS_MAGIC, NODE_STATUS_STRUCT, NODE_STATUS_PACKET_BYTES,
     NODE_STATUS_FLAG_TEENSY, NODE_STATUS_FLAG_WIFI, NODE_STATUS_FLAG_UNICAST,
 )
+from udp_socket import open_udp_receiver
 
 log = logging.getLogger(__name__)
 
@@ -137,12 +138,9 @@ def aux_receiver_process(
     proc_log = logging.getLogger()
 
     try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        sock.bind(("0.0.0.0", port))
-        sock.settimeout(0.5)
+        sock = open_udp_receiver(port)
     except OSError as exc:
-        proc_log.error("UDP-Port %d konnte nicht geoeffnet werden: %s", port, exc)
+        proc_log.error("UDP-Port %d konnte nicht geoeffnet werden: %s — laeuft die GUI evtl. schon einmal?", port, exc)
         return
 
     proc_log.info("Lauscht auf :%d", port)

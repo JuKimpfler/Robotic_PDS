@@ -49,7 +49,16 @@ log = logging.getLogger("bridge.diag")
 # Neustart oder ein längerer Ausfall — der wird separat gemeldet und darf die
 # Verlustquote nicht verfälschen.
 _MAX_GAP_US = 1_000_000
+
+# Startwert der Sendeperiode (100 Hz). Die tatsaechliche Periode wird laufend
+# aus den Paketabstaenden geschaetzt (siehe NodeLink._period_us): die
+# Firmware kann sie mit PDS.setTelemetryRate() aendern, und mit einer fest
+# angenommenen 10-ms-Periode zeigte die Diagnose bei 50 Hz dauerhaft 50 %
+# "Verlust" an, obwohl kein einziges Paket fehlte.
 _NOMINAL_PERIOD_US = 10_000
+# Ueber so viele Abstaende wird der Median gebildet. Der Median bleibt
+# richtig, solange weniger als die Haelfte der Pakete fehlt.
+_PERIOD_SAMPLES = 64
 
 # Über so viele Pakete wird die Verlustquote gemittelt (10 s bei 100 Hz).
 _LOSS_WINDOW = 1000
@@ -70,7 +79,8 @@ _EVENT_NOTIFY_MS = 200
 class NodeLink:
     """Verbindungs- und Systemzustand EINES Nodes."""
 
-    __slots__ = ("expected", "received", "last_ts", "gaps", "status", "status_time")
+    __slots__ = ("expected", "received", "last_ts", "gaps", "status", "status_time",
+                 "_period_us", "_deltas")
 
     def __init__(self) -> None:
         # Ringpuffer aus (erwartet, empfangen) je Auswertefenster
@@ -80,6 +90,21 @@ class NodeLink:
         self.gaps = 0
         self.status: dict | None = None
         self.status_time = 0.0
+        self._period_us = float(_NOMINAL_PERIOD_US)
+        self._deltas: list[int] = []
+
+    def _learn_period(self, delta: int) -> None:
+        """Sendeperiode als Median der letzten Abstaende schaetzen.
+
+        Gesammelt und einmal je _PERIOD_SAMPLES Pakete sortiert — bei
+        100 Hz also gut einmal pro Sekunde 64 Zahlen, das ist nichts."""
+        if delta <= 0:
+            return
+        self._deltas.append(delta)
+        if len(self._deltas) >= _PERIOD_SAMPLES:
+            self._deltas.sort()
+            self._period_us = float(self._deltas[len(self._deltas) // 2])
+            self._deltas.clear()
 
     def note_packet(self, timestamp: int) -> None:
         prev = self.last_ts
@@ -94,8 +119,9 @@ class NodeLink:
             self.gaps += 1
             self.expected.append(1)
             return
+        self._learn_period(delta)
         # Wie viele Sendeperioden liegen dazwischen? 1 = lückenlos.
-        steps = max(1, int(round(delta / _NOMINAL_PERIOD_US)))
+        steps = max(1, int(round(delta / self._period_us)))
         self.expected.append(min(steps, 50))
 
     def loss_percent(self) -> float:

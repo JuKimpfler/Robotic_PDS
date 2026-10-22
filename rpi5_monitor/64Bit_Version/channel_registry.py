@@ -37,6 +37,7 @@ from config import (
     CHANNEL_DESC_MAGIC, CHANNEL_DESC_HEADER_BYTES,
     CHANNEL_DESC_REQUEST_MAGIC,
 )
+from udp_socket import open_udp_receiver
 
 log = logging.getLogger(__name__)
 
@@ -256,12 +257,9 @@ def descriptor_receiver_process(
     proc_log = logging.getLogger()
 
     try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        sock.bind(("0.0.0.0", port))
-        sock.settimeout(0.5)
+        sock = open_udp_receiver(port)
     except OSError as exc:
-        proc_log.error(f"UDP-Port {port} konnte nicht geöffnet werden: {exc}")
+        proc_log.error(f"UDP-Port {port} konnte nicht geöffnet werden: {exc} — läuft die GUI evtl. schon einmal?")
         return
 
     proc_log.info(f"Lauscht auf :{port}")

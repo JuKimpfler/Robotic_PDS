@@ -181,6 +181,7 @@ Full API, build flags and integration options:
   - `main_qml.py`: **Main entry point** (`setup_rpi5.sh` installs and starts this one). `--simulate` generates synthetic telemetry so the GUI can be tested without a Teensy. `PDS_LOGLEVEL=DEBUG` raises the log level.
   - `starter.bat`: Windows launcher for `main_qml.py`.
   - `network_worker.py`: UDP receiver processes and network backend.
+  - `udp_socket.py`: opens the receive ports for all receiver processes — deliberately without `SO_REUSEADDR`, so a second GUI instance fails loudly instead of silently stealing the telemetry.
   - `aux_receiver.py`: receiver for the aux uplink (events, parameter feedback, node health) — the parsing is a plain function so it can be unit-tested without a socket.
   - `config.py`: everything that has to match the firmware — ports, magic numbers, packet specifications (checked by `tools/check_wire_format.py`). The adjustable values it exposes (addresses, GUI timing, buffer sizes) come from `settings.json`.
   - `app_settings.py` + `settings.json` *(git-ignored, created on first start)*: **all** settings in one file next to `main_qml.py` — colour scheme, every colour, spacings and font sizes, the **min/max/step of every slider and spin box**, window size, battery alarm, plotter buffer, node addresses and the controller mapping. A copy named `settings.<name>.json` is a profile and can be saved/loaded from the Diagnostics tab. A typo costs at most that one field — see `README_QML.md`.
@@ -203,7 +204,7 @@ Full API, build flags and integration options:
   - `library.json`: lets the folder be pulled into another PlatformIO project via `lib_deps`.
   - Note: `PDS.h` optionally includes `enum.h`, which belongs to the robot project this library is dropped into and is not part of this repository.
 - **`tools/`**: developer checks that need no hardware — all of them run in CI.
-  - `selftest.py`: frame assemblers, descriptor reassembly, param I/O, Bluetooth protocol, aux uplink, Teensy→config conversion — 98 checks, standard library only.
+  - `selftest.py`: frame assemblers, descriptor reassembly, param I/O, Bluetooth protocol, aux uplink, Teensy→config conversion and more — 240+ checks; the core runs on the standard library alone, the PyQt6 sections are skipped if PyQt6 is missing.
   - `check_wire_format.py`: verifies that Teensy, node and GUI agree on every magic number, packet size and the wire version.
   - `check_qml_bindings.py`: every `appBridge.…` access in the QML against the real Python bridges.
   - `desc_json_check.py` + `hostsim/`: compiles the Teensy library for the PC against a small Arduino stub, **runs it**, and validates the descriptor with a real JSON parser.
@@ -351,7 +352,7 @@ python tools/selftest.py
 
 | Script | What it covers |
 |---|---|
-| `tools/selftest.py` | 98 checks: frame assemblers (resync, split packets, garbage), descriptor reassembly across restarts, channel registry robustness, overlay defaults, `param_io` round-trip, Bluetooth frame protocol + CRC, aux uplink parsing, Teensy→`param_config.json` conversion, `textgrid` layout. Standard library only — numpy/PyQt6/pyserial may be missing. |
+| `tools/selftest.py` | 240+ checks: frame assemblers (resync, split packets, garbage), descriptor reassembly across restarts, channel registry robustness, overlay defaults, `param_io` round-trip, Bluetooth frame protocol + CRC, aux uplink parsing, Teensy→`param_config.json` conversion, `textgrid` layout, settings, controller selection, port binding. The core needs the standard library only; sections that need numpy/PyQt6/pygame are skipped if those are missing. |
 | `tools/check_wire_format.py` | Magic numbers, packet sizes, channel count, baud rate and wire version across Teensy, node and GUI, plus the UART budget. |
 | `tools/check_qml_bindings.py` | Every `appBridge.…` access in the QML against the actual Python bridge classes. A typo there is silently `undefined` at runtime — this catches it statically. Also checks brace balance. |
 | `tools/desc_json_check.py` | Compiles `PDS.cpp` against a small Arduino stub for the PC, **runs it**, and validates the descriptor it produces with a real JSON parser — including quotes, backslashes, umlauts and control characters in names. Compiling alone does not find that class of bug. Skips silently if no `g++` is installed. |
