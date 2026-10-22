@@ -26,7 +26,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python: ["3.11", "3.12"]
+        # 3.11 = Bookworm, 3.13 = Trixie (Raspberry Pi OS)
+        python: ["3.11", "3.12", "3.13"]
 
     steps:
       - uses: actions/checkout@v4
@@ -80,11 +81,15 @@ jobs:
             tools/*.py
 
       - name: Shell-Skripte pruefen
+        # bash -n findet nur Syntaxfehler. shellcheck (auf ubuntu-latest
+        # vorinstalliert) findet auch, was erst auf dem Pi auffaellt:
+        # ungequotete Variablen, Fehler, die set -e nicht abfaengt, ...
         run: |
           for f in $(git ls-files '*.sh'); do
             echo "-- $f"
             bash -n "$f"
           done
+          shellcheck -S warning $(git ls-files '*.sh')
 
   # ══════════════════════════════════════════════════════════════════════
   #  2) Oberflaeche wirklich starten (Offscreen)

@@ -1,5 +1,33 @@
 # Gemeldete Fehler — Stand: alle behoben
 
+## Runde 5 (Durchsicht)
+
+- [x] **CI rot seit dem letzten Commit:** ungenutzter Import `Q_ARG` in
+  `controller_bridge.py` (pyflakes).
+- [x] **`setup_rpi5.sh`:** Schritt 5 (WLAN) fehlte, Zusammenfassung und
+  README versprachen trotzdem einen Hotspot; Shebang fehlte; ein Pi 5 wurde
+  als „falsches Gerät" gemeldet; ohne Terminal brach `read` das Skript
+  unter `set -e` ab; ein erneuter Lauf überschrieb gespeicherte
+  `param_defaults.h`.
+- [x] **`setup_node.sh`:** `nmcli` ohne laufenden NetworkManager, ein
+  einziges fehlendes optionales Paket brach das Setup ab, fehlender
+  `/etc/hosts`-Eintrag wurde nie ergänzt.
+- [x] **Doppelt gestartete GUI** stahl der ersten die Telemetrie
+  (`SO_REUSEADDR` auf den Empfangsports).
+- [x] **Geänderte Parameter einer neuen Firmware** kamen erst nach einem
+  GUI-Neustart an (`reload_for_node` verglich nur den Pfad).
+- [x] **Overlays** wurden auch mit ausgeschaltetem „Konfiguration vom Teensy
+  übernehmen" gespeichert.
+- [x] **Verlustquote** nahm fest 100 Hz an — bei 50 Hz standen 50 % da.
+- [x] **Plotter:** Sichtbarkeitswechsel vor dem Aufbau → Ausnahme im Slot →
+  `abort()`; `subsample` verschluckte Spitzen.
+- [x] **Controller:** zweites `pump()` je Zyklus, offene Geräte nach der
+  Auswahl, letzte Anzeige-Änderung ging verloren.
+- [x] **Node:** WLAN-Flag/LED 15 s falsch nach Start, SIGTERM ohne
+  Aufräumen; Bluetooth-Flash: nicht zeitkonstanter Token-Vergleich,
+  halbe Images nach Abbruch, `SystemExit` im Verbindungs-Thread.
+- [x] **Teensy:** `PDS.plot()` mit Namen aus einem Puffer → falscher Kanal.
+
 ## Runde 4
 
 - [x] **Ein einziger unbrauchbarer Wert im Teensy-Deskriptor kostete die

@@ -22,6 +22,55 @@ welchem Roboter läuft.
 
 ---
 
+## 2.9 — Durchsicht: Fehler, Setup-Skripte, CI
+
+Kein neues Wire-Format (`PDS_WIRE_VERSION` bleibt 2) — Teensy, Node und GUI
+koennen einzeln aktualisiert werden.
+
+### Setup
+* `setup_rpi5.sh`: WLAN-Schritt wieder vorhanden. Standard ist das
+  **externe Netz** `RoboDebug` (Client-Profil), `--ap` laesst den Pi den
+  Access Point selbst aufspannen. Pi 4 und Pi 5 werden ohne Rueckfrage
+  akzeptiert, `--yes` bzw. ein fehlendes Terminal laesst alle Fragen weg.
+  Ein erneuter Lauf ueberschreibt `settings.json`, Profile,
+  `runtime_config/`, `controller_config.json` und gespeicherte
+  `param_defaults.h` nicht mehr. Shebang wiederhergestellt.
+* `setup_node.sh`: startet NetworkManager vor `nmcli`, installiert optionale
+  Pakete einzeln (ein fehlendes Paket bricht nicht mehr alles ab), ergaenzt
+  den fehlenden `127.0.1.1`-Eintrag in `/etc/hosts`. Bookworm und Trixie.
+
+### GUI
+* Eine doppelt gestartete GUI nahm der ersten still die Telemetrie weg
+  (`SO_REUSEADDR`). Jetzt meldet die zweite „Port belegt".
+* Neue Firmware mit geaenderten Parametern wurde gespeichert, aber erst nach
+  einem Neustart der GUI geladen.
+* „Konfiguration vom Teensy übernehmen" = aus verhinderte das Speichern der
+  Overlays nicht.
+* Verlustquote im Diagnose-Tab stimmt auch bei `PDS.setTelemetryRate()`.
+* Controller: Signale aus dem Sende-Thread kommen sicher im GUI-Thread an,
+  nicht gewaehlte Geraete werden freigegeben, die letzte Anzeige-Aenderung
+  geht nicht mehr verloren.
+* Plotter: Downsampling wieder `peak` (Spitzen bleiben sichtbar), einstellbar
+  ueber `plotter.downsampleMethod`; Tabwechsel vor dem Aufbau konnte die GUI
+  beenden.
+* „Aussehen vom Teensy übernehmen" ist standardmaessig aus.
+
+### Node
+* `uart_receiver.py`: WLAN-Status sofort statt nach 15 s; `systemctl stop`
+  raeumt LEDs und Ports auf.
+* `bt_flash_receiver.py`: zeitkonstanter Token-Vergleich, keine halben
+  Images nach Abbruch, fehlende Token-Datei blockiert keine Verbindung mehr.
+
+### Teensy
+* `PDS.plot(puffer, wert)` mit wechselndem Namen im selben Puffer
+  (`snprintf`) landete immer auf dem Kanal des ersten Namens.
+
+### CI
+* Python 3.13 (Trixie) in der Matrix, `shellcheck` fuer alle Shell-Skripte,
+  Selbsttest Abschnitt 18.
+
+---
+
 ## 2.8 — Das PDS hält den Roboter nie wieder auf, und der Roboter stellt die Oberfläche ein
 
 Zwei Dinge in einem Zug, weil beide dieselbe Stelle betreffen: die
