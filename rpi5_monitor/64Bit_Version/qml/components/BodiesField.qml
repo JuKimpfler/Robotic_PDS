@@ -64,6 +64,12 @@ Item {
     property var body1: ({ label: "", color: "#4ec9b0", diameter: 7,  x: 0, y: 0, angleDeg: 0 })
     property var body2: ({ label: "", color: "#f0c060", diameter: 18, x: 0, y: 0, angleDeg: 0 })
 
+    // Bewegungsspur: trailLength Punkte, jeder trailEvery-te Wert — bei
+    // 25 Werten/s also gut zwei Sekunden Weg.
+    property bool showTrail: true
+    property int trailLength: 20
+    property int trailEvery: 3
+
     readonly property bool hasImage: imageUrl.length > 0
     readonly property real displayAspect: (fieldYCm > 0 ? fieldXCm / fieldYCm : 4 / 3)
 
@@ -250,89 +256,179 @@ Item {
                 font.pixelSize: Theme.fontSizeSmall
             }
 
-            component BodyItem: Item {
-                id: bodyDelegate
+            // ── Ein Körper: Spur + Kreis + Richtungspfeil + Beschriftung ──
+            //
+            //  Ungültige Werte (NaN, Unendlich, der Füllwert 9898 für nicht
+            //  belegte Kanäle) blenden den Körper aus, statt ihn irgendwohin
+            //  zu zeichnen. Werte außerhalb des Feldes — typisch für "Ball
+            //  nicht gesehen" = -1 — landen am Feldrand, blass und mit dem
+            //  Hinweis "außerhalb", damit man sieht, dass etwas kommt, aber
+            //  nicht glaubt, der Ball läge im Aus.
+            component BodyLayer: Item {
+                id: body
+                anchors.fill: parent
                 property var bodyData
-                readonly property real bx: fieldBox.xToPx(bodyData ? bodyData.x : 0)
-                readonly property real by: fieldBox.yToPx(bodyData ? bodyData.y : 0)
-                readonly property real rPx: Math.max(6, Math.abs(bodyData ? bodyData.diameter : 0) / 2
-                                                         * fieldBox._cmScale)
-                visible: bodyData && bodyData.label !== ""
 
-                x: bx - rPx; y: by - rPx
-                width: rPx * 2; height: rPx * 2
+                function _num(v) { return typeof v === "number" && isFinite(v) && v !== 9898 }
 
-                // Glow
-                Rectangle {
-                    anchors.centerIn: parent
-                    width: parent.width + 16; height: parent.height + 16
-                    radius: width / 2
-                    color: bodyDelegate.bodyData ? bodyDelegate.bodyData.color : "#ffffff"
-                    opacity: 0.18
+                readonly property bool hasPos: !!bodyData && bodyData.label !== ""
+                                               && _num(bodyData.x) && _num(bodyData.y)
+                readonly property bool hasAngle: hasPos && _num(bodyData.angleDeg)
+                readonly property real fx: hasPos ? Math.max(0, Math.min(root.fieldXCm, bodyData.x)) : 0
+                readonly property real fy: hasPos ? Math.max(0, Math.min(root.fieldYCm, bodyData.y)) : 0
+                readonly property bool outside: hasPos && (fx !== bodyData.x || fy !== bodyData.y)
+                readonly property color col: bodyData ? bodyData.color : "#ffffff"
+
+                // ── Spur der letzten gut zwei Sekunden ─────────────────────
+                //  Fester Pool aus Punkten statt eines Modells, das sich mit
+                //  jedem Wert ändert: ein Repeater mit wechselndem Modell baut
+                //  bei jeder Änderung ALLE Delegates neu auf. So verschieben
+                //  sich nur Punkte, und es kommt keine Abhängigkeit (Shapes)
+                //  hinzu, die auf dem Pi extra installiert werden müsste.
+                property var trail: []
+                property int _tick: 0
+                onBodyDataChanged: {
+                    if (!root.showTrail || !hasPos || outside)
+                        return
+                    _tick = (_tick + 1) % root.trailEvery
+                    if (_tick !== 0)
+                        return
+                    var t = trail.length >= root.trailLength
+                            ? trail.slice(trail.length - root.trailLength + 1) : trail.slice()
+                    t.push(Qt.point(fx, fy))
+                    trail = t
+                }
+                Connections {
+                    target: root
+                    function onShowTrailChanged() { body.trail = [] }
                 }
 
-                // Körper
-                Rectangle {
-                    anchors.fill: parent
-                    radius: width / 2
-                    color: bodyDelegate.bodyData ? bodyDelegate.bodyData.color : "#ffffff"
-                    opacity: 0.72
-                    border.color: bodyDelegate.bodyData ? bodyDelegate.bodyData.color : "#ffffff"
-                    border.width: 2.5
+                Repeater {
+                    model: root.showTrail ? root.trailLength : 0
+                    Rectangle {
+                        readonly property var p: index < body.trail.length ? body.trail[index] : null
+                        visible: p !== null && body.hasPos
+                        width: 4; height: 4; radius: 2
+                        x: p ? fieldBox.xToPx(p.x) - 2 : 0
+                        y: p ? fieldBox.yToPx(p.y) - 2 : 0
+                        color: body.col
+                        // älter = blasser
+                        opacity: 0.15 + 0.6 * (index + 1) / Math.max(1, body.trail.length)
+                    }
                 }
 
-                // Richtungspfeil. 0 Grad = nach rechts, positiv im Uhrzeigersinn
                 Item {
-                    anchors.centerIn: parent
-                    width: parent.width; height: parent.height
-                    rotation: bodyDelegate.bodyData ? bodyDelegate.bodyData.angleDeg : 0
+                    id: bodyDelegate
+                    visible: body.hasPos
+                    opacity: body.outside ? 0.45 : 1.0
+                    readonly property real bx: fieldBox.xToPx(body.fx)
+                    readonly property real by: fieldBox.yToPx(body.fy)
+                    readonly property real rPx: Math.max(6, Math.abs(body.bodyData && body._num(body.bodyData.diameter)
+                                                                     ? body.bodyData.diameter : 0) / 2
+                                                             * fieldBox._cmScale)
+                    x: bx - rPx; y: by - rPx
+                    width: rPx * 2; height: rPx * 2
 
+                    // Glow
                     Rectangle {
-                        width: Math.max(14, parent.width * 0.9)
-                        height: 3
-                        radius: 1.5
-                        color: bodyDelegate.bodyData ? bodyDelegate.bodyData.color : "#ffffff"
-                        x: parent.width / 2
-                        y: parent.height / 2 - height / 2
+                        anchors.centerIn: parent
+                        width: parent.width + 16; height: parent.height + 16
+                        radius: width / 2
+                        color: body.col
+                        opacity: 0.18
                     }
-                    Rectangle {
-                        width: 10; height: 10
-                        rotation: 45
-                        color: bodyDelegate.bodyData ? bodyDelegate.bodyData.color : "#ffffff"
-                        x: parent.width / 2 + Math.max(14, parent.width * 0.9) - 5
-                        y: parent.height / 2 - 5
-                    }
-                }
 
-                // Beschriftung über dem Körper
-                Rectangle {
-                    anchors.bottom: parent.top
-                    anchors.bottomMargin: 4
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    width: bodyLbl.implicitWidth + 10
-                    height: bodyLbl.implicitHeight + 4
-                    radius: 2
-                    color: Theme.dark ? "#000000" : "#ffffff"
-                    opacity: 0.65
-                }
-                Text {
-                    id: bodyLbl
-                    anchors.bottom: parent.top
-                    anchors.bottomMargin: 6
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    text: bodyDelegate.bodyData
-                          ? (bodyDelegate.bodyData.label + "  " + bodyDelegate.bodyData.x.toFixed(0) + "/"
-                             + bodyDelegate.bodyData.y.toFixed(0) + " cm  "
-                             + bodyDelegate.bodyData.angleDeg.toFixed(0) + "°")
-                          : ""
-                    color: bodyDelegate.bodyData ? bodyDelegate.bodyData.color : "#ffffff"
-                    font.bold: true
-                    font.pixelSize: Theme.fontSizeSmall
+                    // Körper
+                    Rectangle {
+                        anchors.fill: parent
+                        radius: width / 2
+                        color: body.col
+                        opacity: 0.72
+                        border.color: body.col
+                        border.width: 2.5
+                    }
+
+                    // Richtungspfeil. 0 Grad = nach rechts, positiv im Uhrzeigersinn
+                    Item {
+                        visible: body.hasAngle
+                        anchors.centerIn: parent
+                        width: parent.width; height: parent.height
+                        rotation: body.hasAngle ? body.bodyData.angleDeg : 0
+
+                        Rectangle {
+                            width: Math.max(14, parent.width * 0.9)
+                            height: 3
+                            radius: 1.5
+                            color: body.col
+                            x: parent.width / 2
+                            y: parent.height / 2 - height / 2
+                        }
+                        Rectangle {
+                            width: 10; height: 10
+                            rotation: 45
+                            color: body.col
+                            x: parent.width / 2 + Math.max(14, parent.width * 0.9) - 5
+                            y: parent.height / 2 - 5
+                        }
+                    }
+
+                    // Beschriftung über dem Körper — am oberen Feldrand
+                    // darunter, sonst schneidet der Rahmen sie ab.
+                    readonly property bool labelBelow: by - rPx < bodyLbl.implicitHeight + 10
+                    Rectangle {
+                        anchors.centerIn: bodyLbl
+                        width: bodyLbl.implicitWidth + 10
+                        height: bodyLbl.implicitHeight + 4
+                        radius: 2
+                        color: Theme.dark ? "#000000" : "#ffffff"
+                        opacity: 0.65
+                    }
+                    Text {
+                        id: bodyLbl
+                        // Mittig über dem Körper, aber nie über den Feldrand
+                        // hinaus (sonst schneidet der Rahmen sie ab).
+                        x: Math.max(6 - bodyDelegate.x,
+                                    Math.min(fieldBox.width - implicitWidth - 6 - bodyDelegate.x,
+                                             (parent.width - implicitWidth) / 2))
+                        y: bodyDelegate.labelBelow ? parent.height + 6 : -implicitHeight - 6
+                        text: !body.hasPos ? ""
+                              : body.bodyData.label + "  " + body.bodyData.x.toFixed(0) + "/"
+                                + body.bodyData.y.toFixed(0) + " cm"
+                                + (body.hasAngle ? "  " + body.bodyData.angleDeg.toFixed(0) + "°" : "")
+                                + (body.outside ? "  (außerhalb)" : "")
+                        color: body.col
+                        font.bold: true
+                        font.pixelSize: Theme.fontSizeSmall
+                    }
                 }
             }
 
-            BodyItem { bodyData: root.body1 }
-            BodyItem { bodyData: root.body2 }
+            BodyLayer { bodyData: root.body1 }
+            BodyLayer { bodyData: root.body2 }
+
+            // ── Spur ein/aus ──────────────────────────────────────────
+            Rectangle {
+                anchors.top: parent.top
+                anchors.right: parent.right
+                anchors.margins: 6
+                width: trailLbl.implicitWidth + 16
+                height: trailLbl.implicitHeight + 8
+                radius: Theme.radiusS
+                color: root.showTrail ? Theme.accentBlue : (Theme.dark ? "#000000" : "#ffffff")
+                opacity: 0.8
+                Text {
+                    id: trailLbl
+                    anchors.centerIn: parent
+                    text: "Spur"
+                    color: root.showTrail ? "#ffffff" : Theme.textDim
+                    font.bold: true
+                    font.pixelSize: Theme.fontSizeSmall
+                }
+                MouseArea {
+                    anchors.fill: parent
+                    onClicked: root.showTrail = !root.showTrail
+                }
+            }
         }
     }
 }
