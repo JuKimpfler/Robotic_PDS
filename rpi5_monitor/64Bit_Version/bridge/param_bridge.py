@@ -427,7 +427,7 @@ class ParamBridge(QObject):
         # Fuer die 2-Hz-Anzeigeaktualisierung: nur melden, wenn sich etwas
         # geaendert hat. Jedes Signal laesst QML die komplette Liste neu
         # auswerten, und der Controller schreibt 100x/s in dieselben Werte.
-        self._last_diff_count = -1
+        self._last_diff_key: tuple | None = None
         self._ack_was_available = False
 
         # ── Rueckgaengig (F6) ────────────────────────────────────────────
@@ -1058,9 +1058,12 @@ class ParamBridge(QObject):
             self._status = status
             self.statusChanged.emit()
 
-        n = len(self.diffEntries)
-        if n != self._last_diff_count:
-            self._last_diff_count = n
+        # Den INHALT vergleichen, nicht nur die Anzahl: wird ein bereits
+        # abweichender Regler weiter verstellt, bleibt die Zahl gleich, die
+        # angezeigten Ist-Werte in der Abweichungsliste waeren aber veraltet.
+        key = tuple((d["kind"], d["index"], d["current"]) for d in self.diffEntries)
+        if key != self._last_diff_key:
+            self._last_diff_key = key
             self.diffChanged.emit()
 
         available = self.ackAvailable

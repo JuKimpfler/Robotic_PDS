@@ -148,6 +148,7 @@ UART-Einrichtung (macht setup_node.sh automatisch):
 
 import os
 import time
+import signal
 import socket
 import struct
 import logging
@@ -791,7 +792,10 @@ def main() -> None:
     t_last_teensy = 0.0
 
     t_stat_start     = time.monotonic()
-    t_last_netcheck  = time.monotonic()
+    # 0.0 statt "jetzt": der erste WLAN-Check laeuft sofort. Sonst stuende
+    # das WLAN-Flag im Node-Status und die blaue LED die ersten
+    # NET_CHECK_INTERVAL Sekunden nach jedem Start auf "getrennt".
+    t_last_netcheck  = 0.0
     t_last_status    = time.monotonic()
     t_last_uart_retry = 0.0
 
@@ -843,6 +847,14 @@ def main() -> None:
             else:
                 bad += 1
         return newest, newest_addr, stale, bad
+
+    # systemd beendet den Dienst mit SIGTERM, nicht mit Strg+C. Ohne eigenen
+    # Handler stirbt der Prozess dabei sofort — der finally-Block unten
+    # (LEDs aus, UART und Sockets schliessen) liefe nie, und die LEDs
+    # blieben nach "systemctl stop" im letzten Zustand stehen.
+    def _on_sigterm(_signum, _frame):
+        raise KeyboardInterrupt
+    signal.signal(signal.SIGTERM, _on_sigterm)
 
     log.info("Event-Loop gestartet — warte auf Daten (UART + 4× UDP)...")
 
@@ -1081,7 +1093,7 @@ def main() -> None:
                     log.debug("Node-Status konnte nicht gesendet werden: %s", exc)
 
     except KeyboardInterrupt:
-        log.info("Gestoppt (KeyboardInterrupt).")
+        log.info("Gestoppt (SIGTERM/KeyboardInterrupt).")
     finally:
         leds.stop()
         sel.close()

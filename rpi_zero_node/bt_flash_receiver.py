@@ -91,6 +91,7 @@ Voraussetzungen auf dem Pi:
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import logging
 import os
@@ -151,11 +152,24 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 log = logging.getLogger("bt-flash-receiver")
 
 
-def load_secret() -> str:
-    if not SECRET_FILE.exists():
-        log.error("Auth-Token-Datei fehlt: %s (wird von setup_node.sh angelegt)", SECRET_FILE)
-        raise SystemExit(1)
-    return SECRET_FILE.read_text(encoding="utf-8").strip()
+def load_secret() -> str | None:
+    """Auth-Token lesen. None, wenn die Datei fehlt oder leer ist.
+
+    Frueher war das ein SystemExit — aufgerufen wird die Funktion aber im
+    Verbindungs-Thread. Dort beendete SystemExit nur still diesen Thread
+    (die Ausnahme ist kein Exception und rutschte durch
+    _handle_client_safe), der Socket blieb offen und der Sender wartete
+    bis zum Timeout auf eine Antwort.
+    """
+    try:
+        secret = SECRET_FILE.read_text(encoding="utf-8").strip()
+    except OSError:
+        secret = ""
+    if not secret:
+        log.error("Auth-Token-Datei fehlt oder ist leer: %s (wird von setup_node.sh angelegt)",
+                  SECRET_FILE)
+        return None
+    return secret
 
 
 # ───────────────────────────────────────────────────────────────── Pairing-Agent
@@ -281,13 +295,18 @@ def handle_client(raw_fd: int, peer_path: str) -> None:
     sock = socket.fromfd(raw_fd, socket.AF_BLUETOOTH, socket.SOCK_STREAM, socket.BTPROTO_RFCOMM)
     os.close(raw_fd)  # fromfd() dupliziert den fd, Original schließen
     secret = load_secret()
+    target_path: Path | None = None
+    complete = False
 
     try:
         sock.settimeout(10.0)
 
         # --- HELLO / Auth ----------------------------------------------------
+        # compare_digest: Laufzeit unabhaengig davon, an welcher Stelle sich
+        # die Tokens unterscheiden.
         cmd, payload = recv_frame(sock)
-        token_ok = cmd == Cmd.HELLO and payload.decode("utf-8", "replace") == secret
+        token_ok = (secret is not None and cmd == Cmd.HELLO
+                    and hmac.compare_digest(payload, secret.encode("utf-8")))
         send_frame(sock, Cmd.HELLO_ACK, json.dumps(
             {"ok": token_ok, "node_id": NODE_ID, "msg": "" if token_ok else "Auth fehlgeschlagen"}
         ).encode("utf-8"))
@@ -374,6 +393,7 @@ def handle_client(raw_fd: int, peer_path: str) -> None:
             target_path.unlink(missing_ok=True)
             return
 
+        complete = True
         log.info("Datei vollständig empfangen und verifiziert: %s (%d Bytes)", target_path, received)
 
         # --- Bootloader + Flashen --------------------------------------------------
@@ -400,6 +420,14 @@ def handle_client(raw_fd: int, peer_path: str) -> None:
     except (ProtocolError, OSError, socket.timeout) as exc:
         log.error("Verbindungsfehler mit %s: %s", peer_path, exc)
     finally:
+        # Eine abgebrochene Uebertragung hinterliess sonst ein halbes Image
+        # in flash_incoming/ — cleanup_old_files() raeumt nur nach einem
+        # erfolgreichen Durchlauf und nur *.hex auf.
+        if target_path is not None and not complete:
+            try:
+                target_path.unlink(missing_ok=True)
+            except OSError:
+                pass
         try:
             sock.close()
         except OSError:
