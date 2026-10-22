@@ -153,6 +153,42 @@ def test_frame_assemblers() -> None:
     check("kein Pufferwachstum bei reinem Muell", len(asm._buf) <= 3,
           f"{len(asm._buf)} Bytes")
 
+    # ── Fehlende Bytes (UART-Ueberlauf) ──────────────────────────────────
+    #  Frueher wurde das zu kurze Paket mit dem Anfang des naechsten
+    #  aufgefuellt und als "gueltig" weitergeschickt: verschobene Muellwerte
+    #  in der GUI, und das naechste Paket war zusaetzlich verloren.
+    p2 = make_packet(2)
+    for lost in (1, 3, 4, 100, 700):
+        asm = node.TelemetryFrameAssembler()
+        cut = p1[:300] + p1[300 + lost:]          # `lost` Bytes fehlen
+        out = asm.feed(cut + p2)
+        check(f"{lost} fehlende(s) Byte(s): kaputtes Paket verworfen, "
+              f"naechstes kommt heil an",
+              out == [p2] and asm.broken_frames == 1,
+              f"{len(out)} Paket(e), broken={asm.broken_frames}")
+    # 2 fehlende Bytes sind ohne Folgedaten nicht erkennbar (das naechste
+    # Magic ragt nur mit 2 Bytes ins Paket) — dafuer gibt es das Folgepaket:
+    asm = node.TelemetryFrameAssembler()
+    out = asm.feed(p1[:300] + p1[302:] + p2)
+    check("2 fehlende Bytes: Folgepaket kommt trotzdem heil an",
+          out[-1:] == [p2], f"{len(out)} Paket(e)")
+
+    # ── Fremde Pakete zwischen zwei Telemetriepaketen sind kein Muell ────
+    asm = node.TelemetryFrameAssembler()
+    chunk = (node.CHANNEL_DESC_MAGIC_BYTES + bytes([0, 1, 5]) + b"hallo")
+    event = (node.PDS_EVENT_MAGIC_BYTES + bytes(8) + bytes([0, 0, 2, 0]) + b"hi")
+    out = asm.feed(p0 + chunk + p1 + event + p2)
+    check("Deskriptor/Ereignis zwischen Paketen: alle Pakete da",
+          out == [p0, p1, p2], f"{len(out)}")
+    check("... und KEIN Sync-Verlust gezaehlt", asm.sync_losses == 0,
+          str(asm.sync_losses))
+
+    # ── Kernel-Fehlerzaehler der UART ─────────────────────────────────────
+    line = "0: uart:PL011 rev2 mmio:0x3F201000 irq:81 tx:5 rx:9 fe:2 oe:17 RTS|DTR"
+    got = {k: int(v) for k, v in node._UART_ERR_RE.findall(line)}
+    check("UART-Fehlerzaehler (oe/fe) werden gelesen",
+          got == {"fe": 2, "oe": 17}, str(got))
+
     section("3) ChunkFrameAssembler (Deskriptor im Telemetriestrom)")
     desc = node.ChunkFrameAssembler()
 
@@ -1279,6 +1315,33 @@ def test_review_fixes() -> None:
     except ImportError as exc:
         print(f"  [ -- ] Rest uebersprungen: PyQt6 fehlt ({exc})")
         return
+
+    # ── Eingefroren laeuft die Aufzeichnung weiter ────────────────────────
+    import numpy as np
+    from bridge.plot_bridge import PlotBridge
+    pb = PlotBridge()
+    pb.setChannels([0])
+    pb.setPointsCount(100)
+    pb.append_block(np.full((100, 4), 1.0, dtype=np.float32))
+    pb.add_marker("vor dem Einfrieren", at=pb._total - 50)
+    pb.setFrozen(True)
+    before = pb.visible_markers(100)
+    pb.append_block(np.full((50, 4), 2.0, dtype=np.float32))
+    frozen, live = pb.snapshot(), pb.live_snapshot()
+    check("eingefroren: das Bild bleibt stehen",
+          float(np.nanmax(frozen[0])) == 1.0, str(np.nanmax(frozen[0])))
+    check("eingefroren: die Live-Kurve laeuft weiter",
+          float(live[0][-1]) == 2.0, str(live[0][-1]))
+    check("eingefroren: Marken bleiben am stehenden Bild",
+          pb.visible_markers(100) == before and len(before) == 1, str(before))
+    pb.add_marker("waehrend eingefroren")
+    check("Marke nach dem Einfrieren erscheint NICHT im stehenden Bild",
+          pb.visible_markers(100) == before, str(pb.visible_markers(100)))
+    pb.setFrozen(False)
+    check("nach dem Auftauen ist der eingefrorene Zeitraum im Verlauf",
+          int(np.count_nonzero(pb.snapshot()[0] == 2.0)) == 50)
+    check("Marke aus der eingefrorenen Zeit sitzt am rechten Rand",
+          pb.visible_markers(100)[-1][0] == 1.0, str(pb.visible_markers(100)))
 
     from bridge.diag_bridge import NodeLink
 

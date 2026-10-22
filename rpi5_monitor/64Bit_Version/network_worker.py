@@ -83,6 +83,7 @@ def udp_receiver_process(
     pkt_drop  = 0   # Queue voll
     pkt_bad   = 0   # Ungültiger Header / falsche Größe
     last_bad_log = 0.0
+    last_drop_log = 0.0
 
     while not stop_event.is_set():
         try:
@@ -134,7 +135,17 @@ def udp_receiver_process(
             out_queue.put_nowait((node_id, timestamp, values, addr[0]))
             pkt_ok += 1
         except Exception:
-            pkt_drop += 1   # Queue voll → Paket verwerfen
+            # Queue voll → Paket verwerfen. Das heisst: die Oberflaeche hat
+            # laenger als DATA_QUEUE_MAXSIZE Pakete (3 s bei 100 Hz) nicht
+            # abgeholt. Sichtbar machen statt erst beim Beenden zu zaehlen —
+            # sonst sieht man nur Luecken im Plot und sucht sie im WLAN.
+            pkt_drop += 1
+            now = monotonic()
+            if now - last_drop_log >= 5.0:
+                last_drop_log = now
+                proc_log.warning(
+                    f"Warteschlange voll — {pkt_drop} Paket(e) verworfen. Die "
+                    f"Oberflaeche holt die Daten nicht schnell genug ab.")
 
     sock.close()
     proc_log.info(

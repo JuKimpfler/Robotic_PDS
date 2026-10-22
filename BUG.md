@@ -1,5 +1,16 @@
 # Gemeldete Fehler — Stand: alle behoben
 
+## Runde 6 (Darstellung und Datenverlust)
+
+- [x] **Plotter mit 2–10 Bildern/s bei 80–100 Pkt/s.** Halbtransparentes
+  Gitter (≈ 75 % der Bildzeit) und 1,8-px-Kurven; dazu 12 fps als Deckel.
+  Jetzt 2–7 ms je Bild, 25 fps.
+- [x] **Müllpakete nach UART-Byteverlust** (Node füllte mit dem nächsten
+  Paket auf) und das Folgepaket fehlte.
+- [x] **Falsche Sync-Verluste** bei jeder Deskriptor-Übertragung.
+- [x] **Eingefroren lief die Aufzeichnung nicht weiter** (Banner versprach es).
+- [x] **QML-TypeErrors beim Beenden.**
+
 ## Runde 5 (Durchsicht)
 
 - [x] **CI rot seit dem letzten Commit:** ungenutzter Import `Q_ARG` in

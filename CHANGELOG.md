@@ -22,6 +22,45 @@ welchem Roboter läuft.
 
 ---
 
+## 2.10 — Plotter flüssig, keine Müllpakete mehr
+
+Kein neues Wire-Format (`PDS_WIRE_VERSION` bleibt 2).
+
+### Darstellung: 2–10 statt 25 Bilder/s
+Bei 80–100 Pkt/s lief der Plotter auf dem Pi nur mit 2 bis 10 Bildern pro
+Sekunde. Ursache war nicht der Datenpfad, sondern das Rastern:
+* Das **halbtransparente Gitter** kostete drei Viertel der Bildzeit (Qt
+  rastert transparente Linien rund 30-mal langsamer). Jetzt deckend in
+  vorab gemischter Farbe, optisch gleich.
+* **Kurven 1 px** statt 1,8 px (`plotter.lineWidth`): pyqtgraph zeichnet
+  breitere Linien auf einem doppelt so teuren Weg.
+* Ergebnis: 2–7 ms statt 38–56 ms je Bild; mit Simulator 23,6 statt
+  10,4 Bilder/s. `maxFps` und `network.guiFps` stehen jetzt auf 25,
+  bestehende `settings.json` werden einmalig umgestellt (nur unveränderte
+  alte Standardwerte).
+* Beim Beenden kamen dutzende QML-`TypeError` — die Engine wird jetzt vor
+  der Brücke abgebaut.
+
+### Datenverlust
+* **Node:** Fehlten auf der UART Bytes (FIFO-Überlauf), wurde das zu kurze
+  Paket mit dem Anfang des nächsten aufgefüllt und als gültig verschickt —
+  Müllwerte im Plot, und das nächste Paket war zusätzlich weg. Jetzt wird
+  ein solches Paket erkannt, verworfen (`kaputte Pakete` im Log) und das
+  nächste kommt heil an.
+* **Node:** Die Kernel-Fehlerzähler der UART (`oe` Überlauf, `fe`
+  Rahmenfehler) stehen im Log, sobald sie steigen.
+* **Node:** Deskriptor-Chunks, Ereignisse und Param-Acks zwischen zwei
+  Telemetriepaketen zählen nicht mehr als „Sync-Verlust“ (vorher bei jeder
+  Namensübertragung rund hundert Fehlalarme).
+* **GUI:** Eingefroren lief die Aufzeichnung NICHT weiter, obwohl das Banner
+  es versprach — der eingefrorene Zeitraum fehlte danach im Verlauf. Jetzt
+  läuft sie weiter (gestrichelte Live-Kurve), Marken bleiben am stehenden
+  Bild.
+* **GUI:** Eine volle Empfangs-Warteschlange (Oberfläche > 3 s blockiert)
+  steht sofort im Log statt erst beim Beenden.
+
+---
+
 ## 2.9 — Durchsicht: Fehler, Setup-Skripte, CI
 
 Kein neues Wire-Format (`PDS_WIRE_VERSION` bleibt 2) — Teensy, Node und GUI

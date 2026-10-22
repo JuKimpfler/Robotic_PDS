@@ -147,6 +147,7 @@ UART-Einrichtung (macht setup_node.sh automatisch):
 """
 
 import os
+import re
 import time
 import signal
 import socket
@@ -309,12 +310,58 @@ class TelemetryFrameAssembler:
     mit Einzelbyte-Reads — das ist der Teil, der in v4 bei Sync-Verlust
     unverhältnismäßig teuer war und zum GIL-Kontentions-Teufelskreis
     beigetragen hat (siehe Modul-Docstring).
+
+    Zwei Zaehler, weil es zwei verschiedene Dinge sind:
+      sync_losses    Muell VOR einem Paket (Bytes, die zu keinem bekannten
+                     Paket gehoeren). Deskriptor-Chunks, Ereignisse und
+                     Param-Acks zwischen zwei Telemetriepaketen sind KEIN
+                     Muell und werden nicht mehr mitgezaehlt — vorher stieg
+                     der Zaehler bei jeder Namensuebertragung um rund hundert,
+                     und das Log meldete ein Verkabelungsproblem, das es
+                     nicht gab.
+      broken_frames  Pakete, in denen Bytes FEHLEN (UART-Ueberlauf, Stoerung).
+                     Das Paket ist dann kuerzer als 808 Bytes, und die
+                     fehlenden Bytes wurden bisher mit dem Anfang des
+                     NAECHSTEN Pakets aufgefuellt: die GUI bekam ein Paket
+                     voller verschobener Muellwerte (Spitzen im Plot), und
+                     das naechste Paket war zusaetzlich verloren. Jetzt wird
+                     ein solches Paket verworfen und am naechsten Magic
+                     weitergemacht.
     """
+
+    # Magics der Pakete, die sich im selben Rohstrom mit der Telemetrie
+    # abwechseln (siehe MagicFrameAssembler).
+    FOREIGN_MAGICS: tuple[bytes, ...] = (
+        CHANNEL_DESC_MAGIC_BYTES, PDS_EVENT_MAGIC_BYTES, PARAM_ACK_MAGIC_BYTES,
+    )
 
     def __init__(self) -> None:
         self._buf = bytearray()
         self.sync_losses = 0
+        self.broken_frames = 0
         self.packets_out = 0
+
+    def reset(self) -> None:
+        """Angefangenes Paket verwerfen, Zaehler behalten."""
+        self._buf.clear()
+
+    def _next_magic_inside(self) -> int:
+        """Beginnt INNERHALB des Paketkandidaten schon ein neues Paket?
+
+        Gesucht wird ab Byte 4 bis kurz hinter das Paketende (soweit schon
+        empfangen): fehlen n >= 4 Bytes, liegt das naechste Magic komplett im
+        Kandidaten, bei n = 1..3 ragt es ueber dessen Ende hinaus. Ein
+        zufaelliger Treffer in echten Messwerten ist bei vier festen 32-Bit-
+        Mustern praktisch ausgeschlossen (~1 zu 10^6 je Paket) und kostete
+        dann nur dieses eine Paket.
+        """
+        end = min(len(self._buf), PACKET_BYTES + 3)
+        hit = -1
+        for magic in (MAGIC_BYTES,) + self.FOREIGN_MAGICS:
+            idx = self._buf.find(magic, 4, end)
+            if idx != -1 and (hit == -1 or idx < hit):
+                hit = idx
+        return hit
 
     def feed(self, chunk: bytes) -> list[bytes]:
         if not chunk:
@@ -333,12 +380,23 @@ class TelemetryFrameAssembler:
                 break
 
             if idx > 0:
-                # Byte-Müll vor dem Magic -- Sync-Verlust zählen und verwerfen
-                self.sync_losses += 1
+                # Vor dem Magic liegt etwas. Beginnt es mit einem bekannten
+                # Paket (Deskriptor, Ereignis, Ack), ist das regulaerer
+                # Verkehr — sonst ist es Byte-Muell.
+                if not self._buf.startswith(self.FOREIGN_MAGICS):
+                    self.sync_losses += 1
                 del self._buf[:idx]
 
             if len(self._buf) < PACKET_BYTES:
                 break   # Paket ist noch nicht vollständig angekommen
+
+            cut = self._next_magic_inside()
+            if cut != -1:
+                # Zu kurz: es fehlen Bytes. Verwerfen, am naechsten Paket
+                # weitermachen (siehe Klassen-Docstring, broken_frames).
+                self.broken_frames += 1
+                del self._buf[:cut]
+                continue
 
             packets.append(bytes(self._buf[:PACKET_BYTES]))
             del self._buf[:PACKET_BYTES]
@@ -522,6 +580,31 @@ def _wlan_ip(iface: str = "wlan0") -> str | None:
         return None
     finally:
         sock.close()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  UART-Fehlerzaehler des Kernels
+# ══════════════════════════════════════════════════════════════════════════════
+#  Der PL011 hat nur einen 32-Byte-Empfangs-FIFO. Bei 1 Mbit/s ist der nach
+#  gut 300 us voll; kommt der Interrupt-Handler nicht rechtzeitig dran (WLAN-
+#  Treiber, andere Interrupts), gehen Bytes verloren, BEVOR dieses Programm
+#  sie je sieht. Der Kernel zaehlt das ("oe" = overrun error) in
+#  /proc/tty/driver/ttyAMA. Ohne diese Zahl ist ein UART-Ueberlauf im Log
+#  nicht von einem Wackelkontakt oder einer falschen Baudrate zu
+#  unterscheiden.
+_UART_ERR_RE = re.compile(r"\b(fe|oe|pe|brk):(\d+)")
+
+
+def _uart_error_counts(port_index: int = 0) -> dict[str, int]:
+    """Fehlerzaehler des PL011 (ttyAMA<port_index>) oder {} (nicht lesbar)."""
+    try:
+        with open("/proc/tty/driver/ttyAMA", "r") as fh:
+            for line in fh:
+                if line.startswith(f"{port_index}:"):
+                    return {k: int(v) for k, v in _UART_ERR_RE.findall(line)}
+    except (OSError, ValueError):
+        pass
+    return {}
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -784,6 +867,10 @@ def main() -> None:
     event_pkt_sent = 0
     ack_pkt_sent  = 0
     last_sync_losses = 0
+    last_broken = 0
+    # Port-Nummer aus /dev/ttyAMA<n> fuer die Kernel-Fehlerzaehler
+    uart_index = int(UART_PORT[-1]) if UART_PORT[-1:].isdigit() else 0
+    last_uart_errors = _uart_error_counts(uart_index)
 
     # Kumulativ (fuer das Node-Statuspaket, das absolute Zahlen meldet —
     # die Zaehler oben werden in jedem Statistikfenster zurueckgesetzt).
@@ -1021,8 +1108,12 @@ def main() -> None:
                         sel.register(uart_fd, selectors.EVENT_READ, data="uart")
                         state["broken"] = False
                         # Assembler zuruecksetzen: ihre Puffer enthalten das
-                        # halbe Paket, an dem der Fehler aufgetreten ist.
-                        assembler = TelemetryFrameAssembler()
+                        # halbe Paket, an dem der Fehler aufgetreten ist. Beim
+                        # Telemetrie-Assembler nur den Puffer: seine Zaehler
+                        # laufen kumulativ ins Statuspaket und in die
+                        # Differenzen der Statistikzeile (ein neues Objekt
+                        # ergab dort negative "Sync-Verluste").
+                        assembler.reset()
                         desc_assembler = ChunkFrameAssembler()
                         event_assembler = EventFrameAssembler()
                         ack_assembler = ParamAckFrameAssembler()
@@ -1038,10 +1129,17 @@ def main() -> None:
                 pps = pkt_sent / elapsed
                 kbps = bytes_sent / elapsed / 1024
                 new_losses = assembler.sync_losses - last_sync_losses
+                new_broken = assembler.broken_frames - last_broken
+                uart_errors = _uart_error_counts(uart_index)
+                uart_err_delta = {k: v - last_uart_errors.get(k, 0)
+                                  for k, v in uart_errors.items()
+                                  if v - last_uart_errors.get(k, 0) > 0}
+                last_uart_errors = uart_errors
                 dest = target.resolve()
                 log.info(
                     f"Telemetrie -> {dest}: {pps:.1f} Pkt/s | {kbps:.1f} KB/s | "
-                    f"Sync-Verluste: {new_losses} | Sendefehler: {send_errors} || "
+                    f"Sync-Verluste: {new_losses} | kaputte Pakete: {new_broken} | "
+                    f"Sendefehler: {send_errors} || "
                     f"Param-Downlink: Slow={fwd_slow_ok} Fast={fwd_fast_ok} "
                     f"({fwd_fast_ok / elapsed:.1f} Pkt/s) überholt={fwd_stale} "
                     f"ungültig={fwd_bad} || "
@@ -1054,6 +1152,14 @@ def main() -> None:
                        if (desc_assembler.false_magics or event_assembler.false_magics
                            or ack_assembler.false_magics) else "")
                 )
+                if uart_err_delta:
+                    # oe = Ueberlauf im Empfangs-FIFO, fe = Rahmenfehler
+                    # (Baudrate/Stoerung), pe = Paritaet, brk = Leitung tot.
+                    log.warning(
+                        "UART-Fehler laut Kernel: %s — Bytes gingen verloren, bevor "
+                        "sie gelesen werden konnten (oe: Interrupt zu spaet, "
+                        "fe: Baudrate/Masse/Stoerung pruefen).",
+                        " ".join(f"{k}={v}" for k, v in sorted(uart_err_delta.items())))
                 if pkt_sent == 0:
                     log.warning(
                         "Keine Telemetrie vom Teensy — Verkabelung (Pin 14 -> GPIO15), "
@@ -1064,6 +1170,7 @@ def main() -> None:
                 desc_pkt_sent = fwd_desc_req = discovery_rx = discovery_echo = 0
                 event_pkt_sent = ack_pkt_sent = 0
                 last_sync_losses = assembler.sync_losses
+                last_broken = assembler.broken_frames
                 t_stat_start = now
 
             if now - t_last_netcheck >= NET_CHECK_INTERVAL:

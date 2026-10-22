@@ -205,6 +205,14 @@ class PlotBridge(QObject):
 
         self._frozen = False
         self._frozen_snapshot: np.ndarray | None = None
+        # Stand des Rings im Moment des Einfrierens: die Marken muessen am
+        # STEHENDEN Bild ausgerichtet werden, waehrend der Ring weiterlaeuft.
+        self._frozen_total = 0
+        self._frozen_filled = 0
+        # Eingefroren reicht fuer die gestrichelte Live-Kurve ein ruhiger
+        # Takt (siehe append_block) — das stehende Bild aendert sich nicht.
+        self._frozen_notify_s = 1.0 / max(1, int(app_settings.get("plotter.idleFps", 4)))
+        self._frozen_last_notify = 0.0
         self._shared_scale = False
         self._stats = "—"
         # Zwischengespeicherte Legende + naechster faelliger Rechenzeitpunkt
@@ -548,6 +556,7 @@ class PlotBridge(QObject):
         snap = self.snapshot().copy() if value else None
         self._frozen = value
         self._frozen_snapshot = snap
+        self._frozen_total, self._frozen_filled = self._total, self._filled
         self._norm_rows = -1        # anderes Fenster -> andere Grenzen
         if not value:
             self._trig_fired_at = None
@@ -718,7 +727,10 @@ class PlotBridge(QObject):
         self._markers.append((idx, str(text)[:32], int(level)))
         # Alles, was aus dem Ring herausgelaufen ist, kann nie wieder sichtbar
         # werden -> wegwerfen, damit die Liste im Dauerbetrieb nicht waechst.
-        cutoff = self._total - self._cap
+        # Eingefroren zaehlt das stehende Fenster: dessen Marken duerfen nicht
+        # verschwinden, nur weil der Ring dahinter weiterlaeuft.
+        ref = min(self._total, self._frozen_total) if self._frozen else self._total
+        cutoff = ref - self._cap
         if len(self._markers) > 64:
             self._markers = [m for m in self._markers if m[0] > cutoff][-64:]
         self.markersChanged.emit()
@@ -727,17 +739,22 @@ class PlotBridge(QObject):
         """Marken im sichtbaren Fenster als (0..1-Position, Text, Level)."""
         if not self._markers:
             return []            # Normalfall — gar nicht erst weiterrechnen
-        count = min(points, self._filled)
+        # Eingefroren gilt das Fenster vom Moment des Einfrierens — der Ring
+        # laeuft weiter, das Bild nicht.
+        total, filled = ((self._frozen_total, self._frozen_filled)
+                         if self._frozen and self._frozen_snapshot is not None
+                         else (self._total, self._filled))
+        count = min(points, filled)
         if count <= 1:
             return []
-        # Sichtbar sind die Samples first .. self._total - 1; der letzte davon
+        # Sichtbar sind die Samples first .. total - 1; der letzte davon
         # liegt am rechten Rand.
-        last = self._total - 1
+        last = total - 1
         first = last - (count - 1)
         out = []
         for abs_idx, text, level in self._markers:
-            if abs_idx < first:
-                continue
+            if abs_idx < first or abs_idx > total:
+                continue          # vor dem Fenster bzw. nach dem Einfrieren
             pos = (min(abs_idx, last) - first) / (count - 1)
             out.append((pos, text, level))
         return out
@@ -778,8 +795,12 @@ class PlotBridge(QObject):
         """
         if block.ndim != 2 or block.shape[0] == 0:
             return
-        if self._frozen:
-            return
+        # Auch eingefroren WEITER aufzeichnen: das eingefrorene Bild ist eine
+        # eigene Kopie (_frozen_snapshot), der Ring darf weiterlaufen. Frueher
+        # stand hier ein `return` — die gestrichelte Live-Kurve im
+        # eingefrorenen Bild (live_snapshot) bewegte sich dadurch nie, nach
+        # dem Auftauen fehlte der eingefrorene Zeitraum lueckenlos verklebt
+        # im Verlauf, und Marken aus dieser Zeit sassen an falscher Stelle.
 
         n_new, width = block.shape
         # Mehr Samples als der Ring fasst kann nur bei einem massiven
@@ -816,13 +837,23 @@ class PlotBridge(QObject):
         self._filled = min(self._filled + n_new, self._cap)
         self._total += n_new
 
-        if self._trig_enabled:
+        # Eingefroren: kein Trigger (er hat ja gerade ausgeloest bzw. der
+        # Bediener schaut sich etwas an) und keine Normierungsgrenzen aus
+        # neuen Daten — die gehoeren zum eingefrorenen Bild.
+        if self._trig_enabled and not self._frozen:
             self._evaluate_trigger(block, width, n_new)
 
-        if _CACHE_NORM_BOUNDS and self._norm_rows >= 0:
+        if _CACHE_NORM_BOUNDS and self._norm_rows >= 0 and not self._frozen:
             self._extend_norm_bounds(block, width, n_new)
 
         self._update_stats()
+        if self._frozen:
+            # Neu zeichnen muss nur die gestrichelte Live-Kurve — im
+            # Ruhetakt, damit Einfrieren weiter (fast) nichts kostet.
+            now = monotonic()
+            if now - self._frozen_last_notify < self._frozen_notify_s:
+                return
+            self._frozen_last_notify = now
         self.bufferChanged.emit()
 
     def _evaluate_trigger(self, block: np.ndarray, width: int, n_new: int) -> None:
@@ -836,8 +867,10 @@ class PlotBridge(QObject):
         if self._trig_capture_at is not None:
             if self._total >= self._trig_capture_at:
                 self._trig_capture_at = None
-                self._frozen = True
                 self._frozen_snapshot = self.snapshot().copy()
+                self._frozen = True
+                self._frozen_total, self._frozen_filled = self._total, self._filled
+                self._norm_rows = -1    # wie in setFrozen(): neues Fenster
                 self.frozenChanged.emit()
                 self.triggerChanged.emit()
             return
