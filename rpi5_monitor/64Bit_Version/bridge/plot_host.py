@@ -69,6 +69,7 @@ from PyQt6.QtWidgets import QWidget
 
 import app_settings
 from bridge.plot_bridge import PlotBridge, CURVE_COLORS
+from bridge.utils import safe_slot
 
 log = logging.getLogger("bridge.plot.host")
 
@@ -270,6 +271,8 @@ class PyQtGraphHost(QQuickPaintedItem):
         self._idle_interval = max(1, 1000 // self._idle_fps)
         # pyqtgraph-Performance-Schalter aus settings.json ("plotter").
         self._downsample = bool(app_settings.get("plotter.downsample", True))
+        method = app_settings.get("plotter.downsampleMethod", "peak")
+        self._ds_method = method if method in ("peak", "subsample", "mean") else "peak"
         self._antialias = bool(app_settings.get("plotter.antialias", False))
         # Gemeinsame Skala: glatter, quantisierter Y-Bereich statt
         # enableAutoRange(Y) nach jedem setData (siehe nice_y_range).
@@ -286,10 +289,20 @@ class PyQtGraphHost(QQuickPaintedItem):
         self.windowChanged.connect(self._on_window_changed)
         self.visibleChanged.connect(self._on_visibility_changed)
 
+    @safe_slot
     def _on_visibility_changed(self) -> None:
+        """Tab gewechselt (PlotterView setzt visible an isActive).
+
+        Sofort reagieren statt erst beim naechsten Takt: beim Wegschalten
+        den Plotter stilllegen, beim Hinschalten gleich ein Bild zeichnen.
+        Kann schon VOR dem Aufbau feuern (QML setzt visible beim Erzeugen),
+        dann gibt es noch nichts zu tun.
+        """
         self._dirty = True
+        if self._plotter is None or self._plot is None:
+            return
         if self.isVisible():
-            self._timer.setInterval(self._active_interval)
+            self._set_idle(False)
             self._redraw()
         else:
             self._go_idle()
@@ -682,7 +695,7 @@ class PyQtGraphHost(QQuickPaintedItem):
             i = len(self._curves)
             pen = pg.mkPen(CURVE_COLORS[i % len(CURVE_COLORS)], width=1.8)
             ci = self._plot.plot(pen=pen, connect="auto")
-            ci.setDownsampling(auto=self._downsample, method="subsample")
+            ci.setDownsampling(auto=self._downsample, method=self._ds_method)
             ci.setClipToView(True)
             # Achtung: PlotDataItem hat KEINE setAntialiasing()-Methode; die
             # Antialiasing-Einstellung wirkt ueber die globale pg-Option oben.
@@ -777,7 +790,7 @@ class PyQtGraphHost(QQuickPaintedItem):
             pen = pg.mkPen(CURVE_COLORS[0], width=1.4)
             pen.setStyle(Qt.PenStyle.DashLine)
             self._live_curve = self._plot.plot(pen=pen, connect="auto")
-            self._live_curve.setDownsampling(auto=self._downsample, method="peak")
+            self._live_curve.setDownsampling(auto=self._downsample, method=self._ds_method)
             self._live_curve.setClipToView(True)
             # (Antialiasing ueber die globale pg-Option, s.o.)
         self._live_curve.setData(xs, ys)

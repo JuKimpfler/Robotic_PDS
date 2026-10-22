@@ -77,7 +77,7 @@ except Exception as _exc:            # ImportError, aber auch SDL-Ladefehler
     pygame = None
     _PYGAME_IMPORT_ERROR = str(_exc)
 
-from PyQt6.QtCore import QObject, pyqtProperty, pyqtSignal
+from PyQt6.QtCore import QMetaObject, QObject, Qt, pyqtProperty, pyqtSignal
 
 import app_settings
 from config import CONTROLLER_CONFIG_PATH, CONTROLLER_UI_NOTIFY_MS
@@ -209,6 +209,10 @@ class ControllerBridge(QObject):
         # zusätzlich träge gemacht hat.
         self._last_ui_notify = 0.0
         self._ui_notify_interval = CONTROLLER_UI_NOTIFY_MS / 1000.0
+        # Eine wegen der Drosselung ausgelassene Meldung wird nachgeholt —
+        # sonst bliebe nach einer schnellen Bewegung, die innerhalb des
+        # Intervalls endet, der vorletzte Stand in der Anzeige stehen.
+        self._ui_pending = False
 
         self._last_debug_dump = 0.0
 
@@ -282,16 +286,27 @@ class ControllerBridge(QObject):
         if not self._ensure_init():
             return
 
-        # SDL legt bei jeder Achsenbewegung Events in eine Warteschlange.
-        # pygame.event.pump() ist ZWINGEND noetig, damit SDL die internen USB-
-        # Zustaende und Achsenwerte vom Betriebssystem abholt.
+        # SDL legt bei jeder Achsenbewegung Events in eine Warteschlange. Wir
+        # lesen den Zustand direkt über get_axis()/get_button() und brauchen
+        # die Events nicht — ohne dieses clear() läuft die Queue mit rund
+        # 1000 Events/s voll, die niemand abholt.
+        # clear() pumpt intern selbst (pump=True ist der Standard) und holt
+        # damit auch die neuen Achsenwerte von SDL ab; ein zusätzliches
+        # event.pump() davor wäre ein zweiter kompletter Durchlauf der
+        # Warteschlange pro Zyklus.
         try:
-            pygame.event.pump()
             pygame.event.clear()
         except pygame.error as exc:
             log.warning("pygame-Event-Verarbeitung fehlgeschlagen: %s", exc)
             return
 
+        # Hot-Plug nur alle 500 ms prüfen (siehe __init__) — und zwar IMMER,
+        # auch ohne angeschlossenen Controller. Die frühere Bedingung
+        # `self._joystick is None or <Zeit abgelaufen>` hob die Drosselung
+        # genau dann auf: get_count() lief ohne Controller mit vollen 100 Hz
+        # im Sende-Thread, und die Fernsteuerung kam ins Stocken.
+        # `_set_disconnected()` setzt `_last_count_check` auf 0, damit ein
+        # ABGEZOGENER Controller sofort neu geprüft wird.
         now = time.monotonic()
         if (now - self._last_count_check) >= 0.5:
             self._last_count_check = now
@@ -308,42 +323,7 @@ class ControllerBridge(QObject):
             return
 
         if self._joystick is None:
-            # PS4 Controller kann mehrere Geraete anmelden (Touchpad vs. Gamepad).
-            # Wir suchen das Geraet mit den meisten Achsen (>= 4).
-            best_idx = 0
-            best_axes = -1
-            for i in range(count):
-                try:
-                    js_test = pygame.joystick.Joystick(i)
-                    js_test.init()
-                    axes = js_test.get_numaxes()
-                    if axes > best_axes:
-                        best_axes = axes
-                        best_idx = i
-                    if i != best_idx:
-                        js_test.quit()
-                except Exception:
-                    pass
-
-            try:
-                self._joystick = pygame.joystick.Joystick(best_idx)
-                if not self._joystick.get_init():
-                    self._joystick.init()
-                self._name = self._joystick.get_name()
-                self._connected = True
-                self._warmup = self._WARMUP_POLLS
-                log.info("Controller verbunden (Index %d): '%s' — Touch-Eingabe gesperrt.", best_idx, self._name)
-                # Thread-sichere Benachrichtigung der Qt-GUI-Ebene:
-                from PyQt6.QtCore import QMetaObject, Qt, Q_ARG
-                QMetaObject.invokeMethod(self, "connectedChanged", Qt.ConnectionType.QueuedConnection)
-            except pygame.error as exc:
-                log.warning("Controller-Initialisierung fehlgeschlagen: %s", exc)
-                if self._joystick is not None:
-                    try:
-                        self._joystick.quit()
-                    except Exception:
-                        pass
-                    self._joystick = None
+            if not self._connect(count):
                 return
 
         try:
@@ -351,6 +331,60 @@ class ControllerBridge(QObject):
         except pygame.error as exc:
             log.warning("Controller-Lesefehler (vermutlich getrennt): %s", exc)
             self._set_disconnected()
+
+    def _connect(self, count: int) -> bool:
+        """Den passenden Controller öffnen.
+
+        Ein PS4-Controller meldet sich unter Linux je nach Kernel/SDL als
+        mehrere Geräte an (Gamepad, Bewegungssensor, Touchpad). Genommen
+        wird das mit den meisten Achsen; alle anderen werden sofort wieder
+        freigegeben, damit kein Gerät geöffnet liegen bleibt.
+        """
+        best = None
+        best_axes = -1
+        for i in range(count):
+            try:
+                js = pygame.joystick.Joystick(i)
+                js.init()
+                axes = js.get_numaxes()
+            except pygame.error:
+                continue
+            if axes > best_axes:
+                if best is not None:
+                    best.quit()
+                best, best_axes = js, axes
+            else:
+                js.quit()
+
+        if best is None:
+            log.warning("Controller-Initialisierung fehlgeschlagen: kein Gerät lässt sich öffnen.")
+            return False
+        try:
+            self._name = best.get_name()
+        except pygame.error as exc:
+            log.warning("Controller-Initialisierung fehlgeschlagen: %s", exc)
+            best.quit()
+            return False
+
+        self._joystick = best
+        self._connected = True
+        self._warmup = self._WARMUP_POLLS
+        log.info("Controller verbunden: '%s' (%d Achsen) — Touch-Eingabe gesperrt.",
+                 self._name, best_axes)
+        self._notify("connectedChanged")
+        return True
+
+    def _notify(self, signal_name: str) -> None:
+        """Signal im GUI-Thread auslösen.
+
+        poll() läuft im Sende-Thread. Die NOTIFY-Signale der Properties
+        werden von QML direkt (nicht über eine Queued Connection)
+        ausgewertet — ein emit() von hier aus hätte die Bindings im
+        falschen Thread neu berechnet. invokeMethod() mit QueuedConnection
+        stellt das Signal stattdessen in die Ereignisschleife des
+        GUI-Threads, dem dieses Objekt gehört.
+        """
+        QMetaObject.invokeMethod(self, signal_name, Qt.ConnectionType.QueuedConnection)
 
     def _set_disconnected(self) -> None:
         self._connected = False
@@ -371,10 +405,10 @@ class ControllerBridge(QObject):
         self._stick_x = 0.0
         self._stick_y = 0.0
         self._param_bridge.apply_controller_values(self._values)
+        self._ui_pending = False
         log.info("Controller getrennt — Touch-Eingabe wieder aktiv, Fast-Werte auf 0.")
-        from PyQt6.QtCore import QMetaObject, Qt
-        QMetaObject.invokeMethod(self, "connectedChanged", Qt.ConnectionType.QueuedConnection)
-        QMetaObject.invokeMethod(self, "valuesChanged", Qt.ConnectionType.QueuedConnection)
+        self._notify("connectedChanged")
+        self._notify("valuesChanged")
 
     def _read_and_apply(self) -> None:
         js = self._joystick
@@ -451,11 +485,13 @@ class ControllerBridge(QObject):
         self._param_bridge.apply_controller_values(values)
 
         if changed:
+            self._ui_pending = True
+        if self._ui_pending:
             now = time.monotonic()
             if now - self._last_ui_notify >= self._ui_notify_interval:
                 self._last_ui_notify = now
-                from PyQt6.QtCore import QMetaObject, Qt
-                QMetaObject.invokeMethod(self, "valuesChanged", Qt.ConnectionType.QueuedConnection)
+                self._ui_pending = False
+                self._notify("valuesChanged")
 
     def shutdown(self) -> None:
         if not self._available:

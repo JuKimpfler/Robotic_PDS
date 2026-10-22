@@ -253,6 +253,12 @@ DEFAULTS: dict[str, Any] = {
         # pyqtgraph: Downsampling (auto) und Antialiasing — beide primär
         # für die Zeichen-Performance auf dem RPi 4 (2 GB).
         "downsample": True,
+        # Verfahren beim Downsampling: "peak" behält je Pixelspalte Minimum
+        # UND Maximum — einzelne Ausreißer bleiben sichtbar, und genau die
+        # sucht man in einem Debug-Plot. "subsample" nimmt nur jeden n-ten
+        # Wert (etwas billiger, kann Spitzen aber verschlucken), "mean"
+        # mittelt.
+        "downsampleMethod": "peak",
         "antialias": False,
         # Wächter-Schwellen (siehe bridge/perf_watchdog.py):
         #   measureMs       Takt des Wächter-Timers

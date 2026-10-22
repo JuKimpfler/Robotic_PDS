@@ -1,18 +1,13 @@
 """
-main_qml.py — Power Debug Monitor (RPi 5) — Qt Quick / QML Edition
-======================================================================
-Neuer Einstiegspunkt der QML-Migration (siehe QML_Migrationsplan_RPi5_
-Monitor.md). Startet exakt dasselbe Backend wie main.py (NetworkManager,
-optionaler UDP-Simulator), lädt aber statt der Widgets-`MainWindow` das
-QML-Frontend aus qml/Main.qml.
-
-main.py mit der alten Widgets-GUI bleibt unverändert erhalten (Phase 6
-des Migrationsplans sieht das Entfernen von gui/ erst ganz am Ende vor,
-nachdem die QML-Version vollständig validiert ist).
+main_qml.py — Power Debug Monitor (RPi 4/5 oder PC) — Qt Quick / QML
+=====================================================================
+Einstiegspunkt der Oberflaeche: startet das Netzwerk-Backend
+(NetworkManager mit den UDP-Empfaengerprozessen, optional den
+UDP-Simulator) und laedt das QML-Frontend aus qml/Main.qml.
 
 Aufruf:
-    python rpi5_monitor/main_qml.py
-    python rpi5_monitor/main_qml.py --simulate
+    python rpi5_monitor/64Bit_Version/main_qml.py
+    python rpi5_monitor/64Bit_Version/main_qml.py --simulate
 """
 from __future__ import annotations
 
@@ -229,7 +224,7 @@ def main() -> None:
     # UiState.qml genauso registrieren wie Theme.qml (siehe dortiger
     # Kommentar) — wird u.a. vom Joystick benutzt, um während einer
     # Touch-Bedienung das Wischen/Scrollen der umgebenden SwipeView /
-    # Flickables zu unterdrücken (Migrationsplan-Nachtrag: Bedienbarkeit).
+    # Flickables zu unterdrücken.
     qmlRegisterSingletonType(
         QUrl.fromLocalFile(str(_QML_DIR / "UiState.qml")), "App", 1, 0, "UiState"
     )

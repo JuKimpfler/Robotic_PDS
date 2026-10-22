@@ -163,7 +163,9 @@ Im Diagnose-Tab stehen zwei Schalter untereinander:
 * **„Konfiguration vom Teensy übernehmen"** (`ui.autoApplyTeensyConfig`) —
   betrifft alles: Namen, Parameter-Tab, Overlays, Einstellungen.
 * **„Aussehen vom Teensy übernehmen"** (`ui.autoApplyTeensySettings`) —
-  betrifft nur die Einstellungen.
+  betrifft nur die Einstellungen. **Standardmäßig AUS**: ein Firmware-Update
+  soll die lokal eingestellten Profile und Farben nicht überschreiben. Wer
+  die Vorgaben aus `channel_config.h` sehen will, schaltet ihn ein.
 
 Zwei Schalter, weil es zwei Entscheidungen sind: die Kanalnamen will man
 praktisch immer vom Roboter, das Aussehen des eigenen Tablets nicht
