@@ -116,7 +116,7 @@
         {
           "type": "table",
           "title": "Mainboard / System",
-          "channels": "0-5,8-11,16-34"
+          "channels": "0-34"
         }
       ]
     },
