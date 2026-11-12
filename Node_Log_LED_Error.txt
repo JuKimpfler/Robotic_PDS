@@ -1,0 +1,208 @@
+[OK]    Board erkannt: Raspberry Pi Zero 2 W Rev 1.0
+[OK]    Architektur: aarch64 (64-bit) ✓
+
+╔══════════════════════════════════════════════════════════╗
+║   Power Debug System — Node 1 Setup                       ║
+║   Zielplattform: Raspberry Pi Zero 2 W (64-bit OS)       ║
+║   WLAN-SSID: RoboDebug                                   ║
+╚══════════════════════════════════════════════════════════╝
+
+[INFO]  Projektverzeichnis: /home/pi2/Robotic_PDS/rpi_zero_node
+[INFO]  Installationsziel:  /opt/power_debug_node
+[INFO]  Board-Architektur:  aarch64
+
+══ 1 | Systempakete aktualisieren & installieren ══
+[INFO]  apt-get update...
+[INFO]  Installiere Pakete (arm64)...
+Reading package lists... Done
+Building dependency tree... Done
+Reading state information... Done
+python3 is already the newest version (3.11.2-1+b1).
+python3 set to manually installed.
+network-manager is already the newest version (1.42.4-1+rpt1+deb12u1).
+iproute2 is already the newest version (6.1.0-3).
+usbutils is already the newest version (1:014-1+deb12u1).
+git is already the newest version (1:2.39.5-0+deb12u3).
+curl is already the newest version (7.88.1-10+deb12u15).
+bluez is already the newest version (5.66-1+rpt2+deb12u2).
+bluez set to manually installed.
+The following additional packages will be installed:
+  gir1.2-glib-2.0 libgirepository-1.0-1 python3-setuptools python3-wheel
+Suggested packages:
+  python-dbus-doc python3-wxgtk3.0 | python3-wxgtk python-setuptools-doc
+Recommended packages:
+  python3-dev
+The following NEW packages will be installed:
+  gir1.2-glib-2.0 libgirepository-1.0-1 python3-dbus python3-gi python3-pip python3-serial python3-setuptools
+  python3-wheel
+0 upgraded, 8 newly installed, 0 to remove and 12 not upgraded.
+Need to get 2,525 kB of archives.
+After this operation, 12.4 MB of additional disk space will be used.
+Get:1 http://deb.debian.org/debian bookworm/main arm64 libgirepository-1.0-1 arm64 1.74.0-3 [93.2 kB]
+Get:2 http://archive.raspberrypi.com/debian bookworm/main arm64 python3-pip all 23.0.1+dfsg-1+rpt1 [1,325 kB]
+Get:3 http://deb.debian.org/debian bookworm/main arm64 gir1.2-glib-2.0 arm64 1.74.0-3 [160 kB]
+Get:4 http://deb.debian.org/debian bookworm/main arm64 python3-dbus arm64 1.3.2-4+b1 [93.5 kB]
+Get:5 http://deb.debian.org/debian bookworm/main arm64 python3-gi arm64 3.42.2-3+b1 [212 kB]
+Get:6 http://deb.debian.org/debian bookworm/main arm64 python3-setuptools all 66.1.1-1+deb12u2 [522 kB]
+Get:7 http://deb.debian.org/debian bookworm/main arm64 python3-wheel all 0.38.4-2 [30.8 kB]
+Get:8 http://deb.debian.org/debian bookworm/main arm64 python3-serial all 3.5-1.1 [89.4 kB]
+Fetched 2,525 kB in 2s (1,330 kB/s)
+Selecting previously unselected package libgirepository-1.0-1:arm64.
+(Reading database ... 57506 files and directories currently installed.)
+Preparing to unpack .../0-libgirepository-1.0-1_1.74.0-3_arm64.deb ...
+Unpacking libgirepository-1.0-1:arm64 (1.74.0-3) ...
+Selecting previously unselected package gir1.2-glib-2.0:arm64.
+Preparing to unpack .../1-gir1.2-glib-2.0_1.74.0-3_arm64.deb ...
+Unpacking gir1.2-glib-2.0:arm64 (1.74.0-3) ...
+Selecting previously unselected package python3-dbus.
+Preparing to unpack .../2-python3-dbus_1.3.2-4+b1_arm64.deb ...
+Unpacking python3-dbus (1.3.2-4+b1) ...
+Selecting previously unselected package python3-gi.
+Preparing to unpack .../3-python3-gi_3.42.2-3+b1_arm64.deb ...
+Unpacking python3-gi (3.42.2-3+b1) ...
+Selecting previously unselected package python3-setuptools.
+Preparing to unpack .../4-python3-setuptools_66.1.1-1+deb12u2_all.deb ...
+Unpacking python3-setuptools (66.1.1-1+deb12u2) ...
+Selecting previously unselected package python3-wheel.
+Preparing to unpack .../5-python3-wheel_0.38.4-2_all.deb ...
+Unpacking python3-wheel (0.38.4-2) ...
+Selecting previously unselected package python3-pip.
+Preparing to unpack .../6-python3-pip_23.0.1+dfsg-1+rpt1_all.deb ...
+Unpacking python3-pip (23.0.1+dfsg-1+rpt1) ...
+Selecting previously unselected package python3-serial.
+Preparing to unpack .../7-python3-serial_3.5-1.1_all.deb ...
+Unpacking python3-serial (3.5-1.1) ...
+Setting up python3-dbus (1.3.2-4+b1) ...
+Setting up python3-setuptools (66.1.1-1+deb12u2) ...
+Setting up python3-wheel (0.38.4-2) ...
+Setting up python3-serial (3.5-1.1) ...
+Setting up python3-pip (23.0.1+dfsg-1+rpt1) ...
+Setting up libgirepository-1.0-1:arm64 (1.74.0-3) ...
+Setting up gir1.2-glib-2.0:arm64 (1.74.0-3) ...
+Setting up python3-gi (3.42.2-3+b1) ...
+Processing triggers for man-db (2.11.2-2) ...
+Processing triggers for libc-bin (2.36-9+rpt2+deb12u14) ...
+[OK]      python3-gpiozero
+[OK]      python3-lgpio
+[OK]      teensy-loader-cli
+[OK]    gpiozero verfügbar (Status-LEDs einsatzbereit)
+[OK]    pyserial bereits vorhanden (python3-serial)
+[OK]    Pakete installiert
+[OK]    serial.tools.list_ports verfügbar (Software-Bootloader-Trigger einsatzbereit)
+   pyserial:  3.5
+   lgpio:     (verfuegbar)
+
+══ 2 | UART freischalten (PL011 auf GPIO14/15) ══
+[INFO]  Bearbeite /boot/firmware/config.txt ...
+[OK]    dtoverlay=miniuart-bt eingetragen
+[OK]    enable_uart=1 eingetragen
+[OK]    init_uart_clock=64000000 eingetragen (Pi Zero 2 W: bis 4+ Mbps stabil)
+[OK]    dtoverlay=uart0 eingetragen
+[INFO]  Bearbeite /boot/firmware/cmdline.txt ...
+[OK]    Serielle Konsole (console=serial0) entfernt
+[INFO]  Bluetooth-Dienste aktivieren...
+[OK]    Bluetooth-Dienste aktiviert (hciuart, bluetooth)
+
+══ 3 | WLAN 'RoboDebug' konfigurieren (DHCP) ══
+[INFO]  WLAN-Verbindung 'RoboDebug' anlegen...
+Connection 'RoboDebug' (1bc5cd04-ce19-4db6-aa66-6d987b4273e0) successfully added.
+[OK]    WLAN-Profil 'RoboDebug' erstellt (IP per DHCP vom RPi 5)
+[INFO]  Hostname: debug-node-1
+[OK]    Hostname gesetzt: debug-node-1
+
+══ 4 | Projektdateien installieren nach /opt/power_debug_node ══
+[OK]    Projektdateien installiert (cc2535c (2026-10-22))
+[OK]    Neuer Auth-Token fuer Bluetooth-Flash generiert: /opt/power_debug_node/bt_flash_secret
+
+══ 5 | Systemdienste: uart-receiver, bt-flash-receiver ══
+[OK]    uart-receiver.service erstellt
+[OK]    bt-flash-receiver.service erstellt (Kanal 4)
+[OK]    Rollen-Datei: /etc/pds/pds.conf
+
+══ 6 | Dienste aktivieren ══
+Created symlink /etc/systemd/system/multi-user.target.wants/uart-receiver.service → /etc/systemd/system/uart-receiver.service.
+[OK]    uart-receiver aktiviert
+Created symlink /etc/systemd/system/multi-user.target.wants/bt-flash-receiver.service → /etc/systemd/system/bt-flash-receiver.service.
+[OK]    bt-flash-receiver aktiviert
+[WARN]  Dienste starten erst nach 'sudo reboot' (UART/Bluetooth-Konfiguration braucht Neustart)
+
+══ 7 | Verifizierung ══
+
+[INFO]  ──── /boot/firmware/config.txt (relevante Einträge) ────
+   #dtparam=spi=on
+   dtoverlay=vc4-kms-v3d
+   dtoverlay=dwc2,dr_mode=host
+   dtoverlay=miniuart-bt
+   enable_uart=1
+   init_uart_clock=64000000
+   dtoverlay=uart0
+
+[INFO]  ──── /boot/firmware/cmdline.txt ────
+   console=tty1 root=PARTUUID=64d48c43-02 rootfstype=ext4 fsck.repair=yes rootwait cfg80211.ieee80211_regdom=DE
+
+enabled
+   ✅ uart-receiver: enabled
+
+[INFO]  ──── Python-Pakete ────
+   ✅ pyserial 3.5
+   ⚠️  gpiozero nicht gefunden (Status-LEDs deaktiviert)
+   ✅ lgpio (Pin-Factory für gpiozero)
+
+[INFO]  ──── Bluetooth-Flash-Feature ────
+   Controller-MAC: nicht ermittelbar (bluetooth.service evtl. erst nach Reboot aktiv)
+enabled
+   ✅ bt-flash-receiver: enabled
+   Auth-Token (für bt_targets.json auf dem PC):
+     cb04efdeaa6dfb87d0469cf3aa2da52f
+   RFCOMM-Kanal: 4
+   Geraetename:  PDS-Node1-BT (sichtbar erst NACH sudo reboot)
+   Pairing-PIN:  0000 (Auto-Accept-Agent, siehe bt_flash_receiver.py)
+
+   -> Diese drei Werte (MAC, Token, Kanal) in bt_targets.json auf dem
+      Windows-PC eintragen (pc_flash_tool/bt_targets.json).
+
+[INFO]  ──── Software-Bootloader-Trigger (kein Knopfdruck mehr nötig) ────
+   ✅ serial.tools.list_ports verfügbar
+   ℹ️  Aktuell kein Teensy am USB erkannt (ok, falls gerade nicht angeschlossen)
+
+[INFO]  ──── Verdrahtung (Teensy ↔ RPi Zero 2 W) ────
+   Teensy nutzt UART_DBG (Default Serial3, siehe params.h)
+   Teensy Pin 14 (TX3) → RPi GPIO15 (Pin 10, UART RX)
+   Teensy Pin 15 (RX3) ← RPi GPIO14 (Pin 8,  UART TX)  [PFLICHT]
+   GND                 ─  RPi GND   (Pin 6)
+
+   Baudrate: UART_BAUD (uart_receiver.py) == UART_DBG_BAUD (params.h) = 1 Mbps
+   Pi Zero 2 W unterstützt zuverlässig bis 4 Mbps (Kabel < 20 cm)
+
+
+╔══════════════════════════════════════════════════════════╗
+║   ✅  Setup Node 1 (RPi Zero 2 W) abgeschlossen!         ║
+╠══════════════════════════════════════════════════════════╣
+║                                                          ║
+║   Nächste Schritte:                                      ║
+║     1. sudo reboot                                       ║
+║     Updates später: sudo bash ../update.sh               ║
+║     oder vom PC aus: ./deploy.sh node1                   ║
+║                                                          ║
+║   LEDs nach Reboot:                                      ║
+║     🔵 Blau AN      → WLAN verbunden                     ║
+║     🟡 Gelb blinkt  → Teensy sendet UART-Daten          ║
+║     🟢 Grün blinkt  → Dienste laufen normal             ║
+║                                                          ║
+║   Diagnose:                                              ║
+║     journalctl -u uart-receiver -f                       ║
+║     journalctl -u bt-flash-receiver -f                   ║
+║     ls -la /dev/ttyAMA0                                  ║
+║     ip addr show wlan0                                   ║
+║     bluetoothctl show                                    ║
+║                                                          ║
+║   Wireless-Flash ohne Knopfdruck:                        ║
+║     Teensy wird vor dem Flashen per Software in den      ║
+║     Bootloader versetzt (siehe bt_flash_receiver.py).    ║
+║     Klappt nur bei Sketches mit USB-Typ 'Serial'.        ║
+║                                                          ║
+║   Hinweis Verdrahtung:                                   ║
+║     Teensy nutzt Serial3 (Pin 14/15) = UART_DBG          ║
+║     Baudrate: 1 Mbps (uart_receiver.py + params.h)       ║
+║                                                          ║
+╚══════════════════════════════════════════════════════════╝
