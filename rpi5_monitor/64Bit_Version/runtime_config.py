@@ -21,16 +21,10 @@ Wuerde jeder eintreffende Deskriptor blind ueberschreiben, waere jede
 Anpassung nach dem naechsten Einschalten des Roboters wieder weg. Wuerde er
 NIE ueberschreiben, kaeme eine neue Firmware nie in der GUI an.
 
-Deshalb ein Fingerabdruck: zu jeder gespeicherten Datei wird gemerkt, aus
-welchem Teensy-Inhalt sie entstanden ist (`_teensy_hash`).
-
-    Fingerabdruck unveraendert  ->  lokale Bearbeitung bleibt stehen
-    Fingerabdruck geaendert     ->  der Teensy hat eine neue Konfiguration,
-                                    sie wird uebernommen
-
-Damit gilt die einfache Regel: **etwas in channel_config.h aendern und neu
-flashen setzt sich durch, alles andere nicht.** Die Dateien im Repository
-(param_config.json, visuals_overlays.json) bleiben unberuehrte Vorlagen.
+Der Fingerabdruck (`_teensy_hash`) verhindert nur unnoetige Schreibvorgaenge.
+Bei einem neuen Teensy-Deskriptor gewinnt die Firmware beim Start immer gegen
+lokale Overlay- und Parameterdaten. Damit werden Kanalverschiebungen und neue
+Sensoransichten nicht mit einer alten PC-Konfiguration vermischt.
 """
 from __future__ import annotations
 
@@ -80,9 +74,7 @@ def merge_decision(stored: dict | None, digest: str,
         return "overwrite"           # noch nichts gespeichert -> Erstbefuellung
     if stored.get(_HASH_KEY) == digest:
         return "keep"                # unveraenderte Firmware
-    if stored.get(LOCAL_EDIT_KEY):
-        return "ask"                 # neue Firmware, aber Handarbeit vorhanden
-    return "overwrite"
+    return "overwrite"               # Teensy gewinnt bei jedem neuen Deskriptor
 
 
 # ══════════════════════════════════════════════════════════════════════════

@@ -866,8 +866,8 @@ def test_overlay_editor() -> None:
           runtime_config.merge_decision({H: "abc"}, "abc") == "keep")
     check("neue Firmware ohne Handarbeit -> Teensy gewinnt",
           runtime_config.merge_decision({H: "alt"}, "neu") == "overwrite")
-    check("neue Firmware MIT Handarbeit -> nachfragen",
-          runtime_config.merge_decision({H: "alt", E: True}, "neu") == "ask")
+    check("neue Firmware MIT Handarbeit -> Teensy gewinnt",
+          runtime_config.merge_decision({H: "alt", E: True}, "neu") == "overwrite")
     check("gleicher Fingerabdruck schlaegt Handarbeit -> nicht nachfragen",
           runtime_config.merge_decision({H: "abc", E: True}, "abc") == "keep")
     check("offene, ungespeicherte Bearbeitung -> immer nachfragen",

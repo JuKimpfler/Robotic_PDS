@@ -181,9 +181,8 @@ CONTROLLER_CONFIG_PATH = _Path(__file__).parent / "controller_config.json"
 #  auch ohne eingeschalteten Roboter.
 #
 #  Die Dateien im Repository (param_config.json, visuals_overlays.json)
-#  bleiben die Vorlage/der Rueckfall und werden NIE ueberschrieben — so
-#  nimmt ein `git pull` einem nichts weg, und ein Zuruecksetzen ist ein
-#  simples Loeschen des runtime_config-Ordners.
+#  sind nur der Rueckfall. Sobald ein Teensy-Deskriptor eintrifft, werden
+#  dessen Kanal-, Parameter- und Overlaydaten beim Start priorisiert.
 RUNTIME_CONFIG_DIR = _Path(__file__).parent / "runtime_config"
 
 

@@ -1,876 +1,752 @@
 {
   "groups": [
     {
-      "name": "Gruppe 1 (Bild 1)",
+      "name": "Mainboard (Bild 1)",
       "image_idx": 1,
       "overlays": [
         {
-          "label": "START",
-          "channel_idx": 35,
-          "x_pct": 41.0,
-          "y_pct": 81.0,
+          "label": "Heading",
+          "channel_idx": 5,
+          "x_pct": 46,
+          "y_pct": 16,
+          "color": "#f0c060"
+        },
+        {
+          "label": "Akku V",
+          "channel_idx": 1,
+          "x_pct": 46,
+          "y_pct": 82,
+          "color": "#a5dc6e"
+        },
+        {
+          "label": "Pos X",
+          "channel_idx": 16,
+          "x_pct": 8,
+          "y_pct": 18,
           "color": "#19f3ec"
         },
         {
-          "label": "BNO055",
-          "channel_idx": 21,
-          "x_pct": 42.0,
-          "y_pct": 46.0,
-          "color": "#f0c060"
+          "label": "Pos Y",
+          "channel_idx": 17,
+          "x_pct": 8,
+          "y_pct": 23,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "Pos Güte",
+          "channel_idx": 18,
+          "x_pct": 8,
+          "y_pct": 28,
+          "color": "#19f3ec"
         }
       ],
       "graphics": [
         {
           "type": "gauge",
-          "label": "Motor L Speed",
-          "channel": 0,
-          "min": -5.0,
-          "max": 5.0
-        },
-        {
-          "type": "gauge",
-          "label": "Motor R Speed",
-          "channel": 1,
-          "min": -5.0,
-          "max": 5.0
-        },
-        {
-          "type": "gauge",
           "label": "Akku-Spannung",
-          "channel": 10,
+          "channel": 1,
           "min": 0.0,
-          "max": 24.0
+          "max": 16.8
         },
         {
           "type": "gauge",
-          "label": "System-Temp",
-          "channel": 11,
-          "min": 0.0,
+          "label": "Motor VL Soll",
+          "channel": 20,
+          "min": -100.0,
+          "max": 100.0
+        },
+        {
+          "type": "gauge",
+          "label": "Motor VR Soll",
+          "channel": 21,
+          "min": -100.0,
+          "max": 100.0
+        },
+        {
+          "type": "gauge",
+          "label": "Motor HL Soll",
+          "channel": 22,
+          "min": -100.0,
+          "max": 100.0
+        },
+        {
+          "type": "gauge",
+          "label": "Motor HR Soll",
+          "channel": 23,
+          "min": -100.0,
+          "max": 100.0
+        },
+        {
+          "type": "gauge",
+          "label": "Motor DR Soll",
+          "channel": 24,
+          "min": -100.0,
           "max": 100.0
         },
         {
           "type": "rotation",
-          "label": "Rad FL",
-          "channel": 2
+          "label": "Motor VL Ist",
+          "channel": 25,
+          "max_val": 100.0
         },
         {
           "type": "rotation",
-          "label": "Rad FR",
-          "channel": 3
+          "label": "Motor VR Ist",
+          "channel": 26,
+          "max_val": 100.0
         },
         {
           "type": "rotation",
-          "label": "Rad RL",
-          "channel": 4
+          "label": "Motor HL Ist",
+          "channel": 27,
+          "max_val": 100.0
         },
         {
           "type": "rotation",
-          "label": "Rad RR",
-          "channel": 5
+          "label": "Motor HR Ist",
+          "channel": 28,
+          "max_val": 100.0
         },
         {
-          "type": "vector",
-          "label": "Bewegungsrichtung",
-          "channel_angle": 6,
-          "channel_speed": 7,
-          "max_val": 10.0
-        },
-        {
-          "type": "vector",
-          "label": "Windrichtung",
-          "channel_angle": 8,
-          "channel_speed": 9,
-          "max_val": 5.0
+          "type": "rotation",
+          "label": "Motor DR Ist",
+          "channel": 29,
+          "max_val": 100.0
         },
         {
           "type": "table",
-          "title": "System-Status (0-9)",
-          "channels": "0-9"
+          "title": "Mainboard / System",
+          "channels": "0-5,8-11,16-34"
         }
       ]
     },
     {
-      "name": "Gruppe 2 (Bild 2)",
+      "name": "IR-Ring (Bild 2)",
       "image_idx": 2,
       "overlays": [
         {
-          "label": "L1",
-          "channel_idx": 50,
-          "x_pct": 49.0,
-          "y_pct": 13.0,
-          "color": "#19f3ec",
-          "color_dynamic": true,
-          "color_mode": "threshold",
-          "color_channel": 99,
-          "color_threshold": 0.5,
-          "color_low": "#4aa3e0",
-          "color_high": "#f2d94e"
-        },
-        {
-          "label": "L2",
-          "channel_idx": 51,
-          "x_pct": 44.0,
-          "y_pct": 13.0,
-          "color": "#19f3ec",
-          "color_dynamic": true,
-          "color_mode": "threshold",
-          "color_channel": 99,
-          "color_threshold": 0.5,
-          "color_low": "#4aa3e0",
-          "color_high": "#f2d94e"
-        },
-        {
-          "label": "L3",
-          "channel_idx": 52,
-          "x_pct": 39.0,
-          "y_pct": 13.0,
-          "color": "#19f3ec",
-          "color_dynamic": true,
-          "color_mode": "threshold",
-          "color_channel": 99,
-          "color_threshold": 0.5,
-          "color_low": "#4aa3e0",
-          "color_high": "#f2d94e"
-        },
-        {
-          "label": "L4",
-          "channel_idx": 53,
-          "x_pct": 32.5,
-          "y_pct": 11.0,
-          "color": "#19f3ec",
-          "color_dynamic": true,
-          "color_mode": "threshold",
-          "color_channel": 99,
-          "color_threshold": 0.5,
-          "color_low": "#4aa3e0",
-          "color_high": "#f2d94e"
-        },
-        {
-          "label": "L5",
-          "channel_idx": 53,
-          "x_pct": 27.0,
-          "y_pct": 9.0,
-          "color": "#19f3ec",
-          "color_dynamic": true,
-          "color_mode": "threshold",
-          "color_channel": 99,
-          "color_threshold": 0.5,
-          "color_low": "#4aa3e0",
-          "color_high": "#f2d94e"
-        },
-        {
-          "label": "L6",
-          "channel_idx": 49,
-          "x_pct": 22.0,
-          "y_pct": 11.5,
-          "color": "#19f3ec",
-          "color_dynamic": true,
-          "color_mode": "threshold",
-          "color_channel": 99,
-          "color_threshold": 0.5,
-          "color_low": "#4aa3e0",
-          "color_high": "#f2d94e"
-        },
-        {
-          "label": "L7",
-          "channel_idx": 56,
-          "x_pct": 17.0,
-          "y_pct": 15.5,
-          "color": "#19f3ec",
-          "color_dynamic": true,
-          "color_mode": "threshold",
-          "color_channel": 99,
-          "color_threshold": 0.5,
-          "color_low": "#4aa3e0",
-          "color_high": "#f2d94e"
-        },
-        {
-          "label": "L8",
-          "channel_idx": 55,
-          "x_pct": 13.0,
-          "y_pct": 20.0,
-          "color": "#19f3ec",
-          "color_dynamic": true,
-          "color_mode": "threshold",
-          "color_channel": 99,
-          "color_threshold": 0.5,
-          "color_low": "#4aa3e0",
-          "color_high": "#f2d94e"
-        },
-        {
-          "label": "L9",
-          "channel_idx": 58,
-          "x_pct": 10.0,
-          "y_pct": 25.0,
-          "color": "#19f3ec",
-          "color_dynamic": true,
-          "color_mode": "threshold",
-          "color_channel": 99,
-          "color_threshold": 0.5,
-          "color_low": "#4aa3e0",
-          "color_high": "#f2d94e"
-        },
-        {
-          "label": "L10",
-          "channel_idx": 59,
-          "x_pct": 7.0,
-          "y_pct": 30.0,
-          "color": "#19f3ec",
-          "color_dynamic": true,
-          "color_mode": "threshold",
-          "color_channel": 99,
-          "color_threshold": 0.5,
-          "color_low": "#4aa3e0",
-          "color_high": "#f2d94e"
-        },
-        {
-          "label": "L11",
-          "channel_idx": 60,
-          "x_pct": 5.0,
-          "y_pct": 35.0,
-          "color": "#19f3ec",
-          "color_dynamic": true,
-          "color_mode": "threshold",
-          "color_channel": 99,
-          "color_threshold": 0.5,
-          "color_low": "#4aa3e0",
-          "color_high": "#f2d94e"
-        },
-        {
-          "label": "L12",
-          "channel_idx": 61,
-          "x_pct": 4.0,
-          "y_pct": 41.0,
-          "color": "#19f3ec",
-          "color_dynamic": true,
-          "color_mode": "threshold",
-          "color_channel": 99,
-          "color_threshold": 0.5,
-          "color_low": "#4aa3e0",
-          "color_high": "#f2d94e"
-        },
-        {
-          "label": "L13",
-          "channel_idx": 62,
-          "x_pct": 3.0,
-          "y_pct": 47.0,
-          "color": "#19f3ec",
-          "color_dynamic": true,
-          "color_mode": "threshold",
-          "color_channel": 99,
-          "color_threshold": 0.5,
-          "color_low": "#4aa3e0",
-          "color_high": "#f2d94e"
-        },
-        {
-          "label": "L14",
-          "channel_idx": 63,
-          "x_pct": 3.0,
-          "y_pct": 53.0,
-          "color": "#19f3ec",
-          "color_dynamic": true,
-          "color_mode": "threshold",
-          "color_channel": 99,
-          "color_threshold": 0.5,
-          "color_low": "#4aa3e0",
-          "color_high": "#f2d94e"
-        },
-        {
-          "label": "L15",
-          "channel_idx": 64,
-          "x_pct": 4.0,
-          "y_pct": 59.0,
-          "color": "#19f3ec",
-          "color_dynamic": true,
-          "color_mode": "threshold",
-          "color_channel": 99,
-          "color_threshold": 0.5,
-          "color_low": "#4aa3e0",
-          "color_high": "#f2d94e"
-        },
-        {
-          "label": "L16",
-          "channel_idx": 65,
-          "x_pct": 6.0,
-          "y_pct": 64.0,
-          "color": "#19f3ec",
-          "color_dynamic": true,
-          "color_mode": "threshold",
-          "color_channel": 99,
-          "color_threshold": 0.5,
-          "color_low": "#4aa3e0",
-          "color_high": "#f2d94e"
-        },
-        {
-          "label": "L17",
-          "channel_idx": 66,
-          "x_pct": 8.0,
-          "y_pct": 70.0,
-          "color": "#19f3ec",
-          "color_dynamic": true,
-          "color_mode": "threshold",
-          "color_channel": 99,
-          "color_threshold": 0.5,
-          "color_low": "#4aa3e0",
-          "color_high": "#f2d94e"
-        },
-        {
-          "label": "L18",
-          "channel_idx": 67,
-          "x_pct": 15.0,
-          "y_pct": 79.0,
-          "color": "#19f3ec",
-          "color_dynamic": true,
-          "color_mode": "threshold",
-          "color_channel": 99,
-          "color_threshold": 0.5,
-          "color_low": "#4aa3e0",
-          "color_high": "#f2d94e"
-        },
-        {
-          "label": "L19",
-          "channel_idx": 68,
-          "x_pct": 19.0,
-          "y_pct": 83.0,
-          "color": "#19f3ec",
-          "color_dynamic": true,
-          "color_mode": "threshold",
-          "color_channel": 99,
-          "color_threshold": 0.5,
-          "color_low": "#4aa3e0",
-          "color_high": "#f2d94e"
-        },
-        {
-          "label": "L20",
-          "channel_idx": 69,
-          "x_pct": 24.0,
-          "y_pct": 86.0,
-          "color": "#19f3ec",
-          "color_dynamic": true,
-          "color_mode": "threshold",
-          "color_channel": 99,
-          "color_threshold": 0.5,
-          "color_low": "#4aa3e0",
-          "color_high": "#f2d94e"
-        },
-        {
-          "label": "L21",
-          "channel_idx": 70,
-          "x_pct": 29.0,
-          "y_pct": 89.0,
-          "color": "#19f3ec",
-          "color_dynamic": true,
-          "color_mode": "threshold",
-          "color_channel": 99,
-          "color_threshold": 0.5,
-          "color_low": "#4aa3e0",
-          "color_high": "#f2d94e"
-        },
-        {
-          "label": "L22",
-          "channel_idx": 71,
-          "x_pct": 35.0,
-          "y_pct": 91.0,
-          "color": "#19f3ec",
-          "color_dynamic": true,
-          "color_mode": "threshold",
-          "color_channel": 99,
-          "color_threshold": 0.5,
-          "color_low": "#4aa3e0",
-          "color_high": "#f2d94e"
-        },
-        {
-          "label": "L23",
-          "channel_idx": 72,
-          "x_pct": 41.0,
-          "y_pct": 92.0,
-          "color": "#19f3ec",
-          "color_dynamic": true,
-          "color_mode": "threshold",
-          "color_channel": 99,
-          "color_threshold": 0.5,
-          "color_low": "#4aa3e0",
-          "color_high": "#f2d94e"
-        },
-        {
-          "label": "L24",
-          "channel_idx": 73,
-          "x_pct": 47.0,
-          "y_pct": 93.0,
-          "color": "#19f3ec",
-          "color_dynamic": true,
-          "color_mode": "threshold",
-          "color_channel": 99,
-          "color_threshold": 0.5,
-          "color_low": "#4aa3e0",
-          "color_high": "#f2d94e"
-        },
-        {
-          "label": "L25",
-          "channel_idx": 74,
-          "x_pct": 53.0,
-          "y_pct": 93.0,
-          "color": "#19f3ec",
-          "color_dynamic": true,
-          "color_mode": "threshold",
-          "color_channel": 99,
-          "color_threshold": 0.5,
-          "color_low": "#4aa3e0",
-          "color_high": "#f2d94e"
-        },
-        {
-          "label": "L26",
-          "channel_idx": 75,
-          "x_pct": 59.0,
-          "y_pct": 92.0,
-          "color": "#19f3ec",
-          "color_dynamic": true,
-          "color_mode": "threshold",
-          "color_channel": 99,
-          "color_threshold": 0.5,
-          "color_low": "#4aa3e0",
-          "color_high": "#f2d94e"
-        },
-        {
-          "label": "L27",
-          "channel_idx": 76,
-          "x_pct": 64.0,
-          "y_pct": 90.0,
-          "color": "#19f3ec",
-          "color_dynamic": true,
-          "color_mode": "threshold",
-          "color_channel": 99,
-          "color_threshold": 0.5,
-          "color_low": "#4aa3e0",
-          "color_high": "#f2d94e"
-        },
-        {
-          "label": "L28",
-          "channel_idx": 77,
-          "x_pct": 69.0,
-          "y_pct": 87.0,
-          "color": "#19f3ec",
-          "color_dynamic": true,
-          "color_mode": "threshold",
-          "color_channel": 99,
-          "color_threshold": 0.5,
-          "color_low": "#4aa3e0",
-          "color_high": "#f2d94e"
-        },
-        {
-          "label": "L29",
-          "channel_idx": 78,
-          "x_pct": 74.0,
-          "y_pct": 84.0,
-          "color": "#19f3ec",
-          "color_dynamic": true,
-          "color_mode": "threshold",
-          "color_channel": 99,
-          "color_threshold": 0.5,
-          "color_low": "#4aa3e0",
-          "color_high": "#f2d94e"
-        },
-        {
-          "label": "L30",
-          "channel_idx": 79,
-          "x_pct": 79.0,
-          "y_pct": 81.0,
-          "color": "#19f3ec",
-          "color_dynamic": true,
-          "color_mode": "threshold",
-          "color_channel": 99,
-          "color_threshold": 0.5,
-          "color_low": "#4aa3e0",
-          "color_high": "#f2d94e"
-        },
-        {
-          "label": "L31",
-          "channel_idx": 80,
-          "x_pct": 83.0,
-          "y_pct": 77.0,
-          "color": "#19f3ec",
-          "color_dynamic": true,
-          "color_mode": "threshold",
-          "color_channel": 99,
-          "color_threshold": 0.5,
-          "color_low": "#4aa3e0",
-          "color_high": "#f2d94e"
-        },
-        {
-          "label": "L32",
-          "channel_idx": 81,
-          "x_pct": 87.0,
-          "y_pct": 72.0,
-          "color": "#19f3ec",
-          "color_dynamic": true,
-          "color_mode": "threshold",
-          "color_channel": 99,
-          "color_threshold": 0.5,
-          "color_low": "#4aa3e0",
-          "color_high": "#f2d94e"
-        },
-        {
-          "label": "L33",
-          "channel_idx": 82,
-          "x_pct": 89.0,
-          "y_pct": 66.0,
-          "color": "#19f3ec",
-          "color_dynamic": true,
-          "color_mode": "threshold",
-          "color_channel": 99,
-          "color_threshold": 0.5,
-          "color_low": "#4aa3e0",
-          "color_high": "#f2d94e"
-        },
-        {
-          "label": "L34",
-          "channel_idx": 83,
-          "x_pct": 91.0,
-          "y_pct": 61.0,
-          "color": "#19f3ec",
-          "color_dynamic": true,
-          "color_mode": "threshold",
-          "color_channel": 99,
-          "color_threshold": 0.5,
-          "color_low": "#4aa3e0",
-          "color_high": "#f2d94e"
-        },
-        {
-          "label": "L35",
-          "channel_idx": 84,
-          "x_pct": 92.0,
-          "y_pct": 55.0,
-          "color": "#19f3ec",
-          "color_dynamic": true,
-          "color_mode": "threshold",
-          "color_channel": 99,
-          "color_threshold": 0.5,
-          "color_low": "#4aa3e0",
-          "color_high": "#f2d94e"
-        },
-        {
-          "label": "L36",
+          "label": "IR01",
           "channel_idx": 85,
-          "x_pct": 93.0,
-          "y_pct": 49.0,
-          "color": "#19f3ec",
-          "color_dynamic": true,
-          "color_mode": "threshold",
-          "color_channel": 99,
-          "color_threshold": 0.5,
-          "color_low": "#4aa3e0",
-          "color_high": "#f2d94e"
-        },
-        {
-          "label": "L37",
-          "channel_idx": 86,
-          "x_pct": 93.0,
-          "y_pct": 43.0,
-          "color": "#19f3ec",
-          "color_dynamic": true,
-          "color_mode": "threshold",
-          "color_channel": 99,
-          "color_threshold": 0.5,
-          "color_low": "#4aa3e0",
-          "color_high": "#f2d94e"
-        },
-        {
-          "label": "L38",
-          "channel_idx": 87,
-          "x_pct": 92.0,
-          "y_pct": 38.0,
-          "color": "#19f3ec",
-          "color_dynamic": true,
-          "color_mode": "threshold",
-          "color_channel": 99,
-          "color_threshold": 0.5,
-          "color_low": "#4aa3e0",
-          "color_high": "#f2d94e"
-        },
-        {
-          "label": "L39",
-          "channel_idx": 88,
-          "x_pct": 90.0,
-          "y_pct": 32.0,
-          "color": "#19f3ec",
-          "color_dynamic": true,
-          "color_mode": "threshold",
-          "color_channel": 99,
-          "color_threshold": 0.5,
-          "color_low": "#4aa3e0",
-          "color_high": "#f2d94e"
-        },
-        {
-          "label": "L40",
-          "channel_idx": 89,
-          "x_pct": 88.0,
-          "y_pct": 27.0,
-          "color": "#19f3ec",
-          "color_dynamic": true,
-          "color_mode": "threshold",
-          "color_channel": 99,
-          "color_threshold": 0.5,
-          "color_low": "#4aa3e0",
-          "color_high": "#f2d94e"
-        },
-        {
-          "label": "L41",
-          "channel_idx": 90,
-          "x_pct": 85.0,
-          "y_pct": 22.0,
-          "color": "#19f3ec",
-          "color_dynamic": true,
-          "color_mode": "threshold",
-          "color_channel": 99,
-          "color_threshold": 0.5,
-          "color_low": "#4aa3e0",
-          "color_high": "#f2d94e"
-        },
-        {
-          "label": "L42",
-          "channel_idx": 91,
-          "x_pct": 81.0,
-          "y_pct": 17.0,
-          "color": "#19f3ec",
-          "color_dynamic": true,
-          "color_mode": "threshold",
-          "color_channel": 99,
-          "color_threshold": 0.5,
-          "color_low": "#4aa3e0",
-          "color_high": "#f2d94e"
-        },
-        {
-          "label": "L43",
-          "channel_idx": 92,
-          "x_pct": 76.0,
-          "y_pct": 13.0,
-          "color": "#19f3ec",
-          "color_dynamic": true,
-          "color_mode": "threshold",
-          "color_channel": 99,
-          "color_threshold": 0.5,
-          "color_low": "#4aa3e0",
-          "color_high": "#f2d94e"
-        },
-        {
-          "label": "L44",
-          "channel_idx": 93,
-          "x_pct": 66.0,
-          "y_pct": 52.0,
-          "color": "#19f3ec",
-          "color_dynamic": true,
-          "color_mode": "threshold",
-          "color_channel": 99,
-          "color_threshold": 0.5,
-          "color_low": "#4aa3e0",
-          "color_high": "#f2d94e"
-        },
-        {
-          "label": "L45",
-          "channel_idx": 94,
-          "x_pct": 63.0,
-          "y_pct": 75.0,
-          "color": "#19f3ec",
-          "color_dynamic": true,
-          "color_mode": "threshold",
-          "color_channel": 99,
-          "color_threshold": 0.5,
-          "color_low": "#4aa3e0",
-          "color_high": "#f2d94e"
-        },
-        {
-          "label": "L46",
-          "channel_idx": 95,
-          "x_pct": 37.0,
-          "y_pct": 75.0,
-          "color": "#19f3ec",
-          "color_dynamic": true,
-          "color_mode": "threshold",
-          "color_channel": 99,
-          "color_threshold": 0.5,
-          "color_low": "#4aa3e0",
-          "color_high": "#f2d94e"
-        },
-        {
-          "label": "L47",
-          "channel_idx": 96,
-          "x_pct": 27.0,
-          "y_pct": 75.0,
-          "color": "#19f3ec",
-          "color_dynamic": true,
-          "color_mode": "threshold",
-          "color_channel": 99,
-          "color_threshold": 0.5,
-          "color_low": "#4aa3e0",
-          "color_high": "#f2d94e"
-        },
-        {
-          "label": "L48",
-          "channel_idx": 79,
-          "x_pct": 49.0,
-          "y_pct": 75.0,
-          "color": "#19f3ec",
-          "color_dynamic": true,
-          "color_mode": "threshold",
-          "color_channel": 99,
-          "color_threshold": 0.5,
-          "color_low": "#4aa3e0",
-          "color_high": "#f2d94e"
-        }
-      ],
-      "graphics": [
-        {
-          "type": "table",
-          "title": "Kanalwerte 50-66",
-          "channels": "50-66"
-        }
-      ]
-    },
-    {
-      "name": "Gruppe 3 (Bild 3)",
-      "image_idx": 3,
-      "overlays": [],
-      "graphics": [
-        {
-          "type": "table",
-          "title": "Kanalwerte 50-66",
-          "channels": "50-66"
-        }
-      ]
-    },
-    {
-      "name": "Gruppe 4 (Bild 4)",
-      "image_idx": 4,
-      "overlays": [
-        {
-          "label": "START",
-          "channel_idx": 30,
-          "x_pct": 0.0,
-          "y_pct": 0.0,
+          "x_pct": 58.2,
+          "y_pct": 8.8,
           "color": "#19f3ec"
         },
         {
-          "label": "Neu",
-          "channel_idx": 0,
-          "x_pct": 5.0,
-          "y_pct": 5.0,
-          "color": "#f0c060"
+          "label": "IR02",
+          "channel_idx": 86,
+          "x_pct": 73.3,
+          "y_pct": 15.1,
+          "color": "#19f3ec"
         },
         {
-          "label": "Neu",
-          "channel_idx": 0,
-          "x_pct": 5.0,
-          "y_pct": 5.0,
-          "color": "#f48771"
+          "label": "IR03",
+          "channel_idx": 87,
+          "x_pct": 84.9,
+          "y_pct": 26.7,
+          "color": "#19f3ec"
         },
         {
-          "label": "Neu",
-          "channel_idx": 0,
-          "x_pct": 5.0,
-          "y_pct": 5.0,
-          "color": "#9cdcfe"
+          "label": "IR04",
+          "channel_idx": 88,
+          "x_pct": 91.2,
+          "y_pct": 41.8,
+          "color": "#19f3ec"
         },
         {
-          "label": "Neu",
-          "channel_idx": 0,
-          "x_pct": 5.0,
-          "y_pct": 5.0,
-          "color": "#ce9178"
+          "label": "IR05",
+          "channel_idx": 89,
+          "x_pct": 91.2,
+          "y_pct": 58.2,
+          "color": "#19f3ec"
         },
         {
-          "label": "Neu",
-          "channel_idx": 0,
-          "x_pct": 5.0,
-          "y_pct": 5.0,
-          "color": "#dcdcaa"
+          "label": "IR06",
+          "channel_idx": 90,
+          "x_pct": 84.9,
+          "y_pct": 73.3,
+          "color": "#19f3ec"
         },
         {
-          "label": "Neu",
-          "channel_idx": 0,
-          "x_pct": 5.0,
-          "y_pct": 5.0,
-          "color": "#c586c0"
+          "label": "IR07",
+          "channel_idx": 91,
+          "x_pct": 73.3,
+          "y_pct": 84.9,
+          "color": "#19f3ec"
         },
         {
-          "label": "Neu",
-          "channel_idx": 0,
-          "x_pct": 5.0,
-          "y_pct": 5.0,
-          "color": "#569cd6"
+          "label": "IR08",
+          "channel_idx": 92,
+          "x_pct": 58.2,
+          "y_pct": 91.2,
+          "color": "#19f3ec"
         },
         {
-          "label": "Neu",
-          "channel_idx": 0,
-          "x_pct": 5.0,
-          "y_pct": 5.0,
-          "color": "#4ec9b0"
+          "label": "IR09",
+          "channel_idx": 93,
+          "x_pct": 41.8,
+          "y_pct": 91.2,
+          "color": "#19f3ec"
         },
         {
-          "label": "Neu",
-          "channel_idx": 0,
-          "x_pct": 5.0,
-          "y_pct": 5.0,
-          "color": "#f0c060"
+          "label": "IR10",
+          "channel_idx": 94,
+          "x_pct": 26.7,
+          "y_pct": 84.9,
+          "color": "#19f3ec"
         },
         {
-          "label": "Neu",
-          "channel_idx": 0,
-          "x_pct": 5.0,
-          "y_pct": 5.0,
-          "color": "#f48771"
+          "label": "IR11",
+          "channel_idx": 95,
+          "x_pct": 15.1,
+          "y_pct": 73.3,
+          "color": "#19f3ec"
         },
         {
-          "label": "Neu",
-          "channel_idx": 0,
-          "x_pct": 5.0,
-          "y_pct": 5.0,
-          "color": "#9cdcfe"
+          "label": "IR12",
+          "channel_idx": 96,
+          "x_pct": 8.8,
+          "y_pct": 58.2,
+          "color": "#19f3ec"
         },
         {
-          "label": "Neu",
-          "channel_idx": 0,
-          "x_pct": 5.0,
-          "y_pct": 5.0,
-          "color": "#ce9178"
+          "label": "IR13",
+          "channel_idx": 97,
+          "x_pct": 8.8,
+          "y_pct": 41.8,
+          "color": "#19f3ec"
         },
         {
-          "label": "Neu",
-          "channel_idx": 0,
-          "x_pct": 5.0,
-          "y_pct": 5.0,
-          "color": "#dcdcaa"
+          "label": "IR14",
+          "channel_idx": 98,
+          "x_pct": 15.1,
+          "y_pct": 26.7,
+          "color": "#19f3ec"
         },
         {
-          "label": "Neu",
-          "channel_idx": 0,
-          "x_pct": 100.0,
-          "y_pct": 5.0,
-          "color": "#c586c0"
+          "label": "IR15",
+          "channel_idx": 99,
+          "x_pct": 26.7,
+          "y_pct": 15.1,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "IR16",
+          "channel_idx": 100,
+          "x_pct": 41.8,
+          "y_pct": 8.8,
+          "color": "#19f3ec"
         }
       ],
       "graphics": [
         {
+          "type": "table",
+          "title": "16 IR-Sensoren",
+          "channels": "85-100"
+        }
+      ]
+    },
+    {
+      "name": "Linien-Sensoren (Bild 3)",
+      "image_idx": 3,
+      "overlays": [
+        {
+          "label": "L01",
+          "channel_idx": 35,
+          "x_pct": 50.0,
+          "y_pct": 8.0,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L02",
+          "channel_idx": 36,
+          "x_pct": 55.3,
+          "y_pct": 8.3,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L03",
+          "channel_idx": 37,
+          "x_pct": 60.4,
+          "y_pct": 9.3,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L04",
+          "channel_idx": 38,
+          "x_pct": 65.5,
+          "y_pct": 10.9,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L05",
+          "channel_idx": 39,
+          "x_pct": 70.2,
+          "y_pct": 13.2,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L06",
+          "channel_idx": 40,
+          "x_pct": 74.7,
+          "y_pct": 16.0,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L07",
+          "channel_idx": 41,
+          "x_pct": 78.8,
+          "y_pct": 19.4,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L08",
+          "channel_idx": 42,
+          "x_pct": 82.4,
+          "y_pct": 23.2,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L09",
+          "channel_idx": 43,
+          "x_pct": 85.5,
+          "y_pct": 27.5,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L10",
+          "channel_idx": 44,
+          "x_pct": 88.0,
+          "y_pct": 32.1,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L11",
+          "channel_idx": 45,
+          "x_pct": 89.9,
+          "y_pct": 37.0,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L12",
+          "channel_idx": 46,
+          "x_pct": 91.3,
+          "y_pct": 42.1,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L13",
+          "channel_idx": 47,
+          "x_pct": 91.9,
+          "y_pct": 47.4,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L14",
+          "channel_idx": 48,
+          "x_pct": 91.9,
+          "y_pct": 52.6,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L15",
+          "channel_idx": 49,
+          "x_pct": 91.3,
+          "y_pct": 57.9,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L16",
+          "channel_idx": 50,
+          "x_pct": 89.9,
+          "y_pct": 63.0,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L17",
+          "channel_idx": 51,
+          "x_pct": 88.0,
+          "y_pct": 67.9,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L18",
+          "channel_idx": 52,
+          "x_pct": 85.5,
+          "y_pct": 72.5,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L19",
+          "channel_idx": 53,
+          "x_pct": 82.4,
+          "y_pct": 76.8,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L20",
+          "channel_idx": 54,
+          "x_pct": 78.8,
+          "y_pct": 80.6,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L21",
+          "channel_idx": 55,
+          "x_pct": 74.7,
+          "y_pct": 84.0,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L22",
+          "channel_idx": 56,
+          "x_pct": 70.2,
+          "y_pct": 86.8,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L23",
+          "channel_idx": 57,
+          "x_pct": 65.5,
+          "y_pct": 89.1,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L24",
+          "channel_idx": 58,
+          "x_pct": 60.4,
+          "y_pct": 90.7,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L25",
+          "channel_idx": 59,
+          "x_pct": 55.3,
+          "y_pct": 91.7,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L26",
+          "channel_idx": 60,
+          "x_pct": 50.0,
+          "y_pct": 92.0,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L27",
+          "channel_idx": 61,
+          "x_pct": 44.7,
+          "y_pct": 91.7,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L28",
+          "channel_idx": 62,
+          "x_pct": 39.6,
+          "y_pct": 90.7,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L29",
+          "channel_idx": 63,
+          "x_pct": 34.5,
+          "y_pct": 89.1,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L30",
+          "channel_idx": 64,
+          "x_pct": 29.8,
+          "y_pct": 86.8,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L31",
+          "channel_idx": 65,
+          "x_pct": 25.3,
+          "y_pct": 84.0,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L32",
+          "channel_idx": 66,
+          "x_pct": 21.2,
+          "y_pct": 80.6,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L33",
+          "channel_idx": 67,
+          "x_pct": 17.6,
+          "y_pct": 76.8,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L34",
+          "channel_idx": 68,
+          "x_pct": 14.5,
+          "y_pct": 72.5,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L35",
+          "channel_idx": 69,
+          "x_pct": 12.0,
+          "y_pct": 67.9,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L36",
+          "channel_idx": 70,
+          "x_pct": 10.1,
+          "y_pct": 63.0,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L37",
+          "channel_idx": 71,
+          "x_pct": 8.7,
+          "y_pct": 57.9,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L38",
+          "channel_idx": 72,
+          "x_pct": 8.1,
+          "y_pct": 52.6,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L39",
+          "channel_idx": 73,
+          "x_pct": 8.1,
+          "y_pct": 47.4,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L40",
+          "channel_idx": 74,
+          "x_pct": 8.7,
+          "y_pct": 42.1,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L41",
+          "channel_idx": 75,
+          "x_pct": 10.1,
+          "y_pct": 37.0,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L42",
+          "channel_idx": 76,
+          "x_pct": 12.0,
+          "y_pct": 32.1,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L43",
+          "channel_idx": 77,
+          "x_pct": 14.5,
+          "y_pct": 27.5,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L44",
+          "channel_idx": 78,
+          "x_pct": 17.6,
+          "y_pct": 23.2,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L45",
+          "channel_idx": 79,
+          "x_pct": 21.2,
+          "y_pct": 19.4,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L46",
+          "channel_idx": 80,
+          "x_pct": 25.3,
+          "y_pct": 16.0,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L47",
+          "channel_idx": 81,
+          "x_pct": 29.8,
+          "y_pct": 13.2,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L48",
+          "channel_idx": 82,
+          "x_pct": 34.5,
+          "y_pct": 10.9,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L49",
+          "channel_idx": 83,
+          "x_pct": 39.6,
+          "y_pct": 9.3,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "L50",
+          "channel_idx": 84,
+          "x_pct": 44.7,
+          "y_pct": 8.3,
+          "color": "#19f3ec"
+        }
+      ],
+      "graphics": [
+        {
+          "type": "table",
+          "title": "50 Linien-Sensoren",
+          "channels": "35-84"
+        }
+      ]
+    },
+    {
+      "name": "Switchboard (Bild 4)",
+      "image_idx": 4,
+      "overlays": [
+        {
+          "label": "SW1",
+          "channel_idx": 101,
+          "x_pct": 65,
+          "y_pct": 49,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "SW2",
+          "channel_idx": 102,
+          "x_pct": 73,
+          "y_pct": 49,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "SW3",
+          "channel_idx": 103,
+          "x_pct": 81,
+          "y_pct": 49,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "SW4",
+          "channel_idx": 104,
+          "x_pct": 89,
+          "y_pct": 49,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "SW5",
+          "channel_idx": 105,
+          "x_pct": 97,
+          "y_pct": 49,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "BTN1",
+          "channel_idx": 110,
+          "x_pct": 39,
+          "y_pct": 31,
+          "color": "#f0c060"
+        },
+        {
+          "label": "BTN2",
+          "channel_idx": 111,
+          "x_pct": 49,
+          "y_pct": 31,
+          "color": "#f0c060"
+        },
+        {
+          "label": "BTN3",
+          "channel_idx": 112,
+          "x_pct": 59,
+          "y_pct": 31,
+          "color": "#f0c060"
+        },
+        {
+          "label": "BTN4",
+          "channel_idx": 113,
+          "x_pct": 69,
+          "y_pct": 31,
+          "color": "#f0c060"
+        },
+        {
+          "label": "BTN5",
+          "channel_idx": 114,
+          "x_pct": 79,
+          "y_pct": 31,
+          "color": "#f0c060"
+        },
+        {
+          "label": "START",
+          "channel_idx": 106,
+          "x_pct": 43,
+          "y_pct": 17,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "RCJ",
+          "channel_idx": 107,
+          "x_pct": 43,
+          "y_pct": 74,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "RCJ OFF",
+          "channel_idx": 108,
+          "x_pct": 13,
+          "y_pct": 17,
+          "color": "#19f3ec"
+        },
+        {
+          "label": "RCJ OK",
+          "channel_idx": 109,
+          "x_pct": 13,
+          "y_pct": 74,
+          "color": "#19f3ec"
+        }
+      ],
+      "graphics": [
+        {
+          "type": "table",
+          "title": "Schalter und Taster",
+          "channels": "101-114"
+        }
+      ]
+    },
+    {
+      "name": "Spielfeld (Bild 5)",
+      "image_idx": 5,
+      "overlays": [],
+      "graphics": [
+        {
           "type": "bodies",
-          "label": "Körper-Feld",
-          "field_width": 240,
-          "field_height": 180,
+          "label": "Roboterposition",
+          "field_x_cm": 180,
+          "field_y_cm": 240,
+          "goal_width_cm": 45,
+          "goal_depth_cm": 10,
+          "show_image": true,
           "body1": {
-            "label": "Ball",
+            "label": "Roboter",
             "color": "#4ec9b0",
-            "diameter": 3,
-            "channel_x": 100,
-            "channel_y": 101,
-            "channel_angle": 102,
-            "channel_diameter": -1
+            "diameter": 18,
+            "channel_x": 16,
+            "channel_y": 17,
+            "channel_angle": 5
           },
           "body2": {
-            "label": "Robo",
+            "label": "Ball",
             "color": "#f0c060",
-            "diameter": 22,
-            "channel_x": 103,
-            "channel_y": 104,
-            "channel_angle": 105,
-            "channel_diameter": -1
+            "diameter": 7,
+            "channel_x": -1,
+            "channel_y": -1,
+            "channel_angle": -1
           }
         }
       ]

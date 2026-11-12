@@ -43,16 +43,10 @@ WOHER DIE KONFIGURATION KOMMT
 Vorrang hat die vom Teensy gemeldete und je Node gespeicherte Fassung
 (runtime_config/nodeN/visuals_overlays.json). Erst wenn es die nicht gibt,
 gilt visuals_overlays.json aus dem Repository als Vorlage. Ändert sich der
-Fingerabdruck der Teensy-Overlays (neue Firmware), wird die gespeicherte
-Fassung ersetzt; sonst bleiben lokale Bearbeitungen stehen. Siehe
-runtime_config.py, Abschnitt "Wer gewinnt bei einem Konflikt?".
-
-AUSNAHME seit dem Editor: wurde die Anordnung hier von Hand bearbeitet
-(`_locally_edited`), wird sie NICHT mehr stillschweigend überschrieben. Die
-neue Teensy-Fassung wird zurückgehalten und im Editor als Frage angeboten
-("Teensy meldet eine neue Anordnung: übernehmen / verwerfen"). Sonst wäre
-eine halbe Stunde Positionierarbeit beim nächsten Flashen weg — und zwar
-ohne jeden Hinweis.
+Fingerabdruck der Teensy-Overlays (neue Firmware), ersetzt die Firmware die
+lokale Fassung beim Start. Siehe runtime_config.py, Abschnitt "Wer gewinnt
+bei einem Konflikt?". Eine noch offene Bearbeitung im Editor bleibt bis zum
+Speichern geschützt.
 """
 from __future__ import annotations
 
