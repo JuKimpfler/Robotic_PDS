@@ -116,7 +116,9 @@ Item {
             diameter: root._chan(b.channelDiameter, b.diameter),
             x: root._chan(b.channelX, 0),
             y: root._chan(b.channelY, 0),
-            angleDeg: root._chan(b.channelAngle, 0)
+            // Ohne Winkelkanal NaN statt 0: sonst bekaeme z. B. ein Ball
+            // einen Richtungspfeil "0°", den es gar nicht gibt.
+            angleDeg: b.channelAngle >= 0 ? root._chan(b.channelAngle, 0) : NaN
         }
     }
 
@@ -305,8 +307,31 @@ Item {
                             // Binding (und damit das Overlay) stillgelegt hat.
                             readonly property bool _has: modelData.channel >= 0 &&
                                                          modelData.channel < root.values.length
-                            readonly property string ovText: modelData.label + ": " +
-                                  (_has ? root.values[modelData.channel].toFixed(2) : "—")
+                            // Nachkommastellen je Eintrag (Rohwerte eines
+                            // ADC brauchen keine ".00"); ohne Beschriftung
+                            // steht nur der Wert da.
+                            readonly property int _dec:
+                                modelData.decimals !== undefined ? modelData.decimals : 2
+                            readonly property string _valText:
+                                _has ? root.values[modelData.channel].toFixed(_dec) : "—"
+                            readonly property string ovText:
+                                modelData.label !== "" ? modelData.label + ": " + _valText
+                                                       : _valText
+                            // Eigene Schriftgroesse waechst mit dem Bild
+                            // (Bezug: 800 px Bildbreite) — sonst ueberlappen
+                            // sich 50 Werte auf einem Ring, sobald das
+                            // Fenster kleiner wird. 0 = feste Standardgroesse.
+                            readonly property bool _ownFont:
+                                modelData.fontPx !== undefined && modelData.fontPx > 0
+                            readonly property real _fontPx:
+                                _ownFont
+                                ? Math.max(7, Math.min(28, modelData.fontPx
+                                      * Math.max(0.5, Math.min(1.8, bgImage.paintedWidth / 800))))
+                                : 13
+                            readonly property bool _compact: _ownFont && _fontPx < 12
+                            // centered: x/y ist die MITTE der Box. Damit sitzt
+                            // sie auf dem Bauteil, egal wie breit der Text ist.
+                            readonly property bool _centered: modelData.centered === true
                             readonly property bool selected:
                                 root.editing &&
                                 root.visuals.selectedList === "overlays" &&
@@ -331,9 +356,11 @@ Item {
                             readonly property real _dy: root.dragRaw === modelData.rawIndex ? root.dragDy : 0
 
                             x: imgX + bgImage.paintedWidth * modelData.xPct / 100 + _dx
+                               - (_centered ? width / 2 : 0)
                             y: imgY + bgImage.paintedHeight * modelData.yPct / 100 + _dy
-                            width: ovLabel.implicitWidth + 12
-                            height: ovLabel.implicitHeight + 6
+                               - (_centered ? height / 2 : 0)
+                            width: ovLabel.implicitWidth + (_compact ? 6 : 12)
+                            height: ovLabel.implicitHeight + (_compact ? 3 : 6)
 
                             // Hintergrund: normalerweise schwarz hinterlegt,
                             // damit der Text auf jedem Bild lesbar bleibt.
@@ -368,7 +395,7 @@ Item {
                                 anchors.centerIn: parent
                                 text: ovDelegate.ovText
                                 color: ovDelegate.textColor
-                                font.pixelSize: 13
+                                font.pixelSize: Math.round(ovDelegate._fontPx)
                                 font.bold: true
                             }
 

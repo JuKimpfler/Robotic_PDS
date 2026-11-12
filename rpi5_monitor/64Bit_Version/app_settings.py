@@ -102,6 +102,12 @@ DEFAULTS: dict[str, Any] = {
         "keyboardControl": True,
         "startTab": 0,           # 0=Tabelle 1=Plotter 2=System 3=Param 4=Diagnose
         "autoApplyTeensyConfig": True,
+        # Der ERSTE Deskriptor eines Nodes nach dem Start der GUI gewinnt
+        # immer gegen den lokal gespeicherten Stand — auch gegen von Hand
+        # bearbeitete Overlays (siehe runtime_config.py, "Beim Start gewinnt
+        # immer der Teensy"). Aus: nur eine GEAENDERTE Firmware setzt sich
+        # durch, lokale Bearbeitungen ueberleben den Neustart.
+        "teensyPriorityOnStart": True,
         # Der Teensy kann seit PDS 2.2 auch das AUSSEHEN vorgeben
         # (PDS.setting("ui.dark", ...) bzw. GUI_SETTINGS in channel_config.h).
         # Standardmaessig deaktiviert, damit Teensy-Firmware-Updates die

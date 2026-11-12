@@ -49,12 +49,14 @@ except ImportError:                                  # pragma: no cover
 #  bleibt so, damit bestehende Dateien unveraendert weiter funktionieren.
 #  entry_kind() bildet dieses Fehlen auf "text" ab.
 
-OVERLAY_KINDS = ("text", "textgrid")
+OVERLAY_KINDS = ("text", "textgrid", "textring", "textpts")
 GRAPHIC_KINDS = ("gauge", "rotation", "vector", "table", "bodies")
 
 KIND_LABELS = {
     "text":     "Text",
     "textgrid": "Textraster",
+    "textring": "Textring",
+    "textpts":  "Textpunkte",
     "gauge":    "Zeiger",
     "rotation": "Drehanzeige",
     "vector":   "Vektor",
@@ -66,6 +68,8 @@ KIND_LABELS = {
 KIND_HINTS = {
     "text":     "Ein Messwert an einer Stelle des Bildes",
     "textgrid": "Viele Messwerte als Block — eine Position fuer alle",
+    "textring": "Viele Messwerte gleichmaessig auf einem Kreis (Sensorring)",
+    "textpts":  "Viele Messwerte an frei vorgegebenen Punkten, ein Eintrag",
     "gauge":    "Balken mit Minimum und Maximum",
     "rotation": "Drehrichtung und -geschwindigkeit",
     "vector":   "Pfeil aus Winkel und Betrag",
@@ -180,6 +184,29 @@ def _color_dynamic_fields() -> List[dict]:
     ]
 
 
+def _style_fields() -> List[dict]:
+    """Schrift und Ausrichtung einer Textbox — gemeinsam fuer alle Textarten
+    (siehe bridge.utils.text_style)."""
+    return [
+        _f("decimals", "Nachkommastellen", "int", min=0, max=6, step=1, default=2),
+        _f("font_px", "Schriftgroesse (0 = Standard)", "real",
+           min=0.0, max=48.0, step=1.0, decimals=0, default=0.0,
+           hint="Gilt bei 800 px Bildbreite und waechst/schrumpft mit dem Bild."),
+        _f("centered", "x/y ist die Mitte der Box", "bool", default=False,
+           hint="Aus: x/y ist die linke obere Ecke (wie bisher)."),
+    ]
+
+
+def _block_label_fields() -> List[dict]:
+    """Beschriftung der Zellen eines Blocks (Textring/Textpunkte)."""
+    return [
+        _f("labels", "Beschriftung anzeigen", "bool"),
+        _f("prefix", "Praefix + laufende Nummer", "text", default="",
+           hint='z. B. "IR" -> IR1, IR2, … Leer = Kanalname bzw. nur die Nummer.'),
+        _f("first", "Erste Nummer", "int", min=0, max=999, step=1, default=1),
+    ]
+
+
 def _body_fields(prefix: str, title: str) -> List[dict]:
     return [
         _f(f"{prefix}.label", f"{title}: Name", "text"),
@@ -200,6 +227,7 @@ _SCHEMAS: dict[str, Callable[[], List[dict]]] = {
         _channel_field("channel_idx", "Kanal"),
         *_pos_fields(),
         _f("color", "Farbe", "color"),
+        *_style_fields(),
         *_color_dynamic_fields(),
     ],
     "textgrid": lambda: [
@@ -215,6 +243,45 @@ _SCHEMAS: dict[str, Callable[[], List[dict]]] = {
         *_pos_fields(),
         _f("labels", "Kanalnamen anzeigen", "bool"),
         _f("color", "Farbe", "color"),
+        *_style_fields(),
+        *_color_dynamic_fields(),
+    ],
+    "textring": lambda: [
+        _f("label", "Name des Rings", "text",
+           hint="Nur zur Wiedererkennung in der Liste — steht nicht im Bild."),
+        _f("channels", "Kanaele", "channels",
+           hint='Im Uhrzeigersinn, z. B. "100-115"'),
+        _f("x_pct", "Mittelpunkt x  (% der Bildbreite)", "real",
+           min=-20.0, max=120.0, step=0.5, decimals=1),
+        _f("y_pct", "Mittelpunkt y  (% der Bildhoehe)", "real",
+           min=-20.0, max=120.0, step=0.5, decimals=1),
+        _f("r_pct", "Radius (% der Bildbreite)", "real",
+           min=0.5, max=80.0, step=0.5, decimals=1),
+        _f("ry_pct", "Radius senkrecht (0 = wie waagerecht)", "real",
+           min=0.0, max=80.0, step=0.5, decimals=1, default=0.0),
+        _f("start_deg", "Winkel des ersten Kanals (0 = oben)", "real",
+           min=-360.0, max=360.0, step=1.0, decimals=2, default=0.0),
+        _f("step_deg", "Winkel je Kanal (0 = gleichmaessig)", "real",
+           min=-360.0, max=360.0, step=1.0, decimals=2, default=0.0,
+           hint="Positiv = im Uhrzeigersinn, negativ = dagegen."),
+        *_block_label_fields(),
+        _f("color", "Farbe", "color"),
+        *_style_fields(),
+        *_color_dynamic_fields(),
+    ],
+    "textpts": lambda: [
+        _f("label", "Name des Blocks", "text",
+           hint="Nur zur Wiedererkennung in der Liste — steht nicht im Bild."),
+        _f("channels", "Kanaele", "channels",
+           hint="Der i-te Kanal gehoert zum i-ten Punkt."),
+        _f("points", "Punkte  x:y,x:y,…  (% des Bildes)", "text"),
+        _f("x_pct", "Versatz x  (%)", "real",
+           min=-100.0, max=100.0, step=0.5, decimals=1, default=0.0),
+        _f("y_pct", "Versatz y  (%)", "real",
+           min=-100.0, max=100.0, step=0.5, decimals=1, default=0.0),
+        *_block_label_fields(),
+        _f("color", "Farbe", "color"),
+        *_style_fields(),
         *_color_dynamic_fields(),
     ],
     "gauge": lambda: [
@@ -443,6 +510,17 @@ def new_entry(kind: str, x_pct: float = 40.0, y_pct: float = 40.0) -> dict:
     if kind in ("text", "textgrid"):
         entry["x_pct"] = float(x_pct)
         entry["y_pct"] = float(y_pct)
+    if kind == "textring":
+        # Ring und Punkte sitzen mittig auf ihren Stellen.
+        entry.update({"label": "Neuer Ring", "channels": "0-7", "x_pct": 50.0,
+                      "y_pct": 50.0, "r_pct": 30.0, "labels": True,
+                      "centered": True})
+        entry.pop("prefix", None)     # ohne Praefix = Kanalname
+    if kind == "textpts":
+        entry.update({"label": "Neue Punkte", "channels": "0-2",
+                      "points": "30:30,50:30,70:30", "x_pct": 0.0, "y_pct": 0.0,
+                      "labels": True, "centered": True})
+        entry.pop("prefix", None)
     if kind == "text":
         entry["label"] = "Neu"
     if kind == "textgrid":
@@ -531,7 +609,7 @@ def problems(entry: dict) -> List[str]:
             out.append(f"{field['label']}: Kanal {chn} gibt es nicht "
                        f"(0 bis {MAX_FLOATS - 1})")
 
-    if kind in ("textgrid", "table"):
+    if kind in ("textgrid", "textring", "textpts", "table"):
         chans = parse_channels(get_value(entry, "channels") or "")
         if not chans:
             out.append("Kanaele: leer oder unlesbar")
@@ -540,6 +618,16 @@ def problems(entry: dict) -> List[str]:
             if bad:
                 out.append("Kanaele ausserhalb 0 bis "
                            f"{MAX_FLOATS - 1}: {', '.join(map(str, bad[:5]))}")
+
+    if kind == "textpts":
+        from bridge.utils import parse_points
+        pts = parse_points(entry.get("points", ""))
+        n_ch = len(parse_channels(get_value(entry, "channels") or ""))
+        if any(p[0] is None for p in pts):
+            out.append('Punkte: mindestens ein Punkt ist unlesbar (Form "x:y")')
+        if len(pts) < n_ch:
+            out.append(f"Punkte: {len(pts)} Punkte fuer {n_ch} Kanaele — "
+                       "die uebrigen Kanaele werden nicht angezeigt")
 
     if kind == "gauge":
         try:
@@ -566,7 +654,7 @@ def summary(entry: dict, name_for: Callable[[int], str]) -> str:
     if kind == "text":
         chn = _as_int(entry.get("channel_idx", entry.get("channel", 0)), 0)
         return f"{label or '(ohne Beschriftung)'} — {name_for(chn)}"
-    if kind in ("textgrid", "table"):
+    if kind in ("textgrid", "textring", "textpts", "table"):
         chans = parse_channels(entry.get("channels", ""))
         rng = f"{len(chans)} Kanaele" if chans else "keine Kanaele"
         return f"{label or 'Block'} — {rng}"

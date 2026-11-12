@@ -66,7 +66,13 @@ from PyQt6.QtCore import QObject, pyqtSignal, pyqtProperty, pyqtSlot
 
 import overlay_schema
 import runtime_config
-from bridge.utils import parse_channels, expand_textgrid as _expand_textgrid
+from bridge.utils import (
+    parse_channels,
+    expand_textgrid as _expand_textgrid,
+    expand_textring as _expand_textring,
+    expand_textpts as _expand_textpts,
+    text_style as _text_style,
+)
 from config import MAX_FLOATS, VARIABLE_NAMES
 from channel_registry import apply_overlay_defaults, ChannelRegistry
 
@@ -117,28 +123,25 @@ def _overlay_to_entry(o: dict, raw_index: int) -> list[dict]:
     `rawIndex` ist der Rückweg für den Editor: jede angezeigte Zelle weiß,
     aus welchem Eintrag der Datei sie stammt.
     """
-    if o.get("type") == "textgrid":
+    kind = o.get("type")
+    if kind == "textgrid":
         out = expand_textgrid(o)
+    elif kind == "textring":
+        out = _expand_textring(o, _channel_name)
+    elif kind == "textpts":
+        out = _expand_textpts(o, _channel_name)
     else:
         channel = o.get("channel_idx", o.get("channel", 0))
-        # "color_channel" leer/-1 -> derselbe Kanal, der auch angezeigt wird
-        # (siehe overlay_schema._color_dynamic_fields, Feld "color_channel").
-        color_channel = int(o.get("color_channel", -1))
-        out = [{
+        cell = {
             "label": o.get("label", ""),
             "channel": channel,
             "xPct": float(o.get("x_pct", 5.0)),
             "yPct": float(o.get("y_pct", 8.0)),
-            "color": o.get("color", "#4ec9b0"),
-            "colorDynamic": bool(o.get("color_dynamic", False)),
-            "colorMode": o.get("color_mode", "linear"),
-            "colorChannel": color_channel if color_channel >= 0 else channel,
-            "colorMin": float(o.get("color_min", 0.0)),
-            "colorMax": float(o.get("color_max", 1.0)),
-            "colorThreshold": float(o.get("color_threshold", 0.5)),
-            "colorLow": o.get("color_low", "#a5dc6e"),
-            "colorHigh": o.get("color_high", "#e0524d"),
-        }]
+        }
+        # Farbe, dynamische Farbe, Nachkommastellen, Schrift, Ausrichtung —
+        # fuer alle Textarten dieselbe Stelle (bridge.utils.text_style).
+        cell.update(_text_style(o, int(channel) if isinstance(channel, int) else 0))
+        out = [cell]
     for cell in out:
         cell["rawIndex"] = raw_index
     return out
@@ -383,8 +386,16 @@ class VisualsBridge(QObject):
         stored = _load_raw_config(stored_path) if stored_path.exists() else None
         # Die eigentliche Regel steht in runtime_config.merge_decision() —
         # dort, wo sie dokumentiert ist, und ohne PyQt6 durchspielbar.
+        # Der erste Deskriptor nach dem Start der GUI gewinnt immer (siehe
+        # runtime_config.py, "Beim Start gewinnt immer der Teensy").
+        editing_unsaved = self._editing and self._dirty
+        first = runtime_config.is_first_contact(node_id, "visuals")
         decision = runtime_config.merge_decision(
-            stored, digest, editing_unsaved=self._editing and self._dirty)
+            stored, digest, editing_unsaved=editing_unsaved, first_contact=first)
+        if not editing_unsaved:
+            # Bei offener Bearbeitung NICHT abhaken: die Frage bleibt stehen,
+            # und nach dem Speichern soll der Vorrang noch gelten.
+            runtime_config.mark_contact(node_id, "visuals")
 
         if decision == "keep":
             self._set_pending(None)
@@ -396,14 +407,20 @@ class VisualsBridge(QObject):
         # Erstbefüllung geht von der Vorlage aus, damit Gruppennamen und
         # Bildzuordnung erhalten bleiben.
         raw = stored if stored is not None else _load_raw_config(_TEMPLATE_FILE)
+        before = json.dumps(raw.get("groups"), sort_keys=True)
 
         # overwrite=True auch bei der Erstbefüllung: die Vorlage im Repository
         # ist in aller Regel schon befüllt, und mit overwrite=False käme die
         # Anordnung des Teensy dann NIE an — genau das, was hier gewollt ist.
         # Gruppen ohne passenden Teensy-Eintrag bleiben unangetastet.
         changed = apply_overlay_defaults(raw, registry, overwrite=True)
+        was_edited = bool(raw.pop(_EDITED_KEY, None))
+        if (stored is not None and not was_edited
+                and raw.get(_HASH_KEY) == digest
+                and json.dumps(raw.get("groups"), sort_keys=True) == before):
+            self._set_pending(None)
+            return                   # Start-Vorrang, aber nichts zu ändern
         raw[_HASH_KEY] = digest
-        raw.pop(_EDITED_KEY, None)
         if _save_raw_config(stored_path, raw):
             log.info("Overlays von Node %d übernommen und gespeichert "
                       "(%s, %s).", node_id, stored_path,

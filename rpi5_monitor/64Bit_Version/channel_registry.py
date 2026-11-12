@@ -347,6 +347,66 @@ def _parse_extra_kv(extra: str) -> dict[str, str]:
     return out
 
 
+def _truthy(text: str) -> bool:
+    return str(text).strip().lower() not in ("", "0", "false", "nein", "off")
+
+
+def _style_from_kv(kv: dict[str, str]) -> dict:
+    """Darstellung einer Textbox aus dem `extra`-Text eines Teensy-Overlays.
+
+    Die Schluessel sind bewusst kurz — jeder Buchstabe reist bei jedem
+    Deskriptor ueber die UART-Leitung:
+
+        color=#19f3ec   feste Farbe
+        dec=0           Nachkommastellen
+        size=11         Schriftgroesse (waechst mit dem Bild, siehe text_style)
+        anchor=c        x/y ist die Mitte der Box (anchor=tl: linke obere Ecke)
+        cmode=thr|lin   Box nach einem Kanalwert einfaerben:
+                        thr = Schwelle (cthr), lin = Verlauf (cmin..cmax)
+        cch=12          Kanal fuer die Farbe (fehlt = der angezeigte Kanal)
+        clow / chigh    die beiden Farben
+
+    Nur gesetzte Schluessel landen im Eintrag: was fehlt, behaelt die Vorgabe
+    der GUI (bridge.utils.text_style) und macht die gespeicherte Datei nicht
+    unnoetig lang.
+    """
+    out: dict = {}
+    if kv.get("color", "").startswith("#"):
+        out["color"] = kv["color"]
+    if "dec" in kv:
+        out["decimals"] = max(0, min(6, _as_int(kv["dec"], 2)))
+    if "size" in kv:
+        out["font_px"] = max(0.0, min(48.0, _as_float(kv["size"], 0.0)))
+    if "anchor" in kv:
+        out["centered"] = kv["anchor"].strip().lower() in ("c", "center", "mitte")
+    mode = kv.get("cmode", "").strip().lower()
+    if mode in ("thr", "threshold", "lin", "linear"):
+        out["color_dynamic"] = True
+        out["color_mode"] = "threshold" if mode.startswith("thr") else "linear"
+        if "cch" in kv:
+            out["color_channel"] = _as_int(kv["cch"], -1)
+        for short, long, fallback in (("cthr", "color_threshold", 0.5),
+                                      ("cmin", "color_min", 0.0),
+                                      ("cmax", "color_max", 1.0)):
+            if short in kv:
+                out[long] = _as_float(kv[short], fallback)
+        for short, long in (("clow", "color_low"), ("chigh", "color_high")):
+            if kv.get(short, "").startswith("#"):
+                out[long] = kv[short]
+    return out
+
+
+def _block_labels_from_kv(kv: dict[str, str]) -> dict:
+    """Beschriftung der Zellen eines Blocks (textring/textpts):
+    labels=0 -> nur Werte, prefix=IR -> IR1, IR2, … (first=1), sonst Kanalname."""
+    out: dict = {"labels": _truthy(kv.get("labels", "1"))}
+    if "prefix" in kv:
+        out["prefix"] = kv["prefix"]
+        if "first" in kv:
+            out["first"] = _as_int(kv["first"], 1)
+    return out
+
+
 def _teensy_overlay_to_entry(ov: dict) -> tuple[str, dict]:
     """Wandelt einen vom Teensy empfangenen Overlay-Eintrag (siehe
     channel_config.h::OverlayDef) in einen visuals_overlays.json-kompatiblen
@@ -357,13 +417,55 @@ def _teensy_overlay_to_entry(ov: dict) -> tuple[str, dict]:
     label = ov.get("label", "")
 
     if t == "text":
-        return "overlays", {
+        entry = {
             "label": label,
             "channel_idx": _as_int(ov.get("channel"), 0),
             "x_pct": _as_float(ov.get("x_pct"), 5.0),
             "y_pct": _as_float(ov.get("y_pct"), 5.0),
             "color": "#4ec9b0",
         }
+        entry.update(_style_from_kv(_parse_extra_kv(ov.get("extra", ""))))
+        return "overlays", entry
+
+    if t == "textring":
+        # Viele Werte gleichmaessig auf einem Kreis — siehe
+        # bridge.utils.expand_textring. x_pct/y_pct ist der Mittelpunkt.
+        kv = _parse_extra_kv(ov.get("extra", ""))
+        entry = {
+            "type": "textring",
+            "label": label,
+            "channels": kv.get("channels", ""),
+            "r_pct": _as_float(kv.get("r"), 40.0),
+            "ry_pct": _as_float(kv.get("ry"), 0.0),
+            "start_deg": _as_float(kv.get("start"), 0.0),
+            "step_deg": _as_float(kv.get("step"), 0.0),
+            "x_pct": _as_float(ov.get("x_pct"), 50.0),
+            "y_pct": _as_float(ov.get("y_pct"), 50.0),
+            "color": "#4ec9b0",
+            "centered": True,
+        }
+        entry.update(_block_labels_from_kv(kv))
+        entry.update(_style_from_kv(kv))
+        return "overlays", entry
+
+    if t == "textpts":
+        # Viele Werte an frei vorgegebenen Punkten, als EIN Eintrag — siehe
+        # bridge.utils.expand_textpts. x_pct/y_pct ist hier ein VERSATZ und
+        # deshalb ohne Angabe 0 (nicht -1 wie "ungenutzt" im Deskriptor).
+        kv = _parse_extra_kv(ov.get("extra", ""))
+        entry = {
+            "type": "textpts",
+            "label": label,
+            "channels": kv.get("channels", ""),
+            "points": kv.get("pts", ""),
+            "x_pct": _as_float(ov.get("x_pct"), 0.0),
+            "y_pct": _as_float(ov.get("y_pct"), 0.0),
+            "color": "#4ec9b0",
+            "centered": True,
+        }
+        entry.update(_block_labels_from_kv(kv))
+        entry.update(_style_from_kv(kv))
+        return "overlays", entry
 
     if t == "textgrid":
         # Ein einziger Eintrag erzeugt beliebig viele Textfelder — genau
@@ -372,7 +474,7 @@ def _teensy_overlay_to_entry(ov: dict) -> tuple[str, dict]:
         # passiert erst in der GUI (visuals_bridge.expand_textgrid), damit
         # die gespeicherte Konfiguration kompakt und lesbar bleibt.
         kv = _parse_extra_kv(ov.get("extra", ""))
-        return "overlays", {
+        entry = {
             "type": "textgrid",
             "label": label,
             "channels": kv.get("channels", ""),
@@ -384,6 +486,8 @@ def _teensy_overlay_to_entry(ov: dict) -> tuple[str, dict]:
             "y_pct": _as_float(ov.get("y_pct"), 6.0),
             "color": "#4ec9b0",
         }
+        entry.update(_style_from_kv(kv))
+        return "overlays", entry
 
     if t == "gauge":
         return "graphics", {
@@ -446,7 +550,7 @@ def _teensy_overlay_to_entry(ov: dict) -> tuple[str, dict]:
             field_x = _as_float(kv.get("field_width"), 240.0)
             field_y = _as_float(kv.get("field_height"), 180.0)
 
-        return "graphics", {
+        entry = {
             "type": "bodies",
             "label": label,
             "field_x_cm": field_x,
@@ -454,8 +558,76 @@ def _teensy_overlay_to_entry(ov: dict) -> tuple[str, dict]:
             "body1": _body("body1"),
             "body2": _body("body2"),
         }
+        # Optional, sonst gelten die Vorgaben der Feldansicht.
+        if "goal_width_cm" in kv:
+            entry["goal_width_cm"] = _as_float(kv["goal_width_cm"], 45.0)
+        if "goal_depth_cm" in kv:
+            entry["goal_depth_cm"] = _as_float(kv["goal_depth_cm"], 10.0)
+        if "show_image" in kv:
+            entry["show_image"] = _truthy(kv["show_image"])
+        return "graphics", entry
 
     return "graphics", {"type": t, "label": label}
+
+
+# ── Ansichten (Gruppen) vom Teensy ────────────────────────────────────────
+#  Ein Overlay vom Typ "group" ist kein Anzeige-Element, sondern BESCHREIBT
+#  eine Ansicht:
+#
+#      { 3, "group", "IR-Ring", -1, -1, 0, 0, -1, -1, "image=3" }
+#
+#  -> Ansicht 3 heisst "IR-Ring" und liegt auf bild/Bild3.png. Ohne solche
+#  Eintraege gilt das alte Verhalten: die Gruppen der lokalen Datei bleiben
+#  stehen und werden ueber ihre Bildnummer befuellt. MIT ihnen bestimmt der
+#  Teensy die Liste der Ansichten vollstaendig — Reihenfolge, Name und Bild.
+#  Nur so kann die Firmware eine fuenfte Ansicht anlegen oder eine umbenennen,
+#  ohne dass jemand an der GUI eine Datei anfasst.
+
+def _group_defs(overlays: list[dict]) -> list[dict]:
+    """[{id, name, image_idx}] in der Reihenfolge der Firmware. Leer, wenn der
+    Teensy keine Ansichten beschreibt."""
+    defs: list[dict] = []
+    seen: set[int] = set()
+    for ov in overlays:
+        if ov.get("type") != "group":
+            continue
+        gid = _as_int(ov.get("group"), 1)
+        if gid in seen:
+            continue
+        seen.add(gid)
+        kv = _parse_extra_kv(str(ov.get("extra", "")))
+        defs.append({
+            "id": gid,
+            "name": str(ov.get("label") or f"Gruppe {gid}"),
+            "image_idx": max(1, _as_int(kv.get("image"), gid)),
+        })
+    return defs
+
+
+def _groups_from_teensy(overlays: list[dict], defs: list[dict]) -> list[dict]:
+    by_group: dict[int, list[dict]] = {}
+    for ov in overlays:
+        if ov.get("type") == "group":
+            continue
+        by_group.setdefault(_as_int(ov.get("group"), 1), []).append(ov)
+
+    # Eintraege, deren Gruppe nirgends beschrieben ist, duerfen nicht still
+    # verschwinden — sie bekommen eine Ansicht mit Standardnamen.
+    known = {d["id"] for d in defs}
+    for gid in sorted(by_group):
+        if gid not in known:
+            defs = defs + [{"id": gid, "name": f"Gruppe {gid}", "image_idx": gid}]
+
+    groups: list[dict] = []
+    for d in defs:
+        overlays_out: list[dict] = []
+        graphics_out: list[dict] = []
+        for ov in by_group.get(d["id"], []):
+            target, entry = _teensy_overlay_to_entry(ov)
+            (overlays_out if target == "overlays" else graphics_out).append(entry)
+        groups.append({"name": d["name"], "image_idx": d["image_idx"],
+                       "overlays": overlays_out, "graphics": graphics_out})
+    return groups
 
 
 def apply_overlay_defaults(local_config: dict, registry: ChannelRegistry,
@@ -478,6 +650,18 @@ def apply_overlay_defaults(local_config: dict, registry: ChannelRegistry,
     """
     if not registry.overlays:
         return False
+
+    # Beschreibt der Teensy seine Ansichten selbst ("group"-Eintraege), ersetzt
+    # seine Liste die lokale komplett — siehe _group_defs().
+    defs = _group_defs(registry.overlays)
+    if defs:
+        local_groups = local_config.get("groups", [])
+        filled = any(isinstance(g, dict) and (g.get("overlays") or g.get("graphics"))
+                     for g in local_groups) if isinstance(local_groups, list) else False
+        if filled and not overwrite:
+            return False
+        local_config["groups"] = _groups_from_teensy(registry.overlays, defs)
+        return True
 
     by_group: dict[int, list[dict]] = {}
     for ov in registry.overlays:

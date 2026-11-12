@@ -22,6 +22,40 @@ welchem Roboter läuft.
 
 ---
 
+## Unveröffentlicht — Ansichten vom Teensy, Sensorringe, Teensy-Vorrang beim Start
+
+Kein neues Wire-Format (`PDS_WIRE_VERSION` bleibt 2), `PDS.cpp`/`PDS.h`
+unverändert. Alles Neue reist im vorhandenen `extra`-Text der Overlays.
+
+**Systemansicht**
+
+- Neue Overlay-Arten **`textring`** (viele Werte gleichmäßig auf einem Kreis,
+  für Sensorringe) und **`textpts`** (viele Werte an frei vorgegebenen
+  Punkten). Beide bleiben wie das Textraster EIN Eintrag, im Editor als
+  Block verschiebbar.
+- **Textstil** für alle Textarten: `decimals`, `font_px` (skaliert mit dem
+  Bild), `centered` (x/y ist die Mitte der Box). Ohne Beschriftung steht nur
+  der Wert da. Vom Teensy über `dec=`, `size=`, `anchor=c`, `color=` und die
+  dynamische Farbe über `cmode=thr|lin` im `extra`-Text.
+- **Ansichten vom Teensy:** ein Overlay vom Typ `group` benennt eine Ansicht
+  und wählt ihr Bild (`image=N`). Damit kann die Firmware beliebig viele
+  Ansichten in eigener Reihenfolge anlegen. Ohne solche Einträge bleibt das
+  bisherige Verhalten.
+- Feldansicht: `show_image`, `goal_width_cm`, `goal_depth_cm` kommen auch vom
+  Teensy an; ein Objekt ohne Winkelkanal bekommt keinen Richtungspfeil mehr.
+
+**Beim Start gewinnt immer der Teensy**
+
+Der erste Deskriptor eines Nodes nach dem Start der GUI ersetzt den lokal
+gespeicherten Stand (Overlays, Parameter-Tab, Oberflächen-Einstellungen) —
+auch bei unverändertem Fingerabdruck und bei von Hand bearbeiteten Overlays.
+Während der Sitzung gilt weiter die Fingerabdruck-Regel. Abschaltbar mit
+`ui.teensyPriorityOnStart: false` in `settings.json`.
+
+`tools/selftest.py`: Abschnitt 19 (43 Prüfungen).
+
+---
+
 ## 2.11 — Ein Befehl für Updates, Spielfeld, CI/CD, neue Doku
 
 Kein neues Wire-Format (`PDS_WIRE_VERSION` bleibt 2). Teensy-Firmware muss

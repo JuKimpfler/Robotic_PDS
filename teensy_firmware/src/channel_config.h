@@ -113,6 +113,9 @@ static constexpr size_t CHANNEL_NAMES_COUNT = sizeof(CHANNEL_NAMES) / sizeof(CHA
 //  ------------|----------------------------------|---------------------------
 //  "text"      | channel, x_pct, y_pct            | EIN Wert als Text auf dem Bild
 //  "textgrid"  | x_pct, y_pct, extra              | VIELE Werte als Raster (s. u.)
+//  "textring"  | x_pct, y_pct (Mitte), extra      | VIELE Werte auf einem Kreis
+//  "textpts"   | extra                            | VIELE Werte an freien Punkten
+//  "group"     | label, extra = "image=N"         | benennt die Ansicht, waehlt ihr Bild
 //  "gauge"     | channel, min_val, max_val        | Balkenanzeige
 //  "rotation"  | channel, max_val                 | Drehrate/Winkel als Zeiger
 //  "vector"    | channel(=Winkel), channel2(=Betrag), max_val
@@ -131,6 +134,33 @@ static constexpr size_t CHANNEL_NAMES_COUNT = sizeof(CHANNEL_NAMES) / sizeof(CHA
 //        dx        Spaltenabstand in % der Bildbreite (Default 20)
 //        dy        Zeilenabstand in % der Bildhoehe   (Default 4.5)
 //        labels    1 = "Name: Wert" (Default), 0 = nur der Wert
+//
+//  ── "textring": Sensorring ───────────────────────────────────────────────
+//      { 3, "textring", "IR", -1, -1, 0, 0, 50.0f, 50.0f,
+//        "channels=100-115;r=38;start=11.25;step=22.5;prefix=IR" },
+//        r       Radius in % der Bildbreite (ry = senkrecht, sonst wie r)
+//        start   Winkel des ersten Kanals, 0 = oben, im Uhrzeigersinn
+//        step    Winkel je Kanal (Default 360/Anzahl, negativ = andersherum)
+//        prefix  Beschriftung "IR1", "IR2", … (leer: "1", "2", …);
+//                ohne prefix der Kanalname, labels=0 = nur der Wert
+//
+//  ── "textpts": freie Punkte, ein Eintrag ────────────────────────────────
+//      extra = "channels=50-52;prefix=L;pts=10:20,30:40,55.5:60"
+//        pts     "x:y" in % des Bildes, der i-te Punkt gehoert zum i-ten Kanal
+//
+//  ── Darstellung der Textbox (text, textgrid, textring, textpts) ─────────
+//      im extra-Text:  anchor=c  size=12  dec=0  color=#19f3ec
+//                      cmode=thr;cthr=0.5;clow=#3a4654;chigh=#a5dc6e
+//                      cmode=lin;cmin=0;cmax=1000;clow=…;chigh=…   cch=<Kanal>
+//        anchor=c  x/y ist die MITTE der Box        dec   Nachkommastellen
+//        size      Schriftgroesse bei 800 px Bildbreite, waechst mit dem Bild
+//        cmode     Box nach dem Kanalwert einfaerben (Schwelle oder Verlauf)
+//
+//  ── "group": Ansichten vom Teensy ───────────────────────────────────────
+//      { 5, "group", "Spielfeld", -1, -1, 0, 0, -1, -1, "image=5" },
+//  Gibt es mindestens einen solchen Eintrag, bestimmt der Teensy die Liste
+//  der Ansichten vollstaendig (Reihenfolge, Name, Bild). Ohne bleibt es bei
+//  den Gruppen der lokalen Datei, zugeordnet ueber die Bildnummer.
 //
 //  ── "bodies": Spielfeld-Draufsicht ──────────────────────────────────────
 //  Koordinatensystem (RoboCup Junior Soccer, Angaben in ZENTIMETERN):

@@ -31,6 +31,24 @@ welchem Teensy-Inhalt sie entstanden ist (`_teensy_hash`).
 Damit gilt die einfache Regel: **etwas in channel_config.h aendern und neu
 flashen setzt sich durch, alles andere nicht.** Die Dateien im Repository
 (param_config.json, visuals_overlays.json) bleiben unberuehrte Vorlagen.
+
+────────────────────────────────────────────────────────────────────────────
+BEIM START GEWINNT IMMER DER TEENSY
+────────────────────────────────────────────────────────────────────────────
+Die Regel oben gilt WAEHREND einer Sitzung. Fuer den ERSTEN Deskriptor, den
+ein Node nach dem Start der GUI schickt, gilt eine einfachere: er wird
+uebernommen — auch bei unveraendertem Fingerabdruck und auch dann, wenn die
+gespeicherte Fassung von Hand bearbeitet wurde.
+
+Grund: derselbe Roboter wird an verschiedenen Rechnern betrieben (Pi am
+Spielfeld, Laptops). Jeder haette sonst seinen eigenen, irgendwann einmal
+zurechtgeschobenen Stand, und "was zeigt Kanal 57?" haette je Rechner eine
+andere Antwort. So ist die Firmware die eine Quelle, und die lokale Datei nur
+der Vorrat fuer den Fall, dass der Roboter (noch) aus ist.
+
+Was man in der GUI aendert, haelt damit bis zum naechsten Start der GUI —
+was bleiben soll, gehoert in channel_config.h. Abschaltbar ueber
+"ui.teensyPriorityOnStart" in settings.json (dann gilt nur die Regel oben).
 """
 from __future__ import annotations
 
@@ -59,8 +77,42 @@ TEENSY_HASH_KEY = _HASH_KEY      # oeffentlicher Name fuer andere Module
 LOCAL_EDIT_KEY = "_locally_edited"
 
 
+# ── Erster Kontakt je Node und Art in DIESER Sitzung ──────────────────────
+#  Bewusst nur im Speicher: "Sitzung" heisst genau "seit dem Start dieses
+#  Prozesses". Getrennt nach Art ("visuals", "params", "settings"), weil die
+#  drei an verschiedenen Stellen und nicht immer gemeinsam uebernommen werden
+#  (die Overlays z. B. nur fuer den gerade angezeigten Node).
+_contacted: set[tuple[int, str]] = set()
+
+
+def priority_on_start() -> bool:
+    """Schalter "ui.teensyPriorityOnStart" (Standard: an)."""
+    try:
+        return bool(app_settings.SETTINGS.get("ui", {})
+                    .get("teensyPriorityOnStart", True))
+    except Exception:                                # noqa: BLE001
+        return True
+
+
+def is_first_contact(node_id: int, kind: str) -> bool:
+    """True, solange von diesem Node in dieser Sitzung noch keine
+    Konfiguration dieser Art uebernommen wurde (und der Vorrang beim Start
+    eingeschaltet ist)."""
+    return priority_on_start() and (int(node_id), kind) not in _contacted
+
+
+def mark_contact(node_id: int, kind: str) -> None:
+    _contacted.add((int(node_id), kind))
+
+
+def reset_session() -> None:
+    """Nur fuer Tests: so tun, als waere die GUI gerade gestartet."""
+    _contacted.clear()
+
+
 def merge_decision(stored: dict | None, digest: str,
-                   editing_unsaved: bool = False) -> str:
+                   editing_unsaved: bool = False,
+                   first_contact: bool = False) -> str:
     """Was soll mit einer neu eingetroffenen Teensy-Konfiguration passieren?
 
         "keep"      -> nichts tun, die gespeicherte Fassung gilt weiter
@@ -78,6 +130,8 @@ def merge_decision(stored: dict | None, digest: str,
         return "ask"                 # nicht unter der offenen Bearbeitung wegziehen
     if not stored:
         return "overwrite"           # noch nichts gespeichert -> Erstbefuellung
+    if first_contact:
+        return "overwrite"           # beim Start gewinnt immer der Teensy
     if stored.get(_HASH_KEY) == digest:
         return "keep"                # unveraenderte Firmware
     if stored.get(LOCAL_EDIT_KEY):
@@ -336,8 +390,19 @@ def sync_param_config(node_id: int, param_cfg: dict) -> tuple[Path | None, bool]
 
     digest = teensy_hash(new)
     existing = load_json(node_id, PARAM_CONFIG_NAME)
-    if existing is not None and existing.get(_HASH_KEY) == digest:
+    first = is_first_contact(node_id, "params")
+    mark_contact(node_id, "params")
+    if (not first and existing is not None
+            and existing.get(_HASH_KEY) == digest):
         return path, False          # unveraendert -> lokale Bearbeitung behalten
+    if first and existing is not None:
+        # Beim Start gewinnt der Teensy. Geschrieben (und der Parameter-Tab
+        # neu aufgebaut) wird aber nur, wenn sich wirklich etwas aendert —
+        # sonst flackerte der Tab bei jedem Start ohne Grund.
+        probe = dict(new)
+        probe[_HASH_KEY] = digest
+        if existing == probe:
+            return path, False
 
     new[_HASH_KEY] = digest
     written = save_json(node_id, PARAM_CONFIG_NAME, new)
@@ -390,7 +455,9 @@ def sync_gui_settings(node_id: int, flat: dict) -> tuple[dict, list[str]]:
 
     digest = teensy_hash(flat)
     stored = load_json(node_id, GUI_SETTINGS_NAME)
-    if stored is not None and stored.get(_HASH_KEY) == digest:
+    first = is_first_contact(node_id, "settings")
+    mark_contact(node_id, "settings")
+    if not first and stored is not None and stored.get(_HASH_KEY) == digest:
         return {}, []               # unveraendert -> lokale Bearbeitung behalten
 
     applied, rejected = app_settings.apply_teensy_settings(flat)

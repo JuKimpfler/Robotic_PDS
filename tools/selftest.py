@@ -1395,6 +1395,204 @@ def test_review_fixes() -> None:
         cb.pygame.joystick.Joystick = orig
 
 
+# ══════════════════════════════════════════════════════════════════════════
+#  19) Ansichten vom Teensy: Textring, Textpunkte, Textstil, Gruppen, Start
+# ══════════════════════════════════════════════════════════════════════════
+def test_teensy_views() -> None:
+    section("19) Ansichten vom Teensy (Ring, Punkte, Stil, Gruppen, Start-Vorrang)")
+    import math
+    import runtime_config
+    import overlay_schema as osch
+    from bridge.utils import expand_textring, expand_textpts, expand_textgrid, parse_points
+    from channel_registry import ChannelRegistry, apply_overlay_defaults
+
+    def name_for(c):
+        return f"K{c}"
+
+    # ── Textring: 16 Sensoren, der erste rechts neben "oben", Uhrzeigersinn ─
+    ring = expand_textring({"channels": "100-115", "x_pct": 50, "y_pct": 50,
+                            "r_pct": 40, "start_deg": 11.25, "step_deg": 22.5,
+                            "prefix": "IR"}, name_for)
+    check("Textring: eine Zelle je Kanal", len(ring) == 16, str(len(ring)))
+    check("Textring: Praefix + laufende Nummer ab 1",
+          [c["label"] for c in ring[:2]] == ["IR1", "IR2"] and ring[-1]["label"] == "IR16")
+    check("Textring: erster Sensor rechts neben oben",
+          ring[0]["xPct"] > 50 and ring[0]["yPct"] < 15, str(ring[0]))
+    check("Textring: laeuft im Uhrzeigersinn (Sensor 5 liegt rechts unten)",
+          ring[4]["xPct"] > 80 and ring[4]["yPct"] > 50, str(ring[4]))
+    check("Textring: letzter Sensor links neben oben",
+          ring[15]["xPct"] < 50 and ring[15]["yPct"] < 15, str(ring[15]))
+    check("Textring: Zellen sitzen mittig",
+          all(c["centered"] for c in ring))
+    even = expand_textring({"channels": "0-3"}, name_for)
+    check("Textring ohne Schrittweite verteilt gleichmaessig",
+          abs(even[1]["xPct"] - 90.0) < 1e-6 and abs(even[2]["yPct"] - 90.0) < 1e-6,
+          str(even[1:3]))
+    ccw = expand_textring({"channels": "0-3", "step_deg": -90}, name_for)
+    check("Textring: negative Schrittweite laeuft gegen den Uhrzeigersinn",
+          ccw[1]["xPct"] < 50, str(ccw[1]))
+    check("Textring ohne Kanaele ist leer", expand_textring({}, name_for) == [])
+
+    # ── Textpunkte ────────────────────────────────────────────────────────
+    pts = expand_textpts({"channels": "50-52", "points": "10:20,30:40,x:y",
+                          "prefix": "", "x_pct": 1.0, "y_pct": -2.0,
+                          "decimals": 0, "font_px": 11}, name_for)
+    check("Textpunkte: unlesbarer Punkt entfaellt, die anderen bleiben",
+          len(pts) == 2, str(len(pts)))
+    check("Textpunkte: Versatz verschiebt den ganzen Block",
+          (pts[0]["xPct"], pts[0]["yPct"]) == (11.0, 18.0) and pts[1]["xPct"] == 31.0)
+    check("Textpunkte: leeres Praefix -> nur die Nummer",
+          [c["label"] for c in pts] == ["1", "2"])
+    check("Textpunkte: Stil reist mit",
+          pts[0]["decimals"] == 0 and pts[0]["fontPx"] == 11 and pts[0]["centered"])
+    check("Textpunkte: zu wenige Punkte -> nur so viele Zellen",
+          len(expand_textpts({"channels": "0-9", "points": "1:1,2:2"}, name_for)) == 2)
+    check("parse_points liest Kommazahlen",
+          parse_points("49.9:11.7, 53.9:19.4") == [(49.9, 11.7), (53.9, 19.4)])
+
+    # ── Stil: Vorgaben wie bisher ─────────────────────────────────────────
+    cell = expand_textgrid({"channels": "0"}, name_for)[0]
+    check("Textraster ohne Stilangaben: 2 Nachkommastellen, Standardschrift, Ecke",
+          cell["decimals"] == 2 and cell["fontPx"] == 0 and cell["centered"] is False)
+    check("Stil vertraegt Unsinn aus einer von Hand editierten Datei",
+          expand_textgrid({"channels": "0", "decimals": "viele",
+                           "font_px": None, "color_channel": "x"}, name_for)[0]["decimals"] == 2)
+
+    # ── Teensy-Deskriptor -> Ansichten ────────────────────────────────────
+    desc = {"overlays": [
+        {"group": 3, "type": "group", "label": "IR-Ring", "extra": "image=3"},
+        {"group": 1, "type": "group", "label": "Main", "extra": "image=1"},
+        {"group": 1, "type": "text", "label": "Akku", "channel": 1,
+         "x_pct": 50, "y_pct": 6,
+         "extra": "anchor=c;size=12;dec=1;cmode=thr;cthr=13.6;clow=#e0524d;chigh=#a5dc6e"},
+        {"group": 3, "type": "textring", "label": "IR", "x_pct": 50, "y_pct": 50,
+         "extra": "channels=100-115;r=38;start=11.25;step=22.5;prefix=IR;dec=0"},
+        {"group": 3, "type": "textpts", "label": "L",
+         "extra": "channels=50-51;prefix=;pts=10:10,20:20"},
+        {"group": 1, "type": "rotation", "label": "Soll VL", "channel": 24,
+         "min": 0, "max": 100},
+        {"group": 7, "type": "table", "label": "Rest", "extra": "0-3"},
+        {"group": 1, "type": "bodies", "label": "Feld",
+         "extra": "field_x_cm=243;field_y_cm=182;show_image=0;goal_width_cm=60"},
+    ]}
+    reg = ChannelRegistry.from_json_dict(desc)
+    local = {"groups": [{"name": "Alt", "image_idx": 2,
+                         "overlays": [{"label": "weg"}], "graphics": []}]}
+    check("befuellte lokale Ansichten bleiben ohne overwrite stehen",
+          apply_overlay_defaults(local, reg) is False
+          and local["groups"][0]["name"] == "Alt")
+    check("mit overwrite ersetzt die Liste des Teensy die lokale komplett",
+          apply_overlay_defaults(local, reg, overwrite=True) is True)
+    names = [g["name"] for g in local["groups"]]
+    check("Reihenfolge und Namen kommen vom Teensy; unbeschriebene Gruppe bleibt",
+          names == ["IR-Ring", "Main", "Gruppe 7"], str(names))
+    check("das Bild kommt aus image=…",
+          [g["image_idx"] for g in local["groups"]] == [3, 1, 7])
+    main = local["groups"][1]
+    akku = main["overlays"][0]
+    check("Text: Stil aus extra (Mitte, Schrift, Nachkommastellen)",
+          akku.get("centered") is True and akku.get("font_px") == 12.0
+          and akku.get("decimals") == 1, str(akku))
+    check("Text: Schwellenfarbe aus extra",
+          akku.get("color_dynamic") is True and akku.get("color_mode") == "threshold"
+          and akku.get("color_threshold") == 13.6 and akku.get("color_high") == "#a5dc6e")
+    check("Drehanzeige landet in der Spalte, mit Maximum",
+          main["graphics"][0] == {"type": "rotation", "label": "Soll VL",
+                                  "channel": 24, "max_val": 100.0}, str(main["graphics"][0]))
+    feld = main["graphics"][1]
+    check("Feldansicht: show_image und Torbreite aus extra",
+          feld.get("show_image") is False and feld.get("goal_width_cm") == 60.0)
+    ir = local["groups"][0]["overlays"]
+    check("Textring und Textpunkte bleiben je EIN Eintrag",
+          [o.get("type") for o in ir] == ["textring", "textpts"])
+    check("Textpunkte: ohne Positionsangabe ist der Versatz 0",
+          ir[1]["x_pct"] == 0.0 and ir[1]["y_pct"] == 0.0 and ir[1]["prefix"] == "")
+    check("ohne group-Eintraege gilt das alte Verhalten (Zuordnung ueber das Bild)",
+          apply_overlay_defaults(
+              {"groups": [{"name": "G", "image_idx": 1, "overlays": [], "graphics": []}]},
+              ChannelRegistry.from_json_dict({"overlays": [
+                  {"group": 1, "type": "text", "label": "A", "channel": 0}]})) is True)
+
+    # ── Editor kennt die neuen Arten ──────────────────────────────────────
+    for kind in ("textring", "textpts"):
+        fresh = osch.new_entry(kind)
+        check(f"Editor: neuer Eintrag '{kind}' ist fehlerfrei und sichtbar",
+              osch.entry_kind(fresh) == kind and osch.problems(fresh) == []
+              and len(osch.describe(fresh)) == len(osch.fields_for(kind)),
+              str(osch.problems(fresh)))
+    check("Editor: zu wenige Punkte werden beanstandet",
+          any("Punkte" in t for t in osch.problems(
+              {"type": "textpts", "channels": "0-4", "points": "1:1"})))
+    moved = osch.new_entry("textpts")
+    moved["x_pct"], moved["y_pct"] = osch.move_position(moved, 3.0, -2.0)
+    check("Editor: Ziehen verschiebt den Versatz des Blocks",
+          (moved["x_pct"], moved["y_pct"]) == (3.0, -2.0))
+    check("Editor: Nachkommastellen werden begrenzt",
+          osch.set_value(akku, "decimals", "99") and akku["decimals"] == 6)
+
+    # ── Beim Start gewinnt immer der Teensy ───────────────────────────────
+    H, E = runtime_config.TEENSY_HASH_KEY, runtime_config.LOCAL_EDIT_KEY
+    md = runtime_config.merge_decision
+    check("Start: gleicher Fingerabdruck -> trotzdem Teensy",
+          md({H: "abc"}, "abc", first_contact=True) == "overwrite")
+    check("Start: Handarbeit -> trotzdem Teensy, ohne Rueckfrage",
+          md({H: "alt", E: True}, "neu", first_contact=True) == "overwrite")
+    check("Start: offene Bearbeitung wird nie unter der Hand ersetzt",
+          md({H: "abc"}, "abc", editing_unsaved=True, first_contact=True) == "ask")
+    check("danach gilt wieder die Fingerabdruck-Regel",
+          md({H: "abc", E: True}, "abc", first_contact=False) == "keep")
+
+    runtime_config.reset_session()
+    check("erster Kontakt je Node und Art",
+          runtime_config.is_first_contact(1, "visuals")
+          and runtime_config.is_first_contact(2, "visuals"))
+    runtime_config.mark_contact(1, "visuals")
+    check("nach dem ersten Kontakt nicht mehr — aber nur fuer diesen Node/diese Art",
+          not runtime_config.is_first_contact(1, "visuals")
+          and runtime_config.is_first_contact(2, "visuals")
+          and runtime_config.is_first_contact(1, "params"))
+    import app_settings
+    ui = app_settings.SETTINGS.setdefault("ui", {})
+    saved = ui.get("teensyPriorityOnStart", True)
+    try:
+        ui["teensyPriorityOnStart"] = False
+        check("Schalter aus -> kein Vorrang beim Start",
+              not runtime_config.is_first_contact(2, "visuals"))
+    finally:
+        ui["teensyPriorityOnStart"] = saved
+
+    import config
+    old_dir = config.RUNTIME_CONFIG_DIR
+    with tempfile.TemporaryDirectory() as tmp:
+        config.RUNTIME_CONFIG_DIR = Path(tmp)
+        try:
+            cfg = {"slow_floats": [{"i": 0, "n": "Kp", "w": "slider", "min": 0,
+                                    "max": 10, "step": 0.1, "def": 1}]}
+            runtime_config.reset_session()
+            _p, w1 = runtime_config.sync_param_config(1, cfg)
+            # lokale Bearbeitung der gespeicherten Datei (anderer Bereich)
+            stored = runtime_config.load_json(1, runtime_config.PARAM_CONFIG_NAME)
+            stored["floats"][0]["max"] = 99.0
+            runtime_config.save_json(1, runtime_config.PARAM_CONFIG_NAME, stored)
+            _p, w2 = runtime_config.sync_param_config(1, cfg)
+            check("Parameter: in derselben Sitzung bleibt die lokale Bearbeitung",
+                  w1 and not w2
+                  and runtime_config.load_json(1, runtime_config.PARAM_CONFIG_NAME)
+                  ["floats"][0]["max"] == 99.0)
+            runtime_config.reset_session()            # "GUI neu gestartet"
+            _p, w3 = runtime_config.sync_param_config(1, cfg)
+            check("Parameter: nach dem Neustart gewinnt der Teensy",
+                  w3 and runtime_config.load_json(1, runtime_config.PARAM_CONFIG_NAME)
+                  ["floats"][0]["max"] == 10.0)
+            runtime_config.reset_session()
+            _p, w4 = runtime_config.sync_param_config(1, cfg)
+            check("Parameter: unveraenderter Stand wird beim Start nicht neu geschrieben",
+                  not w4)
+        finally:
+            config.RUNTIME_CONFIG_DIR = old_dir
+            runtime_config.reset_session()
+
+
 def main() -> int:
     print("Power Debug System — Selbsttest")
     for fn in (test_wire_format, test_frame_assemblers, test_descriptor,
@@ -1402,7 +1600,8 @@ def main() -> int:
                test_aux_uplink, test_runtime_config, test_textgrid,
                test_overlay_editor, test_thread_attribute_clash,
                test_plot_markers_and_controller, test_app_settings,
-               test_teensy_settings, test_review_fixes):
+               test_teensy_settings, test_review_fixes,
+               test_teensy_views):
         try:
             fn()
         except Exception as exc:            # noqa: BLE001

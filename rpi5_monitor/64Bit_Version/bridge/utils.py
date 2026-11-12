@@ -89,6 +89,163 @@ def parse_channels(channel_spec) -> List[int]:
 #  Overlay-Typ "textgrid": ein Eintrag -> viele Textfelder
 # ══════════════════════════════════════════════════════════════════════════
 
+def _num(value, fallback: float) -> float:
+    """Zahl aus einem Roheintrag, mit Rueckfall statt Ausnahme (die Eintraege
+    kommen aus einer von Hand editierbaren Datei bzw. vom Teensy)."""
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return fallback
+    return fallback if out != out or out in (float("inf"), float("-inf")) else out
+
+
+def text_style(entry: dict, channel: int) -> dict:
+    """Darstellung EINER Textbox — gemeinsam fuer "text", "textgrid",
+    "textring" und "textpts", damit alle vier dieselben Moeglichkeiten haben
+    und SystemView.qml nur EINE Art von Zelle kennen muss.
+
+      color            feste Farbe (Rand/Schrift)
+      color_dynamic…   Box faerbt sich nach einem Kanalwert (siehe
+                       overlay_schema._color_dynamic_fields)
+      decimals         Nachkommastellen des Wertes (Default 2, wie bisher)
+      font_px          Schriftgroesse; 0 = die feste Standardgroesse. Ein Wert
+                       > 0 gilt bei 800 px Bildbreite und waechst/schrumpft
+                       mit dem Bild — 50 Werte auf einem Ring ueberlappen
+                       sich sonst auf einem kleinen Fenster.
+      centered         True: x/y ist die MITTE der Box statt der linken
+                       oberen Ecke. Noetig, wenn die Box genau auf einem
+                       Bauteil sitzen soll, egal wie breit der Text wird.
+    """
+    color_channel = int(_num(entry.get("color_channel"), -1))
+    return {
+        "color": entry.get("color", "#4ec9b0"),
+        "colorDynamic": bool(entry.get("color_dynamic", False)),
+        "colorMode": str(entry.get("color_mode", "linear")),
+        # kein Kanal gewaehlt (-1) -> jede Zelle faerbt sich nach IHREM Kanal
+        "colorChannel": color_channel if color_channel >= 0 else channel,
+        "colorMin": _num(entry.get("color_min"), 0.0),
+        "colorMax": _num(entry.get("color_max"), 1.0),
+        "colorThreshold": _num(entry.get("color_threshold"), 0.5),
+        "colorLow": entry.get("color_low", "#a5dc6e"),
+        "colorHigh": entry.get("color_high", "#e0524d"),
+        "decimals": max(0, min(6, int(_num(entry.get("decimals"), 2)))),
+        "fontPx": max(0.0, min(48.0, _num(entry.get("font_px"), 0.0))),
+        "centered": bool(entry.get("centered", False)),
+    }
+
+
+def _cell_label(entry: dict, index: int, channel: int, name_for) -> str:
+    """Beschriftung einer Zelle in einem Block (textring/textpts).
+
+    "prefix" gesetzt -> Praefix + laufende Nummer ("IR" -> IR1, IR2, …; die
+    Zaehlung beginnt bei "first", Default 1). Sonst wie beim Textraster der
+    Kanalname, oder gar nichts bei labels = False.
+    """
+    if not bool(entry.get("labels", True)):
+        return ""
+    if "prefix" in entry:
+        first = int(_num(entry.get("first"), 1))
+        return f"{entry.get('prefix') or ''}{first + index}"
+    return name_for(channel)
+
+
+def parse_points(spec) -> List[tuple]:
+    """Punktliste "x:y,x:y,…" (Prozent der Bildflaeche) -> [(x, y), …].
+
+    Unlesbare Punkte werden uebersprungen statt die ganze Liste zu verwerfen —
+    aber als (None, None) mitgezaehlt, damit die Zuordnung Punkt <-> Kanal
+    der folgenden Eintraege nicht verrutscht.
+    """
+    out: List[tuple] = []
+    if not isinstance(spec, str):
+        return out
+    for part in spec.replace(";", ",").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            xs, ys = part.split(":")
+            out.append((float(xs), float(ys)))
+        except ValueError:
+            out.append((None, None))
+    return out
+
+
+def expand_textring(entry: dict, name_for) -> List[dict]:
+    """Einen "textring"-Eintrag aufloesen: viele Werte gleichmaessig auf einem
+    Kreis (oder einer Ellipse) — gedacht fuer ringfoermige Sensorplatinen.
+
+      x_pct / y_pct   MITTELPUNKT des Rings in % der Bildflaeche
+      r_pct           Radius in % der BildBREITE
+      ry_pct          Radius senkrecht in % der BildHOEHE (0/fehlt = r_pct;
+                      bei quadratischem Bild ergibt das einen Kreis)
+      start_deg       Winkel des ersten Kanals, 0 = oben, positiv im
+                      Uhrzeigersinn
+      step_deg        Winkel zwischen zwei Kanaelen (0/fehlt = 360 / Anzahl;
+                      negativ = gegen den Uhrzeigersinn)
+    """
+    import math
+
+    channels = parse_channels(entry.get("channels", ""))
+    if not channels:
+        return []
+    cx = _num(entry.get("x_pct"), 50.0)
+    cy = _num(entry.get("y_pct"), 50.0)
+    rx = _num(entry.get("r_pct"), 40.0)
+    ry = _num(entry.get("ry_pct"), 0.0) or rx
+    start = _num(entry.get("start_deg"), 0.0)
+    step = _num(entry.get("step_deg"), 0.0) or 360.0 / len(channels)
+
+    out: List[dict] = []
+    for i, ch in enumerate(channels):
+        ang = math.radians(start + i * step)
+        cell = {
+            "label": _cell_label(entry, i, ch, name_for),
+            "channel": ch,
+            "xPct": cx + rx * math.sin(ang),
+            "yPct": cy - ry * math.cos(ang),
+        }
+        cell.update(text_style(entry, ch))
+        # Auf einem Ring ist nur die Mitte der Box sinnvoll — linksbuendig
+        # stuenden die Werte rechts weiter aussen als links.
+        cell["centered"] = bool(entry.get("centered", True))
+        out.append(cell)
+    return out
+
+
+def expand_textpts(entry: dict, name_for) -> List[dict]:
+    """Einen "textpts"-Eintrag aufloesen: viele Werte an FREI vorgegebenen
+    Punkten, aber als EIN Eintrag. Fuer Sensoren, die nicht auf einem Raster
+    oder Kreis liegen (z. B. ein Ring mit geradem Stueck).
+
+      channels   Kanalliste; der i-te Kanal gehoert zum i-ten Punkt
+      points     "x:y,x:y,…" in % der Bildflaeche
+      x_pct/y_pct  VERSATZ des ganzen Blocks (Default 0/0) — damit laesst
+                 sich der Block im Editor als Ganzes verschieben.
+
+    Kanaele ohne Punkt (Liste zu kurz oder Punkt unlesbar) entfallen.
+    """
+    channels = parse_channels(entry.get("channels", ""))
+    points = parse_points(entry.get("points", ""))
+    ox = _num(entry.get("x_pct"), 0.0)
+    oy = _num(entry.get("y_pct"), 0.0)
+
+    out: List[dict] = []
+    for i, ch in enumerate(channels):
+        if i >= len(points) or points[i][0] is None:
+            continue
+        cell = {
+            "label": _cell_label(entry, i, ch, name_for),
+            "channel": ch,
+            "xPct": ox + points[i][0],
+            "yPct": oy + points[i][1],
+        }
+        cell.update(text_style(entry, ch))
+        cell["centered"] = bool(entry.get("centered", True))
+        out.append(cell)
+    return out
+
+
 def expand_textgrid(entry: dict, name_for) -> List[dict]:
     """Einen "textgrid"-Eintrag in einzelne Text-Overlays aufloesen.
 
@@ -110,38 +267,21 @@ def expand_textgrid(entry: dict, name_for) -> List[dict]:
     dy = float(entry.get("dy_pct", 4.5))
     x0 = float(entry.get("x_pct", 4.0))
     y0 = float(entry.get("y_pct", 6.0))
-    color = entry.get("color", "#4ec9b0")
     with_labels = bool(entry.get("labels", True))
 
-    # Dynamische Farbe gilt fuer den GANZEN Block gleich — ein Eintrag, eine
-    # Einstellung. Fehlt "color_channel" (kein Kanal gewaehlt, -1), faerbt
-    # sich jede Zelle nach IHREM EIGENEN angezeigten Kanal; siehe
-    # visuals_bridge._overlay_to_entry() fuer denselben Rueckfall bei "text".
-    color_dynamic = bool(entry.get("color_dynamic", False))
-    color_mode = str(entry.get("color_mode", "linear"))
-    color_channel = int(entry.get("color_channel", -1))
-    color_min = float(entry.get("color_min", 0.0))
-    color_max = float(entry.get("color_max", 1.0))
-    color_threshold = float(entry.get("color_threshold", 0.5))
-    color_low = entry.get("color_low", "#a5dc6e")
-    color_high = entry.get("color_high", "#e0524d")
-
+    # Farbe, dynamische Farbe und Schrift gelten fuer den GANZEN Block gleich
+    # — ein Eintrag, eine Einstellung (siehe text_style). Fehlt
+    # "color_channel" (kein Kanal gewaehlt, -1), faerbt sich jede Zelle nach
+    # IHREM EIGENEN angezeigten Kanal.
     out: List[dict] = []
     for i, ch in enumerate(channels):
         col, row = i % cols, i // cols
-        out.append({
+        cell = {
             "label": name_for(ch) if with_labels else "",
             "channel": ch,
             "xPct": x0 + col * dx,
             "yPct": y0 + row * dy,
-            "color": color,
-            "colorDynamic": color_dynamic,
-            "colorMode": color_mode,
-            "colorChannel": color_channel if color_channel >= 0 else ch,
-            "colorMin": color_min,
-            "colorMax": color_max,
-            "colorThreshold": color_threshold,
-            "colorLow": color_low,
-            "colorHigh": color_high,
-        })
+        }
+        cell.update(text_style(entry, ch))
+        out.append(cell)
     return out
