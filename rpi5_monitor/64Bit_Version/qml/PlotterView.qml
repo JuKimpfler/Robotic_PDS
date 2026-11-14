@@ -208,9 +208,19 @@ Item {
                     textRole: "label"
                     valueRole: "value"
                     model: root.plotter.triggerModes
-                    // indexOfValue braucht valueRole; beim ersten Aufbau ist
-                    // das Modell schon da, deshalb genügt die Zuweisung hier.
-                    currentIndex: indexOfValue(root.plotter.triggerMode)
+                    // Bewusst NICHT indexOfValue(): die Funktion liefert -1,
+                    // solange die ComboBox ihr Modell noch nicht aufgebaut
+                    // hat, und die Bindung wertet sich danach nicht neu aus
+                    // (ein Funktionsaufruf meldet keine Aenderung). Die
+                    // Auswahl stand deshalb leer da, bis man den Modus
+                    // einmal von Hand umgestellt hatte.
+                    currentIndex: {
+                        var modes = root.plotter.triggerModes
+                        var mode = root.plotter.triggerMode
+                        for (var i = 0; i < modes.length; ++i)
+                            if (modes[i].value === mode) return i
+                        return -1
+                    }
                     onActivated: (idx) => root.plotter.setTriggerMode(valueAt(idx))
                 }
 
@@ -327,10 +337,21 @@ Item {
             PinchHandler {
                 id: pinch
                 target: null
+                // Dieselben Grenzen wie die SpinBox oben (settings.json ->
+                // "ranges.plotPoints") statt fester 50/600: wer dort einen
+                // groesseren Bereich eingestellt hat, kam mit zwei Fingern
+                // nie ueber 600 Punkte hinaus.
+                readonly property var rng: appBridge.settings.ranges.plotPoints
+                // `activeScale` ist der Faktor DIESER Geste. `scale` haeuft
+                // sich ueber alle Gesten auf — die zweite Geste rechnete mit
+                // dem Faktor der ersten weiter und sprang.
+                property real lastScale: 1.0
+                onActiveScaleChanged: if (active) lastScale = activeScale
                 onActiveChanged: {
-                    if (active) return
-                    var n = Math.round(root.plotter.pointsCount / pinch.scale)
-                    root.plotter.setPointsCount(Math.max(50, Math.min(600, n)))
+                    if (active) { lastScale = 1.0; return }
+                    if (!(lastScale > 0)) return
+                    var n = Math.round(root.plotter.pointsCount / lastScale)
+                    root.plotter.setPointsCount(Math.max(rng.min, Math.min(rng.max, n)))
                 }
             }
 

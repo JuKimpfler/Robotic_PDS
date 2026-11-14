@@ -31,18 +31,23 @@ Item {
     implicitHeight: Math.round(56 * Theme.fontScale)
     opacity: enabled ? 1.0 : 0.45
 
-    readonly property color _onBg:   "#2ecc71"
-    readonly property color _onTxt:  "#10331d"
-    readonly property color _offBg:  "#3a3a3a"
-    readonly property color _offTxt: "#cccccc"
+    // Farben aus dem Theme statt fester Dunkel-Werte: im hellen Farbschema
+    // stand ein ausgeschalteter Schalter sonst als fast schwarzer Klotz mit
+    // hellgrauer Schrift auf der hellen Seite. Der Text auf dem gruenen
+    // "AN" richtet sich nach dessen Helligkeit (dunkles Gruen im hellen
+    // Schema -> weisse Schrift).
+    readonly property color _onBg:   Theme.ledOn
+    readonly property color _onTxt:  Theme.dark ? "#10331d" : "#ffffff"
+    readonly property color _offBg:  Theme.bgInput
+    readonly property color _offTxt: Theme.text
 
     Rectangle {
         anchors.fill: parent
         radius: 10
         border.width: 2
-        border.color: root.checked ? "#2ecc71" : "#444444"
-        color: root.checked ? root._onBg
-             : tap.pressed  ? "#4a4a4a"
+        border.color: root.checked ? root._onBg : Theme.border
+        color: root.checked ? (tap.pressed ? Qt.darker(root._onBg, 1.15) : root._onBg)
+             : tap.pressed  ? Theme.bgAlt
              : root._offBg
         Behavior on color { ColorAnimation { duration: 100 } }
 

@@ -1400,7 +1400,6 @@ def test_review_fixes() -> None:
 # ══════════════════════════════════════════════════════════════════════════
 def test_teensy_views() -> None:
     section("19) Ansichten vom Teensy (Ring, Punkte, Stil, Gruppen, Start-Vorrang)")
-    import math
     import runtime_config
     import overlay_schema as osch
     from bridge.utils import expand_textring, expand_textpts, expand_textgrid, parse_points
@@ -1593,6 +1592,84 @@ def test_teensy_views() -> None:
             runtime_config.reset_session()
 
 
+# ══════════════════════════════════════════════════════════════════════════
+#  20) Beenden mit vollen Warteschlangen, Tabelle im Hintergrund
+# ══════════════════════════════════════════════════════════════════════════
+def _flood_queue(out_queue, stop_event) -> None:
+    """Hilfsprozess: fuellt eine Queue so, wie es ein Empfaenger bei
+    laufender Telemetrie tut — bis zum Anschlag und darueber hinaus."""
+    import time
+    blob = b"x" * 808
+    while not stop_event.is_set():
+        try:
+            out_queue.put_nowait((1, 0, blob, "127.0.0.1"))
+        except Exception:                   # noqa: BLE001 — Queue voll
+            time.sleep(0.001)
+
+
+def test_shutdown_and_table_live() -> None:
+    section("20) Beenden mit vollen Warteschlangen, Tabelle im Hintergrund")
+    try:
+        importlib.import_module("numpy")
+    except ImportError as exc:
+        print(f"  [ -- ] uebersprungen: numpy fehlt ({exc})")
+        return
+    import multiprocessing as mp
+    import time
+    from network_worker import NetworkManager
+
+    # Ein Prozess mit Paketen in seiner Queue kann sich erst beenden, wenn
+    # jemand sie abholt. stop() tat das nicht: jeder Empfaenger lief in die
+    # 3 s Wartezeit und wurde abgeschossen — das Beenden dauerte 6 s und mehr.
+    nm = NetworkManager()
+    proc = mp.Process(target=_flood_queue,
+                      args=(nm.queue_node1, nm.stop_event), daemon=True)
+    nm._procs = {"_proc1": proc}
+    proc.start()
+    nm._started = True
+    deadline = time.monotonic() + 10.0
+    while not nm.queue_node1.full() and time.monotonic() < deadline:
+        time.sleep(0.02)
+    filled = nm.queue_node1.full()
+    t0 = time.monotonic()
+    nm.stop()
+    took = time.monotonic() - t0
+    check("Testaufbau: die Warteschlange war voll", filled)
+    check("stop() wartet nicht auf einen Prozess mit voller Queue",
+          took < 2.0, f"{took:.2f} s")
+    check("der Prozess beendet sich selbst (kein terminate)",
+          proc.exitcode == 0, str(proc.exitcode))
+
+    try:
+        importlib.import_module("PyQt6.QtCore")
+    except ImportError as exc:
+        print(f"  [ -- ] Rest uebersprungen: PyQt6 fehlt ({exc})")
+        return
+    import numpy as np
+    from bridge.telemetry_bridge import TelemetryTableModel
+
+    model = TelemetryTableModel()
+    hits: list[int] = []
+    model.dataChanged.connect(lambda *_a: hits.append(1))
+    vals = np.arange(8, dtype=np.float32)
+    model.update_data(vals)                 # erster Block: Modell-Reset
+    model.update_data(vals)
+    check("Tabelle sichtbar: jede Aktualisierung wird gemeldet", len(hits) == 1,
+          str(len(hits)))
+    model.set_live(False)
+    model.update_data(vals * 2)
+    check("Tabelle verdeckt: kein Aenderungssignal", len(hits) == 1, str(len(hits)))
+    check("Tabelle verdeckt: Min/Max laufen trotzdem weiter",
+          float(model._max[7]) == 14.0, str(model._max[7]))
+    model.set_live(True)
+    check("wieder sichtbar: der aktuelle Stand wird sofort gemeldet",
+          len(hits) == 2, str(len(hits)))
+    model.set_live(False)
+    model.update_data(np.arange(4, dtype=np.float32))
+    check("Tabelle verdeckt: eine andere Kanalzahl baut trotzdem neu auf",
+          model.rowCount() == 4, str(model.rowCount()))
+
+
 def main() -> int:
     print("Power Debug System — Selbsttest")
     for fn in (test_wire_format, test_frame_assemblers, test_descriptor,
@@ -1601,7 +1678,7 @@ def main() -> int:
                test_overlay_editor, test_thread_attribute_clash,
                test_plot_markers_and_controller, test_app_settings,
                test_teensy_settings, test_review_fixes,
-               test_teensy_views):
+               test_teensy_views, test_shutdown_and_table_live):
         try:
             fn()
         except Exception as exc:            # noqa: BLE001

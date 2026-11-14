@@ -23,7 +23,21 @@ import "components"
 Item {
     id: root
     property var visuals: appBridge.visuals
-    property var values: appBridge.telemetry.latestValues
+
+    // ── Werte nur nachfuehren, solange dieser Tab gezeigt wird ───────────
+    //  Jede Aenderung von `values` wertet JEDES Overlay, jeden Tacho und jede
+    //  Tabellenzelle neu aus — 20-mal pro Sekunde, bei einem Sensorring
+    //  schnell ueber hundert Bindungen, dazu die Umwandlung der 200 Werte in
+    //  eine JavaScript-Liste. Das lief auch, waehrend man im Plotter oder in
+    //  den Parametern war. Jetzt bleibt der letzte Stand stehen, bis der Tab
+    //  wieder vorn ist; beim Zurueckwechseln steht sofort der aktuelle da.
+    readonly property bool pageActive: SwipeView.view ? SwipeView.isCurrentItem : true
+    property var values: []
+    Binding on values {
+        when: root.pageActive
+        value: appBridge.telemetry.latestValues
+        restoreMode: Binding.RestoreNone
+    }
 
     readonly property bool editing: visuals.editing
 
@@ -495,6 +509,7 @@ Item {
                             Component {
                                 id: rotationComp
                                 RotationIndicator {
+                                    animate: root.pageActive
                                     label: modelData.label
                                     value: root._chan(modelData.channel, 0)
                                     maxVal: modelData.maxVal

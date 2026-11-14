@@ -267,9 +267,25 @@ class NetworkManager:
         if not self._started:
             return
         self._started = False
+        # Die Warteschlangen WAEHREND des Wartens weiter leeren. Ein Prozess,
+        # der noch Pakete in seiner Queue hat, kann sich nicht beenden: sein
+        # Feeder-Thread haengt im Schreiben auf die Pipe, bis jemand liest —
+        # und die Oberflaeche liest ab hier nicht mehr (Poll-Timer gestoppt).
+        # Bei laufender Telemetrie (80 kB/s) ist die Pipe nach Bruchteilen
+        # einer Sekunde voll; jeder Empfaenger lief dann in die 3 s Wartezeit
+        # und wurde per terminate() abgeschossen — das Beenden der GUI
+        # dauerte 6 s und laenger.
+        deadline = monotonic() + 3.0
+        while monotonic() < deadline:
+            self._drain_queues()
+            alive = [p for p in self._procs.values() if p.is_alive()]
+            if not alive:
+                break
+            alive[0].join(timeout=0.05)
+        self._drain_queues()
         for proc in self._procs.values():
             try:
-                proc.join(timeout=3)
+                proc.join(timeout=0.2)
                 if proc.is_alive():
                     log.warning("[NetworkManager] %s reagiert nicht — terminate().", proc.name)
                     proc.terminate()
@@ -279,15 +295,29 @@ class NetworkManager:
         # Queues explizit schließen, sonst hält der Feeder-Thread des
         # GUI-Prozesses den Interpreter beim Beenden gelegentlich fest.
         # Reihenfolge: erst cancel_join_thread(), dann close().
-        for q in (self.queue_node1, self.queue_node2,
-                  self.queue_desc_node1, self.queue_desc_node2,
-                  self.queue_aux_node1, self.queue_aux_node2):
+        for q in self._all_queues():
             try:
                 q.cancel_join_thread()
                 q.close()
             except Exception:                   # noqa: BLE001
                 pass
         log.info("[NetworkManager] Beendet.")
+
+    def _all_queues(self) -> tuple:
+        return (self.queue_node1, self.queue_node2,
+                self.queue_desc_node1, self.queue_desc_node2,
+                self.queue_aux_node1, self.queue_aux_node2)
+
+    def _drain_queues(self) -> None:
+        """Alles Wartende verwerfen (nur beim Herunterfahren, siehe stop())."""
+        for q in self._all_queues():
+            # Begrenzt, damit ein weiter sendender Prozess die Schleife nicht
+            # festhalten kann.
+            for _ in range(4096):
+                try:
+                    q.get_nowait()
+                except Exception:               # noqa: BLE001 — leer/geschlossen
+                    break
 
     def get_queue(self, node_id: int) -> mp.Queue:
         """Gibt die Queue für den angegebenen Node zurück."""

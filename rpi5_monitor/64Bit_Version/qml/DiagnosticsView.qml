@@ -538,8 +538,11 @@ Item {
                         Item { Layout.fillWidth: true }
 
                         ComboBox {
-                            width: 190
-                            height: Theme.touchTargetMin
+                            // In einem RowLayout zaehlen width/height nicht —
+                            // die Auswahl war deshalb schmaler als gedacht
+                            // und niedriger als die Knoepfe daneben.
+                            Layout.preferredWidth: Math.round(190 * Theme.fontScale)
+                            Layout.preferredHeight: Theme.touchTargetMin
                             model: ["alles", "ab Warnung", "nur Fehler"]
                             currentIndex: root.diag.eventFilter
                             onActivated: (idx) => root.diag.setEventFilter(idx)

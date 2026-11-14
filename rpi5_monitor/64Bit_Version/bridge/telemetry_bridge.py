@@ -58,6 +58,19 @@ class TelemetryTableModel(QAbstractTableModel):
         # Einheit je Kanal ("V", "cm", ...), vom Teensy gemeldet.
         # Nur ein Anzeige-Zusatz, aendert nie einen Wert.
         self._units: dict[int, str] = {}
+        # False, solange der Tabellen-Tab nicht zu sehen ist: Werte und
+        # Min/Max laufen weiter, nur das Aenderungssignal entfaellt (siehe
+        # set_live). Sonst zeichnet die TableView 20-mal pro Sekunde alle
+        # aufgebauten Zeilen neu, waehrend man im Plotter ist.
+        self._live = True
+
+    def set_live(self, live: bool) -> None:
+        live = bool(live)
+        if live == self._live:
+            return
+        self._live = live
+        if live:
+            self._emit_value_change()   # sofort den aktuellen Stand zeigen
 
     # ── Filter ───────────────────────────────────────────────────────────
     def _matches(self, ch: int) -> bool:
@@ -162,7 +175,7 @@ class TelemetryTableModel(QAbstractTableModel):
 
         if row_count_changed:
             self.endResetModel()
-        else:
+        elif self._live:
             self._emit_value_change()
 
     def _emit_value_change(self) -> None:
@@ -259,6 +272,11 @@ class TelemetryBridge(QObject):
         """Filtert die Kanaltabelle nach Namensbestandteil (aus QML)."""
         self.table_model.set_filter(text)
         self._sync_counts()
+
+    @pyqtSlot(bool)
+    def setTableLive(self, live: bool) -> None:
+        """Von TelemetryView.qml: ist der Tabellen-Tab gerade zu sehen?"""
+        self.table_model.set_live(live)
 
     @pyqtSlot(int, result=float)
     def valueFor(self, channel: int) -> float:

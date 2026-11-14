@@ -14,6 +14,9 @@ Item {
     property string label: ""
     property real value: 0
     property real maxVal: 5
+    // false haelt die Drehung an (Tab nicht zu sehen) — der Zeitgeber unten
+    // lief sonst fuer jedes Rad dauerhaft weiter, auch unsichtbar.
+    property bool animate: true
 
     readonly property real _dial_r: 38
     readonly property real _minLen: 8
@@ -30,8 +33,10 @@ Item {
     readonly property real _degPerSec: 90 * (Math.abs(root.value) / (root.maxVal || 1)) + (root.value !== 0 ? 40 : 0)
 
     Timer {
-        interval: 16
-        running: root.value !== 0
+        // 30 Bilder/s genuegen fuer einen sich drehenden Zeiger; mit 16 ms
+        // waren es bei vier Raedern 250 JavaScript-Aufrufe pro Sekunde.
+        interval: 33
+        running: root.animate && root.value !== 0
         repeat: true
         property real _lastT: -1
         onTriggered: {

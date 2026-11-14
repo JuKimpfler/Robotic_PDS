@@ -68,11 +68,18 @@ Item {
                     font.family: Theme.fontMono
                     font.pixelSize: Theme.fontSizeSmall
                     anchors.verticalCenter: parent.verticalCenter
-                    width: 470
+                    // Nimmt, was die Knoepfe uebrig lassen. Mit der festen
+                    // Breite von 470 px ragte die Leiste bei schmalem Fenster
+                    // oder grosser Schrift rechts aus dem Bild, und "Als
+                    // Default speichern" war nicht mehr erreichbar.
+                    width: Math.max(0, parent.width - txSwitch.width - undoBtn.width
+                                       - saveBtn.width - diffBtn.width
+                                       - 4 * parent.spacing)
                     elide: Text.ElideRight
                 }
 
                 AppSwitch {
+                    id: txSwitch
                     text: "Übertragung aktiv"
                     checked: params.enabled
                     anchors.verticalCenter: parent.verticalCenter
@@ -80,19 +87,22 @@ Item {
                 }
 
                 AppButton {
-                    text: params.canUndo ? "↶ Rückgängig" : "↶"
+                    id: undoBtn
+                    text: "↶ Rückgängig"
                     enabled: params.canUndo
                     anchors.verticalCenter: parent.verticalCenter
                     onClicked: params.undo()
                 }
 
                 AppButton {
+                    id: saveBtn
                     text: "Als Default speichern"
                     anchors.verticalCenter: parent.verticalCenter
                     onClicked: params.saveDefaults()
                 }
 
                 AppButton {
+                    id: diffBtn
                     text: "Abweichungen (" + params.diffCount + ")"
                     enabled: params.diffCount > 0
                     anchors.verticalCenter: parent.verticalCenter
@@ -122,14 +132,24 @@ Item {
 
                 Text {
                     anchors.verticalCenter: parent.verticalCenter
+                    width: Math.min(implicitWidth,
+                                    parent.width - (ackBtn.visible
+                                                    ? ackBtn.width + parent.spacing : 0))
+                    elide: Text.ElideRight
                     font.pixelSize: Theme.fontSizeSmall
                     color: params.ackMismatches.length > 0 ? Theme.accentAmber
                          : (params.ackAvailable ? Theme.accentGreen : Theme.textDim)
                     text: (params.ackAvailable ? "↩ " : "· ") + params.ackText
                 }
+                // Hoehe ausdruecklich an die Zeile gebunden: ein AppButton ist
+                // von sich aus 56 px hoch und ragte aus dem 34 px hohen Banner
+                // oben und unten heraus, ueber die Gruppenauswahl darunter.
                 AppButton {
+                    id: ackBtn
                     anchors.verticalCenter: parent.verticalCenter
                     visible: params.ackMismatches.length > 0
+                    height: parent.height - 8
+                    width: Math.round(110 * Theme.fontScale)
                     text: "anzeigen"
                     onClicked: ackPopup.open()
                 }
@@ -498,7 +518,28 @@ Item {
                                                ? Math.round(params.controller.values[modelData.index] * f)
                                                : Math.round(modelData.default * f)
                                         textFromValue: (v) => (v / f).toFixed(digits)
-                                        valueFromText: (t) => Math.round(parseFloat(t.replace(",", ".")) * f)
+                                        // Unlesbare Eingabe (leeres Feld, nur "-")
+                                        // laesst den Wert STEHEN. parseFloat lieferte
+                                        // dort NaN, die SpinBox machte daraus 0 — und
+                                        // die 0 ging als Parameter an den Roboter.
+                                        valueFromText: (t) => {
+                                            var v = parseFloat(String(t).replace(",", "."))
+                                            return isFinite(v) ? Math.round(v * f) : spin.value
+                                        }
+                                        // Die SpinBox bringt einen IntValidator mit —
+                                        // der lehnt Punkt und Komma ab, "0.5" liess
+                                        // sich ueber die Tastatur gar nicht eintippen.
+                                        // Bewusst ein Muster statt DoubleValidator:
+                                        // der richtet sich nach der Sprache des
+                                        // Systems und liest "0.500" auf einem
+                                        // deutschen System als fuenfhundert. So
+                                        // gehen Punkt UND Komma, ueberall gleich;
+                                        // den Bereich begrenzt die SpinBox selbst.
+                                        validator: RegularExpressionValidator {
+                                            regularExpression: spin.digits > 0
+                                                ? new RegExp("^-?\\d*([.,]\\d{0," + spin.digits + "})?$")
+                                                : /^-?\d*$/
+                                        }
                                         onValueModified: pageCol._send(modelData, value / f)
 
                                         // Große, gut treffbare +/- Tasten für Touch, statt der

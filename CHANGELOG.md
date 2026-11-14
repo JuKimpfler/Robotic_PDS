@@ -54,6 +54,23 @@ Während der Sitzung gilt weiter die Fingerabdruck-Regel. Abschaltbar mit
 
 `tools/selftest.py`: Abschnitt 19 (43 Prüfungen).
 
+**Durchsicht: Fehler, Rechenzeit, Aussehen** (Einzelheiten in `BUG.md`, Runde 8)
+
+- Behoben: Beenden hing 6 s bei laufender Telemetrie; leere Trigger-Auswahl
+  im Plotter; Zwei-Finger-Zoom sprang; Kommazahlen im Parameter-Tab nicht
+  eintippbar, geleertes Feld sendete 0; Knopf und Leiste im Parameter-Tab
+  ragten heraus; Schalter, Tachos und Tabellenwerte im hellen Farbschema
+  unlesbar.
+- Rechenzeit: Systemansicht und Tabelle werden nur noch aufgefrischt, solange
+  ihr Tab vorn ist (vorher 20-mal pro Sekunde alle Overlays und Zeilen, auch
+  unsichtbar); Min/Max laufen weiter. Tachos zeichnen nur bei sichtbarer
+  Änderung neu, Drehanzeigen mit 30 statt 60 Bildern/s und nur sichtbar.
+- Tabelle: Spaltenköpfe, abwechselnd hinterlegte Zeilen statt dicker Rahmen,
+  rechtsbündige Zahlen, Breiten wachsen mit der Schriftgröße, der Name nutzt
+  den freien Platz; Hinweis, wenn keine Daten ankommen.
+
+`tools/selftest.py`: Abschnitt 20 (8 Prüfungen).
+
 ---
 
 ## 2.11 — Ein Befehl für Updates, Spielfeld, CI/CD, neue Doku

@@ -1,5 +1,36 @@
 # Gemeldete Fehler — Stand: alle behoben
 
+## Runde 8 (Durchsicht: Beenden, Bedienung, helles Farbschema)
+
+- [x] **Beenden dauerte 6 s und länger, sobald Telemetrie lief.**
+  `NetworkManager.stop()` wartete auf die Empfänger-Prozesse, ohne deren
+  Warteschlangen weiter zu leeren. Ein Prozess mit Paketen in seiner Queue
+  kann sich aber nicht beenden (sein Feeder-Thread hängt im Schreiben auf die
+  volle Pipe) — jeder lief in die 3 s Wartezeit und wurde per `terminate()`
+  abgeschossen. Jetzt wird während des Wartens weiter gelesen; das Beenden
+  dauert unter einer Sekunde.
+- [x] **Plotter: die Auswahl der Trigger-Art stand leer da**, bis man sie
+  einmal von Hand umgestellt hatte (`indexOfValue()` lieferte beim Aufbau −1
+  und die Bindung wertete sich nie neu aus).
+- [x] **Plotter: Zoom mit zwei Fingern** rechnete mit dem aufgehäuften Faktor
+  aller bisherigen Gesten und sprang ab der zweiten; außerdem galten feste
+  Grenzen 50/600 statt `ranges.plotPoints` aus `settings.json`.
+- [x] **Parameter: Kommazahlen ließen sich nicht eintippen.** Die Zahlenfelder
+  hatten den `IntValidator` der SpinBox — Punkt und Komma wurden abgelehnt.
+  Ein geleertes Feld schickte außerdem `0` an den Roboter (`parseFloat("")`
+  → NaN → 0). Jetzt gehen Punkt und Komma, und eine unlesbare Eingabe lässt
+  den Wert stehen.
+- [x] **Parameter: der Knopf „anzeigen"** (56 px) ragte aus dem 34 px hohen
+  Rückmelde-Banner über die Gruppenauswahl; die Werkzeugleiste lief bei
+  schmalem Fenster oder großer Schrift rechts aus dem Bild.
+- [x] **Helles Farbschema:** Schalter (`AppSwitch`) blieben dunkelgrau mit
+  heller Schrift, die Nadel der Tachos war hellgrau auf hell, eine `0` in der
+  Tabelle ebenso. Alle drei nehmen ihre Farben jetzt aus dem Theme; die
+  Tachos zeichnen beim Umschalten neu.
+- [x] **Tabelle:** feste Spaltenbreiten — bei großer Schrift lief der Wert in
+  die Einheit, lange Namen wurden bei 160 px abgeschnitten.
+- [x] **CI rot:** ungenutzter Import `math` in `tools/selftest.py` (pyflakes).
+
 ## Runde 7 (Spielfeld, Update-Weg)
 
 - [x] **Spielfeld:** ungültige Werte (NaN/9898) zeichneten Körper an
